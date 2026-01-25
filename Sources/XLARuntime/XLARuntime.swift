@@ -1,0 +1,664 @@
+// Magma - XLARuntime
+// Swift wrapper around PJRT for XLA execution
+//
+// This module provides:
+// - PJRTClient: Device management and program compilation
+// - PJRTDevice: Device abstraction (CPU, GPU, TPU)
+// - PJRTBuffer: On-device data buffers
+// - PJRTExecutable: Compiled XLA programs
+
+import CXLARuntime
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
+// MARK: - Backend Selection
+
+/// Available XLA backends
+public enum Backend: String, Sendable {
+    case cpu
+    case gpu
+    case tpu
+
+    /// Get the default plugin path for this backend
+    func pluginPath() -> String {
+        // Check environment variable first
+        if let envPath = getenv("MAGMA_XLA_PATH") {
+            let basePath = String(cString: envPath)
+            return "\(basePath)/lib/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
+        }
+
+        // TPU has special paths on Cloud TPU VMs
+        if self == .tpu {
+            return Self.tpuPluginPath() ?? "/usr/lib/libtpu.so"
+        }
+
+        #if os(macOS)
+        let systemPaths = ["/usr/local/lib", "/opt/xla/lib"]
+        #else
+        let systemPaths = ["/opt/xla/lib", "/usr/local/lib", "/opt/magma/lib"]
+        #endif
+
+        for path in systemPaths {
+            let fullPath = "\(path)/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
+            if access(fullPath, F_OK) == 0 {
+                return fullPath
+            }
+        }
+
+        return systemPaths[0] + "/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
+    }
+
+    /// Find the TPU plugin on Cloud TPU VMs
+    private static func tpuPluginPath() -> String? {
+        // Standard TPU library locations on Cloud TPU VMs
+        let tpuPaths = [
+            "/usr/lib/libtpu.so",                              // Standard location
+            "/usr/local/lib/libtpu.so",                        // Alternative
+            "/lib/libtpu.so",                                  // Fallback
+        ]
+
+        // Check TPU_LIBRARY_PATH environment variable first
+        if let envPath = getenv("TPU_LIBRARY_PATH") {
+            let path = String(cString: envPath)
+            if access(path, F_OK) == 0 {
+                return path
+            }
+        }
+
+        // Search standard locations
+        for path in tpuPaths {
+            if access(path, F_OK) == 0 {
+                return path
+            }
+        }
+
+        return nil
+    }
+
+    private static var libExtension: String {
+        #if os(macOS)
+        return "dylib"
+        #else
+        return "so"
+        #endif
+    }
+
+    /// Check if this backend's plugin is available on the system
+    public var isAvailable: Bool {
+        let path = pluginPath()
+        return access(path, F_OK) == 0
+    }
+
+    /// Get all available backends on this system
+    public static var availableBackends: [Backend] {
+        [.cpu, .gpu, .tpu].filter { $0.isAvailable }
+    }
+
+    /// Get the best available backend (TPU > GPU > CPU)
+    public static var bestAvailable: Backend {
+        if Backend.tpu.isAvailable { return .tpu }
+        if Backend.gpu.isAvailable { return .gpu }
+        return .cpu
+    }
+}
+
+// MARK: - TPU Environment Detection
+
+/// Utilities for detecting and configuring TPU environments
+public struct TPUEnvironment {
+
+    /// Check if running on a Google Cloud TPU VM
+    public static var isTPUVM: Bool {
+        // Check for TPU-specific environment variables
+        if getenv("TPU_NAME") != nil { return true }
+        if getenv("TPU_CHIPS_PER_HOST_BOUNDS") != nil { return true }
+
+        // Check for libtpu.so
+        return Backend.tpu.isAvailable
+    }
+
+    /// Get the TPU topology string (e.g., "2x2x1" for v4-8)
+    public static var topology: String? {
+        if let chips = getenv("TPU_CHIPS_PER_HOST_BOUNDS") {
+            return String(cString: chips)
+        }
+        return nil
+    }
+
+    /// Get the TPU name from environment
+    public static var tpuName: String? {
+        if let name = getenv("TPU_NAME") {
+            return String(cString: name)
+        }
+        return nil
+    }
+
+    /// Get the TPU type (e.g., "v4-8", "v3-8")
+    public static var tpuType: String? {
+        // Try to infer from accelerator type
+        if let accelType = getenv("ACCELERATOR_TYPE") {
+            return String(cString: accelType)
+        }
+        // Fallback to TPU name parsing
+        if let name = tpuName {
+            // TPU names often contain the type
+            return name
+        }
+        return nil
+    }
+
+    /// Number of TPU chips available on this host
+    public static var numChips: Int {
+        if let bounds = topology {
+            // Parse "AxBxC" format
+            let parts = bounds.split(separator: "x").compactMap { Int($0) }
+            if parts.count >= 3 {
+                return parts.reduce(1, *)
+            }
+        }
+        // Default single-host assumption
+        return Backend.tpu.isAvailable ? 4 : 0
+    }
+
+    /// Check if this is a multi-host TPU pod
+    public static var isMultiHost: Bool {
+        if let hosts = getenv("TPU_HOST_BOUNDS") {
+            let hostStr = String(cString: hosts)
+            let parts = hostStr.split(separator: "x").compactMap { Int($0) }
+            return parts.reduce(1, *) > 1
+        }
+        return false
+    }
+
+    /// Print TPU environment information
+    public static func printInfo() {
+        print("TPU Environment:")
+        print("  Is TPU VM: \(isTPUVM)")
+        if isTPUVM {
+            if let name = tpuName {
+                print("  TPU Name: \(name)")
+            }
+            if let type = tpuType {
+                print("  TPU Type: \(type)")
+            }
+            if let topo = topology {
+                print("  Topology: \(topo)")
+            }
+            print("  Chips: \(numChips)")
+            print("  Multi-host: \(isMultiHost)")
+            print("  Plugin path: \(Backend.tpu.pluginPath())")
+        } else {
+            print("  Not running on a TPU VM")
+            print("  Available backends: \(Backend.availableBackends.map { $0.rawValue })")
+        }
+    }
+}
+
+// MARK: - Device
+
+/// Represents a device for computation
+public struct Device: Hashable, Sendable, CustomStringConvertible {
+    /// Device type
+    public let backend: Backend
+
+    /// Device index (for multi-device setups)
+    public let index: Int
+
+    /// Default device (CPU:0)
+    public static let `default` = Device(backend: .cpu, index: 0)
+
+    public var description: String {
+        "\(backend.rawValue.uppercased()):\(index)"
+    }
+
+    public init(backend: Backend, index: Int = 0) {
+        self.backend = backend
+        self.index = index
+    }
+}
+
+// MARK: - Errors
+
+/// Errors from XLA runtime operations
+public enum XLAError: Error, CustomStringConvertible {
+    case clientCreationFailed(String)
+    case compilationFailed(String)
+    case executionFailed(String)
+    case bufferCreationFailed(String)
+    case bufferTransferFailed(String)
+    case deviceNotFound(String)
+    case notImplemented(String)
+    case noDeviceAvailable
+
+    public var description: String {
+        switch self {
+        case .clientCreationFailed(let msg): return "Client creation failed: \(msg)"
+        case .compilationFailed(let msg): return "Compilation failed: \(msg)"
+        case .executionFailed(let msg): return "Execution failed: \(msg)"
+        case .bufferCreationFailed(let msg): return "Buffer creation failed: \(msg)"
+        case .bufferTransferFailed(let msg): return "Buffer transfer failed: \(msg)"
+        case .deviceNotFound(let msg): return "Device not found: \(msg)"
+        case .notImplemented(let msg): return "Not implemented: \(msg)"
+        case .noDeviceAvailable: return "No device available"
+        }
+    }
+}
+
+// MARK: - Element Types
+
+/// PJRT element types matching StableHLO types
+public enum ElementType: Sendable {
+    case bool
+    case int8, int16, int32, int64
+    case uint8, uint16, uint32, uint64
+    case float16, float32, float64
+    case bfloat16
+    case complex64, complex128
+
+    /// Size in bytes
+    public var sizeInBytes: Int {
+        switch self {
+        case .bool, .int8, .uint8: return 1
+        case .int16, .uint16, .float16, .bfloat16: return 2
+        case .int32, .uint32, .float32: return 4
+        case .int64, .uint64, .float64, .complex64: return 8
+        case .complex128: return 16
+        }
+    }
+
+    /// Convert to C API type
+    var toCType: SW_PJRT_Buffer_Type {
+        switch self {
+        case .bool: return SW_PJRT_Buffer_Type_PRED
+        case .int8: return SW_PJRT_Buffer_Type_S8
+        case .int16: return SW_PJRT_Buffer_Type_S16
+        case .int32: return SW_PJRT_Buffer_Type_S32
+        case .int64: return SW_PJRT_Buffer_Type_S64
+        case .uint8: return SW_PJRT_Buffer_Type_U8
+        case .uint16: return SW_PJRT_Buffer_Type_U16
+        case .uint32: return SW_PJRT_Buffer_Type_U32
+        case .uint64: return SW_PJRT_Buffer_Type_U64
+        case .float16: return SW_PJRT_Buffer_Type_F16
+        case .float32: return SW_PJRT_Buffer_Type_F32
+        case .float64: return SW_PJRT_Buffer_Type_F64
+        case .bfloat16: return SW_PJRT_Buffer_Type_BF16
+        case .complex64: return SW_PJRT_Buffer_Type_C64
+        case .complex128: return SW_PJRT_Buffer_Type_C128
+        }
+    }
+}
+
+// MARK: - PJRTClient
+
+/// Client for managing devices and compiling programs
+public final class PJRTClient: @unchecked Sendable {
+
+    /// The backend this client uses
+    public let backend: Backend
+
+    /// Opaque handle to PJRT_Client
+    private var handle: UnsafeMutableRawPointer?
+
+    /// Available devices
+    public private(set) var devices: [PJRTDevice] = []
+
+    /// Platform name
+    public private(set) var platformName: String = ""
+
+    private init(backend: Backend) {
+        self.backend = backend
+    }
+
+    deinit {
+        if let handle = handle {
+            PJRT_DestroyClient(handle)
+        }
+    }
+
+    /// Create a client for the specified backend
+    public static func create(backend: Backend = .cpu) throws -> PJRTClient {
+        let client = PJRTClient(backend: backend)
+
+        // Load the PJRT plugin
+        let pluginPath = backend.pluginPath()
+        let errorCode = PJRT_LoadPlugin(pluginPath)
+
+        if errorCode != SW_PJRT_Error_OK {
+            if let errorMsg = PJRT_GetLastError() {
+                throw XLAError.clientCreationFailed("Failed to load plugin '\(pluginPath)': \(String(cString: errorMsg))")
+            }
+            throw XLAError.clientCreationFailed("Failed to load plugin '\(pluginPath)': error code \(errorCode.rawValue)")
+        }
+
+        // Create the client
+        var clientHandle: UnsafeMutableRawPointer?
+        let createError = PJRT_CreateClient(&clientHandle)
+
+        if createError != SW_PJRT_Error_OK {
+            throw XLAError.clientCreationFailed("PJRT_CreateClient failed with code \(createError.rawValue)")
+        }
+
+        guard let handle = clientHandle else {
+            throw XLAError.clientCreationFailed("PJRT_CreateClient returned NULL")
+        }
+
+        client.handle = handle
+
+        // Get platform name
+        var namePtr: UnsafePointer<CChar>?
+        if PJRT_GetPlatformName(handle, &namePtr) == SW_PJRT_Error_OK, let name = namePtr {
+            client.platformName = String(cString: name)
+        }
+
+        // Enumerate devices
+        var devicesPtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+        var numDevices: Int = 0
+
+        if PJRT_GetAddressableDevices(handle, &devicesPtr, &numDevices) == SW_PJRT_Error_OK {
+            if let devices = devicesPtr {
+                for i in 0..<numDevices {
+                    if let deviceHandle = devices[i] {
+                        var deviceId: Int32 = 0
+                        var kindPtr: UnsafePointer<CChar>?
+
+                        PJRT_GetDeviceId(deviceHandle, &deviceId)
+                        PJRT_GetDeviceKind(deviceHandle, &kindPtr)
+
+                        let kind = kindPtr.map { String(cString: $0) } ?? "unknown"
+                        let device = PJRTDevice(
+                            id: Int(deviceId),
+                            kind: kind,
+                            client: client,
+                            handle: deviceHandle
+                        )
+                        client.devices.append(device)
+                    }
+                }
+            }
+        }
+
+        return client
+    }
+
+    /// Get the default device
+    public var defaultDevice: PJRTDevice? {
+        devices.first
+    }
+
+    /// Create a buffer from host data
+    public func createBuffer<T>(
+        _ data: [T],
+        shape: [Int],
+        elementType: ElementType,
+        device: PJRTDevice? = nil
+    ) throws -> PJRTBuffer {
+        let targetDevice = device ?? defaultDevice
+        guard let targetDevice = targetDevice else {
+            throw XLAError.noDeviceAvailable
+        }
+
+        guard let clientHandle = handle, let deviceHandle = targetDevice.handle else {
+            throw XLAError.bufferCreationFailed("Invalid handles")
+        }
+
+        let dims = shape.map { Int64($0) }
+        var bufferHandle: UnsafeMutableRawPointer?
+
+        let errorCode = data.withUnsafeBytes { dataPtr in
+            dims.withUnsafeBufferPointer { dimsPtr in
+                PJRT_CreateBuffer(
+                    clientHandle,
+                    dataPtr.baseAddress,
+                    elementType.toCType,
+                    dimsPtr.baseAddress,
+                    dims.count,
+                    deviceHandle,
+                    &bufferHandle
+                )
+            }
+        }
+
+        if errorCode != SW_PJRT_Error_OK {
+            throw XLAError.bufferCreationFailed("PJRT_CreateBuffer failed with code \(errorCode.rawValue)")
+        }
+
+        guard let buffer = bufferHandle else {
+            throw XLAError.bufferCreationFailed("PJRT_CreateBuffer returned NULL")
+        }
+
+        return PJRTBuffer(
+            handle: buffer,
+            shape: shape,
+            elementType: elementType,
+            device: targetDevice
+        )
+    }
+
+    /// Compile StableHLO MLIR to an executable
+    public func compile(_ mlir: String) throws -> PJRTExecutable {
+        guard let clientHandle = handle else {
+            throw XLAError.compilationFailed("Client not initialized")
+        }
+
+        var executableHandle: UnsafeMutableRawPointer?
+        let errorCode = PJRT_CompileWrapper(clientHandle, mlir, &executableHandle)
+
+        if errorCode != SW_PJRT_Error_OK {
+            throw XLAError.compilationFailed("Compilation failed with code \(errorCode.rawValue)")
+        }
+
+        guard let executable = executableHandle else {
+            throw XLAError.compilationFailed("PJRT_Compile returned NULL")
+        }
+
+        return PJRTExecutable(
+            handle: executable,
+            client: self,
+            devices: devices
+        )
+    }
+}
+
+// MARK: - PJRTDevice
+
+/// Represents a PJRT device
+public class PJRTDevice: @unchecked Sendable {
+    public let id: Int
+    public let kind: String
+    public weak var client: PJRTClient?
+    internal var handle: UnsafeMutableRawPointer?
+
+    init(id: Int, kind: String, client: PJRTClient, handle: UnsafeMutableRawPointer?) {
+        self.id = id
+        self.kind = kind
+        self.client = client
+        self.handle = handle
+    }
+
+    public var description: String {
+        "\(kind):\(id)"
+    }
+}
+
+// MARK: - PJRTBuffer
+
+/// On-device data buffer
+public final class PJRTBuffer: @unchecked Sendable {
+
+    internal var handle: UnsafeMutableRawPointer?
+    public let shape: [Int]
+    public let elementType: ElementType
+    public let device: PJRTDevice
+
+    public var elementCount: Int {
+        shape.isEmpty ? 1 : shape.reduce(1, *)
+    }
+
+    public var sizeInBytes: Int {
+        elementCount * elementType.sizeInBytes
+    }
+
+    init(handle: UnsafeMutableRawPointer, shape: [Int], elementType: ElementType, device: PJRTDevice) {
+        self.handle = handle
+        self.shape = shape
+        self.elementType = elementType
+        self.device = device
+    }
+
+    deinit {
+        if let handle = handle {
+            PJRT_DestroyBuffer(handle)
+        }
+    }
+
+    /// Copy buffer contents to host (synchronous)
+    public func toHost<T>(_ type: T.Type) throws -> [T] {
+        guard let bufferHandle = handle else {
+            throw XLAError.bufferTransferFailed("Buffer handle not available")
+        }
+
+        // Allocate raw memory and copy data from device
+        let rawBuffer = UnsafeMutableRawPointer.allocate(
+            byteCount: sizeInBytes,
+            alignment: MemoryLayout<T>.alignment
+        )
+        defer { rawBuffer.deallocate() }
+
+        let errorCode = PJRT_BufferToHost(bufferHandle, rawBuffer, sizeInBytes)
+
+        if errorCode != SW_PJRT_Error_OK {
+            throw XLAError.bufferTransferFailed("Transfer failed with code \(errorCode.rawValue)")
+        }
+
+        // Convert to typed array
+        let typedPointer = rawBuffer.bindMemory(to: T.self, capacity: elementCount)
+        return Array(UnsafeBufferPointer(start: typedPointer, count: elementCount))
+    }
+
+    /// Copy buffer to Float array
+    public func toFloatArray() throws -> [Float] {
+        try toHost(Float.self)
+    }
+}
+
+// MARK: - PJRTExecutable
+
+/// Compiled XLA program ready for execution
+public final class PJRTExecutable: @unchecked Sendable {
+
+    internal var handle: UnsafeMutableRawPointer?
+    public weak var client: PJRTClient?
+    public let devices: [PJRTDevice]
+
+    public private(set) var executionCount: Int = 0
+
+    init(handle: UnsafeMutableRawPointer, client: PJRTClient, devices: [PJRTDevice]) {
+        self.handle = handle
+        self.client = client
+        self.devices = devices
+    }
+
+    deinit {
+        if let handle = handle {
+            PJRT_DestroyExecutable(handle)
+        }
+    }
+
+    /// Execute the program with input buffers
+    public func execute(_ inputs: [PJRTBuffer]) throws -> [PJRTBuffer] {
+        guard let execHandle = handle else {
+            throw XLAError.executionFailed("Executable handle not available")
+        }
+
+        guard let device = devices.first else {
+            throw XLAError.noDeviceAvailable
+        }
+
+        // Collect input handles
+        var inputHandles: [UnsafeMutableRawPointer?] = inputs.map { $0.handle }
+        var outputsPtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+        var numOutputs: Int = 0
+
+        let errorCode = inputHandles.withUnsafeMutableBufferPointer { inputsPtr in
+            PJRT_ExecuteWrapper(
+                execHandle,
+                inputsPtr.baseAddress,
+                inputs.count,
+                &outputsPtr,
+                &numOutputs
+            )
+        }
+
+        if errorCode != SW_PJRT_Error_OK {
+            throw XLAError.executionFailed("Execution failed with code \(errorCode.rawValue)")
+        }
+
+        executionCount += 1
+
+        // Create output buffers
+        var outputs: [PJRTBuffer] = []
+        if let outputHandles = outputsPtr {
+            for i in 0..<numOutputs {
+                if let outputHandle = outputHandles[i] {
+                    // Query dimensions
+                    var dimsPtr: UnsafePointer<Int64>?
+                    var numDims: Int = 0
+                    PJRT_GetBufferDimensions(outputHandle, &dimsPtr, &numDims)
+
+                    var shape: [Int] = []
+                    if let dims = dimsPtr {
+                        for j in 0..<numDims {
+                            shape.append(Int(dims[j]))
+                        }
+                    }
+
+                    let buffer = PJRTBuffer(
+                        handle: outputHandle,
+                        shape: shape,
+                        elementType: .float32, // Default assumption
+                        device: device
+                    )
+                    outputs.append(buffer)
+                }
+            }
+        }
+
+        return outputs
+    }
+}
+
+// MARK: - Execution Timing
+
+/// Timing breakdown for profiled execution
+public struct ExecutionTiming: Sendable {
+    public let h2dCreateNs: UInt64
+    public let executeNs: UInt64
+    public let d2hInitiateNs: UInt64
+    public let d2hAwaitNs: UInt64
+    public let bufferDestroyNs: UInt64
+    public let totalNs: UInt64
+    public let numInputs: Int
+    public let numOutputs: Int
+
+    init(from timing: SW_PJRT_ExecutionTiming) {
+        self.h2dCreateNs = timing.h2d_create_ns
+        self.executeNs = timing.execute_ns
+        self.d2hInitiateNs = timing.d2h_initiate_ns
+        self.d2hAwaitNs = timing.d2h_await_ns
+        self.bufferDestroyNs = timing.buffer_destroy_ns
+        self.totalNs = timing.total_ns
+        self.numInputs = timing.num_inputs
+        self.numOutputs = timing.num_outputs
+    }
+
+    public var totalMs: Double {
+        Double(totalNs) / 1_000_000.0
+    }
+
+    public var executeMs: Double {
+        Double(executeNs) / 1_000_000.0
+    }
+}

@@ -1,0 +1,66 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+/.build/
+/Packages
+Package.resolved
+.swiftpm/
+xcuserdata/
+DerivedData/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.xcscmblueprint
+*.hmap
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# XLA/PJRT libraries (user-specific paths)
+*.so.local
+
+# Environment files
+.env
+.env.local
+.netrc
+
+# Generated documentation (can be rebuilt)
+docs/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Test output
+.test-results/
+coverage/
