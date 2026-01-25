@@ -1,143 +1,165 @@
 // Magma - Transformer Component Tests
 // Tests for LayerNorm, TransformerEncoderLayer, and Positional Encoding
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - LayerNorm Tests
 
-final class LayerNormTests: XCTestCase {
+@Suite("LayerNorm Tests")
+struct LayerNormTests {
 
-    func testLayerNormCreation() {
+    @Test("LayerNorm creation")
+    func layerNormCreation() {
         let ln = nn.LayerNorm(512)
-        XCTAssertEqual(ln.normalizedShape, [512])
-        XCTAssertEqual(ln.eps, 1e-5)
-        XCTAssertTrue(ln.elementwiseAffine)
+        #expect(ln.normalizedShape == [512])
+        #expect(ln.eps == 1e-5)
+        #expect(ln.elementwiseAffine)
     }
 
-    func testLayerNormCreationMultiDim() {
+    @Test("LayerNorm creation multi dim")
+    func layerNormCreationMultiDim() {
         let ln = nn.LayerNorm(normalizedShape: [10, 512])
-        XCTAssertEqual(ln.normalizedShape, [10, 512])
+        #expect(ln.normalizedShape == [10, 512])
     }
 
-    func testLayerNormParameters() {
+    @Test("LayerNorm parameters")
+    func layerNormParameters() {
         let ln = nn.LayerNorm(256)
         let params = ln.parameters()
-        XCTAssertEqual(params.count, 2)  // weight and bias
-        XCTAssertEqual(params[0].shape, [256])  // weight (gamma)
-        XCTAssertEqual(params[1].shape, [256])  // bias (beta)
+        #expect(params.count == 2)  // weight and bias
+        #expect(params[0].shape == [256])  // weight (gamma)
+        #expect(params[1].shape == [256])  // bias (beta)
     }
 
-    func testLayerNormNoAffine() {
+    @Test("LayerNorm no affine")
+    func layerNormNoAffine() {
         let ln = nn.LayerNorm(256, elementwiseAffine: false)
         let params = ln.parameters()
-        XCTAssertEqual(params.count, 0)  // No learnable parameters
+        #expect(params.count == 0)  // No learnable parameters
     }
 
-    func testLayerNormForward2D() {
+    @Test("LayerNorm forward 2D")
+    func layerNormForward2D() {
         let ln = nn.LayerNorm(64)
         let x = Tensor<Float>.randn([32, 64])
         let y = ln(x)
-        XCTAssertEqual(y.shape, [32, 64])
+        #expect(y.shape == [32, 64])
     }
 
-    func testLayerNormForward3D() {
+    @Test("LayerNorm forward 3D")
+    func layerNormForward3D() {
         let ln = nn.LayerNorm(512)
         let x = Tensor<Float>.randn([4, 16, 512])
         let y = ln(x)
-        XCTAssertEqual(y.shape, [4, 16, 512])
+        #expect(y.shape == [4, 16, 512])
     }
 
-    func testLayerNormForward4D() {
+    @Test("LayerNorm forward 4D")
+    func layerNormForward4D() {
         // Normalize over last dimension only
         let ln = nn.LayerNorm(64)
         let x = Tensor<Float>.randn([2, 8, 16, 64])
         let y = ln(x)
-        XCTAssertEqual(y.shape, [2, 8, 16, 64])
+        #expect(y.shape == [2, 8, 16, 64])
     }
 
-    func testLayerNormMultipleDims() {
+    @Test("LayerNorm multiple dims")
+    func layerNormMultipleDims() {
         // Normalize over last 2 dimensions
         let ln = nn.LayerNorm(normalizedShape: [16, 64])
         let x = Tensor<Float>.randn([2, 8, 16, 64])
         let y = ln(x)
-        XCTAssertEqual(y.shape, [2, 8, 16, 64])
+        #expect(y.shape == [2, 8, 16, 64])
     }
 }
 
 // MARK: - Mean and Variance Tests
 
-final class MeanVarianceTests: XCTestCase {
+@Suite("Mean Variance Tests")
+struct MeanVarianceTests {
 
-    func testMeanWithDims() {
+    @Test("Mean with dims")
+    func meanWithDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let mean = x.mean(dims: [2], keepDims: true)
-        XCTAssertEqual(mean.shape, [4, 8, 1])
+        #expect(mean.shape == [4, 8, 1])
     }
 
-    func testMeanWithDimsNoKeep() {
+    @Test("Mean with dims no keep")
+    func meanWithDimsNoKeep() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let mean = x.mean(dims: [2], keepDims: false)
-        XCTAssertEqual(mean.shape, [4, 8])
+        #expect(mean.shape == [4, 8])
     }
 
-    func testMeanMultipleDims() {
+    @Test("Mean multiple dims")
+    func meanMultipleDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let mean = x.mean(dims: [1, 2], keepDims: true)
-        XCTAssertEqual(mean.shape, [4, 1, 1])
+        #expect(mean.shape == [4, 1, 1])
     }
 
-    func testVarianceWithDims() {
+    @Test("Variance with dims")
+    func varianceWithDims() {
         let x = Tensor<Float>.randn([4, 8, 16])
         let variance = x.variance(dims: [2], keepDims: true)
-        XCTAssertEqual(variance.shape, [4, 8, 1])
+        #expect(variance.shape == [4, 8, 1])
     }
 
-    func testVarianceWithDimsNoKeep() {
+    @Test("Variance with dims no keep")
+    func varianceWithDimsNoKeep() {
         let x = Tensor<Float>.randn([4, 8, 16])
         let variance = x.variance(dims: [2], keepDims: false)
-        XCTAssertEqual(variance.shape, [4, 8])
+        #expect(variance.shape == [4, 8])
     }
 
-    func testVarianceMultipleDims() {
+    @Test("Variance multiple dims")
+    func varianceMultipleDims() {
         let x = Tensor<Float>.randn([4, 8, 16])
         let variance = x.variance(dims: [1, 2], keepDims: true)
-        XCTAssertEqual(variance.shape, [4, 1, 1])
+        #expect(variance.shape == [4, 1, 1])
     }
 
-    func testMeanNegativeIndex() {
+    @Test("Mean negative index")
+    func meanNegativeIndex() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let mean = x.mean(dims: [-1], keepDims: true)
-        XCTAssertEqual(mean.shape, [4, 8, 1])
+        #expect(mean.shape == [4, 8, 1])
     }
 
-    func testVarianceNegativeIndex() {
+    @Test("Variance negative index")
+    func varianceNegativeIndex() {
         let x = Tensor<Float>.randn([4, 8, 16])
         let variance = x.variance(dims: [-1], keepDims: true)
-        XCTAssertEqual(variance.shape, [4, 8, 1])
+        #expect(variance.shape == [4, 8, 1])
     }
 }
 
 // MARK: - Transformer Encoder Layer Tests
 
-final class TransformerEncoderLayerTests: XCTestCase {
+@Suite("Transformer Encoder Layer Tests")
+struct TransformerEncoderLayerTests {
 
-    func testTransformerEncoderLayerCreation() {
+    @Test("TransformerEncoderLayer creation")
+    func transformerEncoderLayerCreation() {
         let layer = nn.TransformerEncoderLayer(dModel: 512, nHead: 8)
-        XCTAssertEqual(layer.dModel, 512)
-        XCTAssertEqual(layer.nHead, 8)
-        XCTAssertEqual(layer.dimFeedforward, 2048)  // 4 * dModel
+        #expect(layer.dModel == 512)
+        #expect(layer.nHead == 8)
+        #expect(layer.dimFeedforward == 2048)  // 4 * dModel
     }
 
-    func testTransformerEncoderLayerCustomFFN() {
+    @Test("TransformerEncoderLayer custom FFN")
+    func transformerEncoderLayerCustomFFN() {
         let layer = nn.TransformerEncoderLayer(dModel: 256, nHead: 4, dimFeedforward: 1024)
-        XCTAssertEqual(layer.dModel, 256)
-        XCTAssertEqual(layer.dimFeedforward, 1024)
+        #expect(layer.dModel == 256)
+        #expect(layer.dimFeedforward == 1024)
     }
 
-    func testTransformerEncoderLayerParameters() {
+    @Test("TransformerEncoderLayer parameters")
+    func transformerEncoderLayerParameters() {
         let layer = nn.TransformerEncoderLayer(dModel: 128, nHead: 4)
         let params = layer.parameters()
 
@@ -147,110 +169,126 @@ final class TransformerEncoderLayerTests: XCTestCase {
         // Linear1: 2 (weight + bias)
         // Linear2: 2 (weight + bias)
         // Total: 8 + 2 + 2 + 2 + 2 = 16
-        XCTAssertEqual(params.count, 16)
+        #expect(params.count == 16)
     }
 
-    func testTransformerEncoderLayerForward() {
+    @Test("TransformerEncoderLayer forward")
+    func transformerEncoderLayerForward() {
         let layer = nn.TransformerEncoderLayer(dModel: 128, nHead: 4)
         let x = Tensor<Float>.randn([2, 16, 128])  // [batch, seq, embed]
         let y = layer(x)
-        XCTAssertEqual(y.shape, [2, 16, 128])
+        #expect(y.shape == [2, 16, 128])
     }
 
-    func testTransformerEncoderLayerPreLN() {
+    @Test("TransformerEncoderLayer pre-LN")
+    func transformerEncoderLayerPreLN() {
         let layer = nn.TransformerEncoderLayer(dModel: 128, nHead: 4, normFirst: true)
-        XCTAssertTrue(layer.normFirst)
+        #expect(layer.normFirst)
         let x = Tensor<Float>.randn([2, 16, 128])
         let y = layer(x)
-        XCTAssertEqual(y.shape, [2, 16, 128])
+        #expect(y.shape == [2, 16, 128])
     }
 
-    func testTransformerEncoderLayerGELU() {
+    @Test("TransformerEncoderLayer GELU")
+    func transformerEncoderLayerGELU() {
         let layer = nn.TransformerEncoderLayer(dModel: 128, nHead: 4, activation: .gelu)
         let x = Tensor<Float>.randn([2, 16, 128])
         let y = layer(x)
-        XCTAssertEqual(y.shape, [2, 16, 128])
+        #expect(y.shape == [2, 16, 128])
     }
 
-    func testTransformerEncoderLayerWithMask() {
+    @Test("TransformerEncoderLayer with mask")
+    func transformerEncoderLayerWithMask() {
         let layer = nn.TransformerEncoderLayer(dModel: 128, nHead: 4)
         let x = Tensor<Float>.randn([2, 16, 128])
         let mask = Tensor<Float>.ones([2, 4, 16, 16])  // [batch, heads, seq, seq]
         let y = layer.forward(src: x, srcMask: mask)
-        XCTAssertEqual(y.shape, [2, 16, 128])
+        #expect(y.shape == [2, 16, 128])
     }
 }
 
 // MARK: - Positional Encoding Tests
 
-final class PositionalEncodingTests: XCTestCase {
+@Suite("Positional Encoding Tests")
+struct PositionalEncodingTests {
 
-    func testSinusoidalPositionalEncodingCreation() {
+    @Test("SinusoidalPositionalEncoding creation")
+    func sinusoidalPositionalEncodingCreation() {
         let pe = nn.SinusoidalPositionalEncoding(dModel: 512, maxLen: 1000)
-        XCTAssertEqual(pe.dModel, 512)
-        XCTAssertEqual(pe.maxLen, 1000)
-        XCTAssertEqual(pe.pe.shape, [1, 1000, 512])
+        #expect(pe.dModel == 512)
+        #expect(pe.maxLen == 1000)
+        #expect(pe.pe.shape == [1, 1000, 512])
     }
 
-    func testSinusoidalPositionalEncodingForward() {
+    @Test("SinusoidalPositionalEncoding forward")
+    func sinusoidalPositionalEncodingForward() {
         let pe = nn.SinusoidalPositionalEncoding(dModel: 256, maxLen: 500)
         let x = Tensor<Float>.randn([4, 100, 256])  // seq < maxLen
         let y = pe(x)
-        XCTAssertEqual(y.shape, [4, 100, 256])
+        #expect(y.shape == [4, 100, 256])
     }
 
-    func testSinusoidalPositionalEncodingFullLength() {
+    @Test("SinusoidalPositionalEncoding full length")
+    func sinusoidalPositionalEncodingFullLength() {
         let pe = nn.SinusoidalPositionalEncoding(dModel: 64, maxLen: 50)
         let x = Tensor<Float>.randn([2, 50, 64])  // seq == maxLen
         let y = pe(x)
-        XCTAssertEqual(y.shape, [2, 50, 64])
+        #expect(y.shape == [2, 50, 64])
     }
 
-    func testSinusoidalPositionalEncodingNoParameters() {
+    @Test("SinusoidalPositionalEncoding no parameters")
+    func sinusoidalPositionalEncodingNoParameters() {
         let pe = nn.SinusoidalPositionalEncoding(dModel: 128)
         let params = pe.parameters()
-        XCTAssertEqual(params.count, 0)  // Sinusoidal PE has no learned parameters
+        #expect(params.count == 0)  // Sinusoidal PE has no learned parameters
     }
 
-    func testLearnedPositionalEmbeddingCreation() {
+    @Test("LearnedPositionalEmbedding creation")
+    func learnedPositionalEmbeddingCreation() {
         let pe = nn.LearnedPositionalEmbedding(dModel: 512, maxLen: 512)
-        XCTAssertEqual(pe.dModel, 512)
-        XCTAssertEqual(pe.maxLen, 512)
+        #expect(pe.dModel == 512)
+        #expect(pe.maxLen == 512)
     }
 
-    func testLearnedPositionalEmbeddingForward() {
+    @Test("LearnedPositionalEmbedding forward")
+    func learnedPositionalEmbeddingForward() {
         let pe = nn.LearnedPositionalEmbedding(dModel: 256, maxLen: 200)
         let x = Tensor<Float>.randn([4, 100, 256])
         let y = pe(x)
-        XCTAssertEqual(y.shape, [4, 100, 256])
+        #expect(y.shape == [4, 100, 256])
     }
 
-    func testLearnedPositionalEmbeddingParameters() {
+    @Test("LearnedPositionalEmbedding parameters")
+    func learnedPositionalEmbeddingParameters() {
         let pe = nn.LearnedPositionalEmbedding(dModel: 128, maxLen: 100)
         let params = pe.parameters()
-        XCTAssertEqual(params.count, 1)  // Just the embedding
-        XCTAssertEqual(params[0].shape, [1, 100, 128])
+        #expect(params.count == 1)  // Just the embedding
+        #expect(params[0].shape == [1, 100, 128])
     }
 }
 
 // MARK: - Transformer Decoder Layer Tests
 
-final class TransformerDecoderLayerTests: XCTestCase {
+@Suite("Transformer Decoder Layer Tests")
+struct TransformerDecoderLayerTests {
 
-    func testTransformerDecoderLayerCreation() {
+    @Test("TransformerDecoderLayer creation")
+    func transformerDecoderLayerCreation() {
         let layer = nn.TransformerDecoderLayer(dModel: 512, nHead: 8)
-        XCTAssertEqual(layer.dModel, 512)
-        XCTAssertEqual(layer.nHead, 8)
-        XCTAssertEqual(layer.dimFeedforward, 2048)  // 4 * dModel
+        #expect(layer.dModel == 512)
+        #expect(layer.nHead == 8)
+        #expect(layer.dimFeedforward == 2048)  // 4 * dModel
     }
 
-    func testTransformerDecoderLayerCustomFFN() {
+    @Test("TransformerDecoderLayer custom FFN")
+    func transformerDecoderLayerCustomFFN() {
         let layer = nn.TransformerDecoderLayer(dModel: 256, nHead: 4, dimFeedforward: 1024)
-        XCTAssertEqual(layer.dModel, 256)
-        XCTAssertEqual(layer.dimFeedforward, 1024)
+        #expect(layer.dModel == 256)
+        #expect(layer.dimFeedforward == 1024)
     }
 
-    func testTransformerDecoderLayerParameters() {
+    @Test("TransformerDecoderLayer parameters")
+    func transformerDecoderLayerParameters() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4)
         let params = layer.parameters()
 
@@ -262,88 +300,100 @@ final class TransformerDecoderLayerTests: XCTestCase {
         // Linear1: 2 (weight + bias)
         // Linear2: 2 (weight + bias)
         // Total: 8 + 8 + 2 + 2 + 2 + 2 + 2 = 26
-        XCTAssertEqual(params.count, 26)
+        #expect(params.count == 26)
     }
 
-    func testTransformerDecoderLayerForward() {
+    @Test("TransformerDecoderLayer forward")
+    func transformerDecoderLayerForward() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4)
         let tgt = Tensor<Float>.randn([2, 10, 128])  // [batch, tgt_seq, embed]
         let memory = Tensor<Float>.randn([2, 16, 128])  // [batch, src_seq, embed]
         let y = layer(tgt: tgt, memory: memory)
-        XCTAssertEqual(y.shape, [2, 10, 128])
+        #expect(y.shape == [2, 10, 128])
     }
 
-    func testTransformerDecoderLayerPreLN() {
+    @Test("TransformerDecoderLayer pre-LN")
+    func transformerDecoderLayerPreLN() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4, normFirst: true)
-        XCTAssertTrue(layer.normFirst)
+        #expect(layer.normFirst)
         let tgt = Tensor<Float>.randn([2, 10, 128])
         let memory = Tensor<Float>.randn([2, 16, 128])
         let y = layer(tgt: tgt, memory: memory)
-        XCTAssertEqual(y.shape, [2, 10, 128])
+        #expect(y.shape == [2, 10, 128])
     }
 
-    func testTransformerDecoderLayerGELU() {
+    @Test("TransformerDecoderLayer GELU")
+    func transformerDecoderLayerGELU() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4, activation: .gelu)
         let tgt = Tensor<Float>.randn([2, 10, 128])
         let memory = Tensor<Float>.randn([2, 16, 128])
         let y = layer(tgt: tgt, memory: memory)
-        XCTAssertEqual(y.shape, [2, 10, 128])
+        #expect(y.shape == [2, 10, 128])
     }
 
-    func testTransformerDecoderLayerWithCausalMask() {
+    @Test("TransformerDecoderLayer with causal mask")
+    func transformerDecoderLayerWithCausalMask() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4)
         let tgt = Tensor<Float>.randn([2, 10, 128])
         let memory = Tensor<Float>.randn([2, 16, 128])
         let causalMask = nn.generateCausalMask(size: 10)  // Causal mask for target
         let y = layer.forward(tgt: tgt, memory: memory, tgtMask: causalMask)
-        XCTAssertEqual(y.shape, [2, 10, 128])
+        #expect(y.shape == [2, 10, 128])
     }
 
-    func testTransformerDecoderLayerWithMemoryMask() {
+    @Test("TransformerDecoderLayer with memory mask")
+    func transformerDecoderLayerWithMemoryMask() {
         let layer = nn.TransformerDecoderLayer(dModel: 128, nHead: 4)
         let tgt = Tensor<Float>.randn([2, 10, 128])
         let memory = Tensor<Float>.randn([2, 16, 128])
         let memoryMask = Tensor<Float>.zeros([10, 16])  // Attend to all encoder positions
         let y = layer.forward(tgt: tgt, memory: memory, memoryMask: memoryMask)
-        XCTAssertEqual(y.shape, [2, 10, 128])
+        #expect(y.shape == [2, 10, 128])
     }
 
-    func testTransformerDecoderLayerDifferentSeqLens() {
+    @Test("TransformerDecoderLayer different seq lens")
+    func transformerDecoderLayerDifferentSeqLens() {
         // Test with different source and target sequence lengths
         let layer = nn.TransformerDecoderLayer(dModel: 64, nHead: 2)
         let tgt = Tensor<Float>.randn([4, 8, 64])   // shorter target
         let memory = Tensor<Float>.randn([4, 32, 64])  // longer source
         let y = layer(tgt: tgt, memory: memory)
-        XCTAssertEqual(y.shape, [4, 8, 64])
+        #expect(y.shape == [4, 8, 64])
     }
 }
 
 // MARK: - Causal Mask Tests
 
-final class CausalMaskTests: XCTestCase {
+@Suite("Causal Mask Tests")
+struct CausalMaskTests {
 
-    func testGenerateCausalMaskShape() {
+    @Test("Generate causal mask shape")
+    func generateCausalMaskShape() {
         let mask = nn.generateCausalMask(size: 10)
-        XCTAssertEqual(mask.shape, [10, 10])
+        #expect(mask.shape == [10, 10])
     }
 
-    func testGenerateCausalMaskSmall() {
+    @Test("Generate causal mask small")
+    func generateCausalMaskSmall() {
         let mask = nn.generateCausalMask(size: 4)
-        XCTAssertEqual(mask.shape, [4, 4])
+        #expect(mask.shape == [4, 4])
         // The mask should be lower triangular with 0s (attend) and -inf (don't attend)
     }
 
-    func testGenerateCausalMaskLarge() {
+    @Test("Generate causal mask large")
+    func generateCausalMaskLarge() {
         let mask = nn.generateCausalMask(size: 512)
-        XCTAssertEqual(mask.shape, [512, 512])
+        #expect(mask.shape == [512, 512])
     }
 }
 
 // MARK: - Integration Tests
 
-final class TransformerIntegrationTests: XCTestCase {
+@Suite("Transformer Integration Tests")
+struct TransformerIntegrationTests {
 
-    func testTransformerEncoderStack() {
+    @Test("Transformer encoder stack")
+    func transformerEncoderStack() {
         // Stack multiple encoder layers
         let dModel = 128
         let nHead = 4
@@ -358,10 +408,11 @@ final class TransformerIntegrationTests: XCTestCase {
         for layer in layers {
             x = layer(x)
         }
-        XCTAssertEqual(x.shape, [2, 16, dModel])
+        #expect(x.shape == [2, 16, dModel])
     }
 
-    func testTransformerWithPositionalEncoding() {
+    @Test("Transformer with positional encoding")
+    func transformerWithPositionalEncoding() {
         let dModel = 128
         let seqLen = 32
         let batch = 4
@@ -373,10 +424,11 @@ final class TransformerIntegrationTests: XCTestCase {
         x = posEnc(x)  // Add positional encoding
         let y = encoder(x)
 
-        XCTAssertEqual(y.shape, [batch, seqLen, dModel])
+        #expect(y.shape == [batch, seqLen, dModel])
     }
 
-    func testLayerNormInTransformer() {
+    @Test("LayerNorm in transformer")
+    func layerNormInTransformer() {
         // Test that LayerNorm works correctly within transformer
         let dModel = 64
         let ln = nn.LayerNorm(dModel)
@@ -386,10 +438,11 @@ final class TransformerIntegrationTests: XCTestCase {
         let normalized = ln(x)
         let encoded = encoder(normalized)
 
-        XCTAssertEqual(encoded.shape, [2, 8, dModel])
+        #expect(encoded.shape == [2, 8, dModel])
     }
 
-    func testPreLNTransformerEncoder() {
+    @Test("Pre-LN transformer encoder")
+    func preLNTransformerEncoder() {
         // Pre-LN is often more stable for deep transformers
         let dModel = 128
         let numLayers = 6
@@ -412,10 +465,11 @@ final class TransformerIntegrationTests: XCTestCase {
         let finalLN = nn.LayerNorm(dModel)
         x = finalLN(x)
 
-        XCTAssertEqual(x.shape, [2, 16, dModel])
+        #expect(x.shape == [2, 16, dModel])
     }
 
-    func testTransformerParameterCount() {
+    @Test("Transformer parameter count")
+    func transformerParameterCount() {
         let dModel = 256
         let nHead = 8
         let dimFF = 1024
@@ -441,11 +495,12 @@ final class TransformerIntegrationTests: XCTestCase {
         // Linear2: dimFF * dModel + dModel = 1024 * 256 + 256 = 262400
         // Total ≈ 789760
 
-        XCTAssertTrue(totalParams > 700000)  // Sanity check
-        XCTAssertTrue(totalParams < 900000)
+        #expect(totalParams > 700000)  // Sanity check
+        #expect(totalParams < 900000)
     }
 
-    func testFullEncoderDecoderTransformer() {
+    @Test("Full encoder-decoder transformer")
+    func fullEncoderDecoderTransformer() {
         // Test a complete encoder-decoder transformer architecture
         let dModel = 128
         let nHead = 4
@@ -487,10 +542,11 @@ final class TransformerIntegrationTests: XCTestCase {
             tgt = layer.forward(tgt: tgt, memory: memory, tgtMask: causalMask)
         }
 
-        XCTAssertEqual(tgt.shape, [2, 10, dModel])
+        #expect(tgt.shape == [2, 10, dModel])
     }
 
-    func testDecoderStack() {
+    @Test("Decoder stack")
+    func decoderStack() {
         // Stack multiple decoder layers
         let dModel = 128
         let nHead = 4
@@ -507,10 +563,11 @@ final class TransformerIntegrationTests: XCTestCase {
         for layer in layers {
             tgt = layer(tgt: tgt, memory: memory)
         }
-        XCTAssertEqual(tgt.shape, [2, 16, dModel])
+        #expect(tgt.shape == [2, 16, dModel])
     }
 
-    func testDecoderParameterCount() {
+    @Test("Decoder parameter count")
+    func decoderParameterCount() {
         let dModel = 256
         let nHead = 8
         let dimFF = 1024
@@ -539,7 +596,7 @@ final class TransformerIntegrationTests: XCTestCase {
         // Linear2: dimFF * dModel + dModel = 262400
         // Total ≈ 1053440
 
-        XCTAssertTrue(totalParams > 1000000)  // Sanity check
-        XCTAssertTrue(totalParams < 1200000)
+        #expect(totalParams > 1000000)  // Sanity check
+        #expect(totalParams < 1200000)
     }
 }

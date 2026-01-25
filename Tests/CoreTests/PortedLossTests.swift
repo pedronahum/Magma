@@ -1,322 +1,364 @@
 // Magma - Ported Loss Functions Tests
 // Tests for loss functions ported from S4TF
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - L1 Loss Tests
 
-final class L1LossTests: XCTestCase {
+@Suite("L1 Loss Tests")
+struct L1LossTests {
 
-    func testL1LossMeanReduction() {
+    @Test("L1 loss mean reduction")
+    func l1LossMeanReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l1Loss(predicted: predicted, expected: expected, reduction: .mean)
 
         // L1 loss of all 1s vs all 0s = mean(|1 - 0|) = 1.0
-        XCTAssertEqual(loss.shape, [])  // Scalar output
+        #expect(loss.shape == [])  // Scalar output
     }
 
-    func testL1LossSumReduction() {
+    @Test("L1 loss sum reduction")
+    func l1LossSumReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l1Loss(predicted: predicted, expected: expected, reduction: .sum)
 
-        XCTAssertEqual(loss.shape, [])  // Scalar output
+        #expect(loss.shape == [])  // Scalar output
     }
 
-    func testL1LossNoReduction() {
+    @Test("L1 loss no reduction")
+    func l1LossNoReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l1Loss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])  // Same shape as input
+        #expect(loss.shape == [32, 10])  // Same shape as input
     }
 }
 
 // MARK: - L2 Loss Tests
 
-final class L2LossTests: XCTestCase {
+@Suite("L2 Loss Tests")
+struct L2LossTests {
 
-    func testL2LossMeanReduction() {
+    @Test("L2 loss mean reduction")
+    func l2LossMeanReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l2Loss(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testL2LossSumReduction() {
+    @Test("L2 loss sum reduction")
+    func l2LossSumReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l2Loss(predicted: predicted, expected: expected, reduction: .sum)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testL2LossNoReduction() {
+    @Test("L2 loss no reduction")
+    func l2LossNoReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = l2Loss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])
+        #expect(loss.shape == [32, 10])
     }
 }
 
 // MARK: - Mean Absolute Error Tests
 
-final class MeanAbsoluteErrorTests: XCTestCase {
+@Suite("Mean Absolute Error Tests")
+struct MeanAbsoluteErrorTests {
 
-    func testMeanAbsoluteError() {
+    @Test("Mean absolute error")
+    func meanAbsoluteError_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = meanAbsoluteError(predicted: predicted, expected: expected)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Mean Squared Error Tests
 
-final class MeanSquaredErrorTests: XCTestCase {
+@Suite("Mean Squared Error Tests")
+struct MeanSquaredErrorTests {
 
-    func testMeanSquaredError() {
+    @Test("Mean squared error")
+    func meanSquaredError_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = meanSquaredError(predicted: predicted, expected: expected)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Hinge Loss Tests
 
-final class HingeLossTests: XCTestCase {
+@Suite("Hinge Loss Tests")
+struct HingeLossTests {
 
-    func testHingeLoss() {
+    @Test("Hinge loss")
+    func hingeLoss_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.ones([32, 10])  // Labels should be -1 or 1
 
         let loss = hingeLoss(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testHingeLossNoReduction() {
+    @Test("Hinge loss no reduction")
+    func hingeLossNoReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.ones([32, 10])
 
         let loss = hingeLoss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])
+        #expect(loss.shape == [32, 10])
     }
 }
 
 // MARK: - Squared Hinge Loss Tests
 
-final class SquaredHingeLossTests: XCTestCase {
+@Suite("Squared Hinge Loss Tests")
+struct SquaredHingeLossTests {
 
-    func testSquaredHingeLoss() {
+    @Test("Squared hinge loss")
+    func squaredHingeLoss_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.ones([32, 10])
 
         let loss = squaredHingeLoss(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Huber Loss Tests
 
-final class HuberLossTests: XCTestCase {
+@Suite("Huber Loss Tests")
+struct HuberLossTests {
 
-    func testHuberLoss() {
+    @Test("Huber loss")
+    func huberLoss_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = huberLoss(predicted: predicted, expected: expected, delta: 1.0, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testHuberLossCustomDelta() {
+    @Test("Huber loss custom delta")
+    func huberLossCustomDelta() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = huberLoss(predicted: predicted, expected: expected, delta: 0.5, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testHuberLossNoReduction() {
+    @Test("Huber loss no reduction")
+    func huberLossNoReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = huberLoss(predicted: predicted, expected: expected, delta: 1.0, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])
+        #expect(loss.shape == [32, 10])
     }
 }
 
 // MARK: - Log-Cosh Loss Tests
 
-final class LogCoshLossTests: XCTestCase {
+@Suite("Log-Cosh Loss Tests")
+struct LogCoshLossTests {
 
-    func testLogCoshLoss() {
+    @Test("Log-cosh loss")
+    func logCoshLoss_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = logCoshLoss(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testLogCoshLossNoReduction() {
+    @Test("Log-cosh loss no reduction")
+    func logCoshLossNoReduction() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.zeros([32, 10])
 
         let loss = logCoshLoss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])
+        #expect(loss.shape == [32, 10])
     }
 }
 
 // MARK: - Poisson Loss Tests
 
-final class PoissonLossTests: XCTestCase {
+@Suite("Poisson Loss Tests")
+struct PoissonLossTests {
 
-    func testPoissonLoss() {
+    @Test("Poisson loss")
+    func poissonLoss_() {
         let predicted = Tensor<Float>.ones([32, 10])  // Must be positive
         let expected = Tensor<Float>.ones([32, 10])
 
         let loss = poissonLoss(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Softmax Cross Entropy Tests
 
-final class SoftmaxCrossEntropyTests: XCTestCase {
+@Suite("Softmax Cross Entropy Tests")
+struct SoftmaxCrossEntropyTests {
 
-    func testSoftmaxCrossEntropy() {
+    @Test("Softmax cross entropy")
+    func softmaxCrossEntropy_() {
         let logits = Tensor<Float>.zeros([32, 10])
         let labels = Tensor<Float>.zeros([32, 10])
 
         let loss = softmaxCrossEntropy(logits: logits, probabilities: labels, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testSoftmaxCrossEntropyNoReduction() {
+    @Test("Softmax cross entropy no reduction")
+    func softmaxCrossEntropyNoReduction() {
         let logits = Tensor<Float>.zeros([32, 10])
         let labels = Tensor<Float>.zeros([32, 10])
 
         let loss = softmaxCrossEntropy(logits: logits, probabilities: labels, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32])  // One loss per sample
+        #expect(loss.shape == [32])  // One loss per sample
     }
 }
 
 // MARK: - Sigmoid Cross Entropy Tests
 
-final class SigmoidCrossEntropyTests: XCTestCase {
+@Suite("Sigmoid Cross Entropy Tests")
+struct SigmoidCrossEntropyTests {
 
-    func testSigmoidCrossEntropy() {
+    @Test("Sigmoid cross entropy")
+    func sigmoidCrossEntropy_() {
         let logits = Tensor<Float>.zeros([32, 10])
         let labels = Tensor<Float>.zeros([32, 10])
 
         let loss = sigmoidCrossEntropy(logits: logits, labels: labels, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testSigmoidCrossEntropyNoReduction() {
+    @Test("Sigmoid cross entropy no reduction")
+    func sigmoidCrossEntropyNoReduction() {
         let logits = Tensor<Float>.zeros([32, 10])
         let labels = Tensor<Float>.zeros([32, 10])
 
         let loss = sigmoidCrossEntropy(logits: logits, labels: labels, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32, 10])
+        #expect(loss.shape == [32, 10])
     }
 }
 
 // MARK: - KL Divergence Tests
 
-final class KLDivergenceTests: XCTestCase {
+@Suite("KL Divergence Tests")
+struct KLDivergenceTests {
 
-    func testKullbackLeiblerDivergence() {
+    @Test("Kullback-Leibler divergence")
+    func kullbackLeiblerDivergence_() {
         let predicted = Tensor<Float>.ones([32, 10])
         let expected = Tensor<Float>.ones([32, 10])
 
         let loss = kullbackLeiblerDivergence(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Cosine Distance Tests
 
-final class CosineDistanceTests: XCTestCase {
+@Suite("Cosine Distance Tests")
+struct CosineDistanceTests {
 
-    func testCosineDistance() {
+    @Test("Cosine distance")
+    func cosineDistance_() {
         let predicted = Tensor<Float>.ones([32, 128])
         let expected = Tensor<Float>.ones([32, 128])
 
         let loss = cosineDistance(predicted: predicted, expected: expected, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testCosineDistanceNoReduction() {
+    @Test("Cosine distance no reduction")
+    func cosineDistanceNoReduction() {
         let predicted = Tensor<Float>.ones([32, 128])
         let expected = Tensor<Float>.ones([32, 128])
 
         let loss = cosineDistance(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(loss.shape, [32])
+        #expect(loss.shape == [32])
     }
 }
 
 // MARK: - Contrastive Loss Tests
 
-final class ContrastiveLossTests: XCTestCase {
+@Suite("Contrastive Loss Tests")
+struct ContrastiveLossTests {
 
-    func testContrastiveLoss() {
+    @Test("Contrastive loss")
+    func contrastiveLoss_() {
         let anchor = Tensor<Float>.ones([32, 128])
         let sample = Tensor<Float>.ones([32, 128])
         let labels = Tensor<Float>.ones([32])  // 1 for similar pairs
 
         let loss = contrastiveLoss(anchor: anchor, sample: sample, labels: labels, margin: 1.0, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testContrastiveLossCustomMargin() {
+    @Test("Contrastive loss custom margin")
+    func contrastiveLossCustomMargin() {
         let anchor = Tensor<Float>.ones([32, 128])
         let sample = Tensor<Float>.ones([32, 128])
         let labels = Tensor<Float>.zeros([32])  // 0 for dissimilar pairs
 
         let loss = contrastiveLoss(anchor: anchor, sample: sample, labels: labels, margin: 2.0, reduction: .mean)
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Triplet Margin Loss Tests
 
-final class TripletMarginLossTests: XCTestCase {
+@Suite("Triplet Margin Loss Tests")
+struct TripletMarginLossTests {
 
-    func testTripletMarginLoss() {
+    @Test("Triplet margin loss")
+    func tripletMarginLoss_() {
         let anchor = Tensor<Float>.ones([32, 128])
         let positive = Tensor<Float>.ones([32, 128])
         let negative = Tensor<Float>.zeros([32, 128])
@@ -329,10 +371,11 @@ final class TripletMarginLossTests: XCTestCase {
             reduction: .mean
         )
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 
-    func testTripletMarginLossCustomMargin() {
+    @Test("Triplet margin loss custom margin")
+    func tripletMarginLossCustomMargin() {
         let anchor = Tensor<Float>.ones([32, 128])
         let positive = Tensor<Float>.ones([32, 128])
         let negative = Tensor<Float>.zeros([32, 128])
@@ -345,15 +388,17 @@ final class TripletMarginLossTests: XCTestCase {
             reduction: .mean
         )
 
-        XCTAssertEqual(loss.shape, [])
+        #expect(loss.shape == [])
     }
 }
 
 // MARK: - Loss Reduction Tests
 
-final class LossReductionTests: XCTestCase {
+@Suite("Loss Reduction Tests")
+struct LossReductionTests {
 
-    func testAllReductionTypesForL1() {
+    @Test("All reduction types for L1")
+    func allReductionTypesForL1() {
         let predicted = Tensor<Float>.ones([16, 8])
         let expected = Tensor<Float>.zeros([16, 8])
 
@@ -361,12 +406,13 @@ final class LossReductionTests: XCTestCase {
         let sumLoss = l1Loss(predicted: predicted, expected: expected, reduction: .sum)
         let noneLoss = l1Loss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(meanLoss.shape, [])
-        XCTAssertEqual(sumLoss.shape, [])
-        XCTAssertEqual(noneLoss.shape, [16, 8])
+        #expect(meanLoss.shape == [])
+        #expect(sumLoss.shape == [])
+        #expect(noneLoss.shape == [16, 8])
     }
 
-    func testAllReductionTypesForL2() {
+    @Test("All reduction types for L2")
+    func allReductionTypesForL2() {
         let predicted = Tensor<Float>.ones([16, 8])
         let expected = Tensor<Float>.zeros([16, 8])
 
@@ -374,8 +420,8 @@ final class LossReductionTests: XCTestCase {
         let sumLoss = l2Loss(predicted: predicted, expected: expected, reduction: .sum)
         let noneLoss = l2Loss(predicted: predicted, expected: expected, reduction: .none)
 
-        XCTAssertEqual(meanLoss.shape, [])
-        XCTAssertEqual(sumLoss.shape, [])
-        XCTAssertEqual(noneLoss.shape, [16, 8])
+        #expect(meanLoss.shape == [])
+        #expect(sumLoss.shape == [])
+        #expect(noneLoss.shape == [16, 8])
     }
 }

@@ -2,14 +2,15 @@
 // End-to-end tests with real XLA execution
 // Requires: MAGMA_XLA_PATH environment variable set to /opt/swiftir-deps
 
-import XCTest
+import Testing
 @testable import XLARuntime
 @testable import LazyTensor
 @testable import StableHLO
 
 /// Integration tests for the XLA execution pipeline
 /// These tests require XLA PJRT plugin to be installed
-final class XLAIntegrationTests: XCTestCase {
+@Suite("XLA Integration Tests")
+struct XLAIntegrationTests {
 
     // MARK: - Setup
 
@@ -25,60 +26,55 @@ final class XLAIntegrationTests: XCTestCase {
         }
     }()
 
-    override func setUp() {
-        super.setUp()
+    init() {
         // Reset tensor registry between tests
         TensorRegistry.shared.clearAll()
     }
 
     // MARK: - PJRT Client Tests
 
-    func testClientCreation() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Client creation")
+    func clientCreation() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
-        XCTAssertFalse(client.devices.isEmpty, "Client should have at least one device")
-        XCTAssertEqual(client.backend, .cpu)
-        XCTAssertFalse(client.platformName.isEmpty, "Platform name should not be empty")
+        #expect(!client.devices.isEmpty, "Client should have at least one device")
+        #expect(client.backend == .cpu)
+        #expect(!client.platformName.isEmpty, "Platform name should not be empty")
     }
 
-    func testDeviceEnumeration() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Device enumeration")
+    func deviceEnumeration() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
-        XCTAssertGreaterThanOrEqual(client.devices.count, 1)
+        #expect(client.devices.count >= 1)
 
         let device = client.defaultDevice
-        XCTAssertNotNil(device)
-        XCTAssertFalse(device!.kind.isEmpty, "Device kind should not be empty")
+        #expect(device != nil)
+        #expect(!device!.kind.isEmpty, "Device kind should not be empty")
     }
 
     // MARK: - Buffer Tests
 
-    func testBufferCreationFloat32() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Buffer creation Float32")
+    func bufferCreationFloat32() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
         let data: [Float] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
         let buffer = try client.createBuffer(data, shape: [2, 3], elementType: .float32)
 
-        XCTAssertEqual(buffer.shape, [2, 3])
-        XCTAssertEqual(buffer.elementType, .float32)
-        XCTAssertEqual(buffer.elementCount, 6)
-        XCTAssertEqual(buffer.sizeInBytes, 24)
+        #expect(buffer.shape == [2, 3])
+        #expect(buffer.elementType == .float32)
+        #expect(buffer.elementCount == 6)
+        #expect(buffer.sizeInBytes == 24)
     }
 
-    func testBufferRoundTrip() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Buffer round trip")
+    func bufferRoundTrip() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
         let originalData: [Float] = [1.5, 2.5, 3.5, 4.5]
@@ -86,18 +82,17 @@ final class XLAIntegrationTests: XCTestCase {
         let buffer = try client.createBuffer(originalData, shape: [2, 2], elementType: .float32)
         let retrievedData = try buffer.toFloatArray()
 
-        XCTAssertEqual(retrievedData.count, originalData.count)
+        #expect(retrievedData.count == originalData.count)
         for i in 0..<originalData.count {
-            XCTAssertEqual(retrievedData[i], originalData[i], accuracy: 1e-6)
+            #expect(abs(retrievedData[i] - originalData[i]) < 1e-6)
         }
     }
 
     // MARK: - Simple Computation Tests
 
-    func testSimpleAdd() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Simple add")
+    func simpleAdd() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -118,21 +113,20 @@ final class XLAIntegrationTests: XCTestCase {
 
         let outputs = try executable.execute([x, y])
 
-        XCTAssertEqual(outputs.count, 1)
+        #expect(outputs.count == 1)
 
         let result = try outputs[0].toFloatArray()
         let expected: [Float] = [11.0, 22.0, 33.0, 44.0]
 
-        XCTAssertEqual(result.count, expected.count)
+        #expect(result.count == expected.count)
         for i in 0..<expected.count {
-            XCTAssertEqual(result[i], expected[i], accuracy: 1e-5)
+            #expect(abs(result[i] - expected[i]) < 1e-5)
         }
     }
 
-    func testSimpleMultiply() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Simple multiply")
+    func simpleMultiply() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -153,17 +147,16 @@ final class XLAIntegrationTests: XCTestCase {
         let outputs = try executable.execute([x, y])
         let result = try outputs[0].toFloatArray()
 
-        XCTAssertEqual(result[0], 10.0, accuracy: 1e-5)
-        XCTAssertEqual(result[1], 18.0, accuracy: 1e-5)
-        XCTAssertEqual(result[2], 28.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 10.0) < 1e-5)
+        #expect(abs(result[1] - 18.0) < 1e-5)
+        #expect(abs(result[2] - 28.0) < 1e-5)
     }
 
     // MARK: - StableHLO Emission and Execution
 
-    func testEmittedMLIRExecution() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Emitted MLIR execution")
+    func emittedMLIRExecution() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -190,26 +183,25 @@ final class XLAIntegrationTests: XCTestCase {
         let mlir = emitter.emit(name: "test_add_graph")
 
         // Verify the MLIR was generated
-        XCTAssertTrue(mlir.contains("stablehlo.constant"))
-        XCTAssertTrue(mlir.contains("stablehlo.add"))
+        #expect(mlir.contains("stablehlo.constant"))
+        #expect(mlir.contains("stablehlo.add"))
 
         // Compile and execute
         let executable = try client.compile(mlir)
         let outputs = try executable.execute([])
 
-        XCTAssertEqual(outputs.count, 1)
+        #expect(outputs.count == 1)
 
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result.count, 3)
-        XCTAssertEqual(result[0], 11.0, accuracy: 1e-5)
-        XCTAssertEqual(result[1], 22.0, accuracy: 1e-5)
-        XCTAssertEqual(result[2], 33.0, accuracy: 1e-5)
+        #expect(result.count == 3)
+        #expect(abs(result[0] - 11.0) < 1e-5)
+        #expect(abs(result[1] - 22.0) < 1e-5)
+        #expect(abs(result[2] - 33.0) < 1e-5)
     }
 
-    func testMatmulExecution() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Matmul execution")
+    func matmulExecution() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -238,16 +230,15 @@ final class XLAIntegrationTests: XCTestCase {
         //        1*2 + 2*4 + 3*6 = 2 + 8 + 18 = 28
         // Row 1: 4*1 + 5*3 + 6*5 = 4 + 15 + 30 = 49
         //        4*2 + 5*4 + 6*6 = 8 + 20 + 36 = 64
-        XCTAssertEqual(result[0], 22.0, accuracy: 1e-5)
-        XCTAssertEqual(result[1], 28.0, accuracy: 1e-5)
-        XCTAssertEqual(result[2], 49.0, accuracy: 1e-5)
-        XCTAssertEqual(result[3], 64.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 22.0) < 1e-5)
+        #expect(abs(result[1] - 28.0) < 1e-5)
+        #expect(abs(result[2] - 49.0) < 1e-5)
+        #expect(abs(result[3] - 64.0) < 1e-5)
     }
 
-    func testReluExecution() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("ReLU execution")
+    func reluExecution() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -269,20 +260,19 @@ final class XLAIntegrationTests: XCTestCase {
         let outputs = try executable.execute([x])
         let result = try outputs[0].toFloatArray()
 
-        XCTAssertEqual(result[0], 0.0, accuracy: 1e-5)
-        XCTAssertEqual(result[1], 0.0, accuracy: 1e-5)
-        XCTAssertEqual(result[2], 0.0, accuracy: 1e-5)
-        XCTAssertEqual(result[3], 1.0, accuracy: 1e-5)
-        XCTAssertEqual(result[4], 2.0, accuracy: 1e-5)
-        XCTAssertEqual(result[5], 5.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 0.0) < 1e-5)
+        #expect(abs(result[1] - 0.0) < 1e-5)
+        #expect(abs(result[2] - 0.0) < 1e-5)
+        #expect(abs(result[3] - 1.0) < 1e-5)
+        #expect(abs(result[4] - 2.0) < 1e-5)
+        #expect(abs(result[5] - 5.0) < 1e-5)
     }
 
     // MARK: - Caching Tests
 
-    func testCompilationCacheHit() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Compilation cache hit")
+    func compilationCacheHit() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -305,17 +295,16 @@ final class XLAIntegrationTests: XCTestCase {
         let result1 = try exec1.execute([x])[0].toFloatArray()
         let result2 = try exec2.execute([x])[0].toFloatArray()
 
-        XCTAssertEqual(result1, result2)
-        XCTAssertEqual(result1[0], -1.0, accuracy: 1e-5)
-        XCTAssertEqual(result1[1], 2.0, accuracy: 1e-5)
+        #expect(result1 == result2)
+        #expect(abs(result1[0] - (-1.0)) < 1e-5)
+        #expect(abs(result1[1] - 2.0) < 1e-5)
     }
 
     // MARK: - Slice Tests
 
-    func testSliceExecution() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Slice execution")
+    func sliceExecution() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -339,23 +328,22 @@ final class XLAIntegrationTests: XCTestCase {
         let input = try client.createBuffer(inputData, shape: [10, 20], elementType: .float32)
 
         let outputs = try executable.execute([input])
-        XCTAssertEqual(outputs.count, 1)
+        #expect(outputs.count == 1)
 
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result.count, 50) // 5x10
+        #expect(result.count == 50) // 5x10
 
         // First element should be 0 (row 0, col 0)
-        XCTAssertEqual(result[0], 0.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 0.0) < 1e-5)
         // Element at [0,9] should be 9
-        XCTAssertEqual(result[9], 9.0, accuracy: 1e-5)
+        #expect(abs(result[9] - 9.0) < 1e-5)
         // Element at [1,0] should be 20 (row 1 starts at index 20)
-        XCTAssertEqual(result[10], 20.0, accuracy: 1e-5)
+        #expect(abs(result[10] - 20.0) < 1e-5)
     }
 
-    func testReduceMaxWithNegInfinity() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Reduce max with neg infinity")
+    func reduceMaxWithNegInfinity() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -379,13 +367,12 @@ final class XLAIntegrationTests: XCTestCase {
         let x = try client.createBuffer([-3.0, -1.0, 2.0, 5.0] as [Float], shape: [4], elementType: .float32)
         let outputs = try executable.execute([x])
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result[0], 5.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 5.0) < 1e-5)
     }
 
-    func testComplexMNISTGraph() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Complex MNIST graph")
+    func complexMNISTGraph() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -419,18 +406,17 @@ final class XLAIntegrationTests: XCTestCase {
         let images = try client.createBuffer([Float](repeating: 0, count: 60000 * 784), shape: [60000, 784], elementType: .float32)
 
         let outputs = try executable.execute([labels, images])
-        XCTAssertEqual(outputs.count, 1)
+        #expect(outputs.count == 1)
 
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result.count, 1)
+        #expect(result.count == 1)
         // With all zeros, output should be 0
-        XCTAssertEqual(result[0], 0.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 0.0) < 1e-5)
     }
 
-    func testSoftmaxWithReduceMax() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Softmax with reduce max")
+    func softmaxWithReduceMax() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -466,15 +452,14 @@ final class XLAIntegrationTests: XCTestCase {
         let x = try client.createBuffer([Float](repeating: 0, count: 64 * 10), shape: [64, 10], elementType: .float32)
         let outputs = try executable.execute([x])
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result.count, 640)
+        #expect(result.count == 640)
         // Softmax of zeros should be uniform: 0.1 for each element
-        XCTAssertEqual(result[0], 0.1, accuracy: 1e-5)
+        #expect(abs(result[0] - 0.1) < 1e-5)
     }
 
-    func testMinimalSliceReduce() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Minimal slice reduce")
+    func minimalSliceReduce() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -495,13 +480,12 @@ final class XLAIntegrationTests: XCTestCase {
         """
 
         let executable = try client.compile(mlir)
-        XCTAssertNotNil(executable)
+        #expect(executable != nil)
     }
 
-    func testMNISTGradientMLIR() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("MNIST gradient MLIR")
+    func mnistGradientMLIR() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -664,13 +648,12 @@ final class XLAIntegrationTests: XCTestCase {
         let executable = try client.compile(mlir)
         // We can't really run this since it requires 60000x10 and 60000x784 inputs
         // Just verify it compiles
-        XCTAssertNotNil(executable)
+        #expect(executable != nil)
     }
 
-    func testBoolToFloatConvert() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Bool to float convert")
+    func boolToFloatConvert() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -693,16 +676,15 @@ final class XLAIntegrationTests: XCTestCase {
         let result = try outputs[0].toFloatArray()
 
         // ReLU-like behavior: x if x > 0, else 0
-        XCTAssertEqual(result[0], 0.0, accuracy: 1e-5)  // -3.0 * 0.0 = 0
-        XCTAssertEqual(result[1], 0.0, accuracy: 1e-5)  // -1.0 * 0.0 = 0
-        XCTAssertEqual(result[2], 2.0, accuracy: 1e-5)  // 2.0 * 1.0 = 2
-        XCTAssertEqual(result[3], 5.0, accuracy: 1e-5)  // 5.0 * 1.0 = 5
+        #expect(abs(result[0] - 0.0) < 1e-5)  // -3.0 * 0.0 = 0
+        #expect(abs(result[1] - 0.0) < 1e-5)  // -1.0 * 0.0 = 0
+        #expect(abs(result[2] - 2.0) < 1e-5)  // 2.0 * 1.0 = 2
+        #expect(abs(result[3] - 5.0) < 1e-5)  // 5.0 * 1.0 = 5
     }
 
-    func testFullMNISTForwardPassMLIR() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Full MNIST forward pass MLIR")
+    func fullMNISTForwardPassMLIR() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -775,18 +757,17 @@ final class XLAIntegrationTests: XCTestCase {
         let images = try client.createBuffer([Float](repeating: 0, count: 60000 * 784), shape: [60000, 784], elementType: .float32)
 
         let outputs = try executable.execute([labels, images])
-        XCTAssertEqual(outputs.count, 1)
+        #expect(outputs.count == 1)
 
         let result = try outputs[0].toFloatArray()
-        XCTAssertEqual(result.count, 1)
+        #expect(result.count == 1)
     }
 
     // MARK: - Error Handling Tests
 
-    func testInvalidMLIRCompilation() throws {
-        guard Self.xlaAvailable else {
-            throw XCTSkip("XLA PJRT plugin not available")
-        }
+    @Test("Invalid MLIR compilation")
+    func invalidMLIRCompilation() throws {
+        try #require(Self.xlaAvailable, "XLA PJRT plugin not available")
 
         let client = try PJRTClient.create(backend: .cpu)
 
@@ -794,8 +775,8 @@ final class XLAIntegrationTests: XCTestCase {
         this is not valid MLIR at all
         """
 
-        XCTAssertThrowsError(try client.compile(invalidMlir)) { error in
-            XCTAssertTrue(error is XLAError)
+        #expect(throws: XLAError.self) {
+            _ = try client.compile(invalidMlir)
         }
     }
 }

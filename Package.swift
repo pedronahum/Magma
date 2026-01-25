@@ -12,6 +12,14 @@ let xlaPath = Context.environment["MAGMA_XLA_PATH"] ?? "/opt/xla"
 /// When not set, builds without XLA (stub-only mode for development)
 let enableXLA = Context.environment["MAGMA_ENABLE_XLA"] == "1"
 
+/// Set MAGMA_ENABLE_METAL=1 to enable Metal backend via MetalHLO
+/// Automatically enabled on macOS if MetalHLO is available
+#if os(macOS)
+let enableMetal = Context.environment["MAGMA_ENABLE_METAL"] != "0"
+#else
+let enableMetal = false
+#endif
+
 // Conditionally add linker settings for XLA
 // Note: The PJRT plugin is loaded dynamically via dlopen, so we don't need
 // to link against it at build time. We just need the -ldl flag on Linux.
@@ -69,10 +77,14 @@ let package = Package(
             name: "Benchmarks",
             targets: ["Benchmarks"]
         ),
+        .executable(
+            name: "MetalExample",
+            targets: ["MetalExample"]
+        ),
     ],
     dependencies: [
-        // No external Swift package dependencies!
-        // XLA is linked via system library when MAGMA_ENABLE_XLA=1
+        // MetalHLO for Metal GPU support on macOS
+        .package(path: "../MetalHLO"),
     ],
     targets: [
         // ════════════════════════════════════════════════════════════════════
@@ -85,16 +97,21 @@ let package = Package(
         ),
 
         // ════════════════════════════════════════════════════════════════════
-        // LAYER 1: XLA Runtime (Swift wrapper around PJRT)
+        // LAYER 1: XLA Runtime (Swift wrapper around PJRT + MetalHLO on macOS)
         // ════════════════════════════════════════════════════════════════════
         .target(
             name: "XLARuntime",
-            dependencies: ["CXLARuntime"],
+            dependencies: [
+                "CXLARuntime",
+                .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS])),
+            ],
             path: "Sources/XLARuntime",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 // Define HAS_XLA when XLA is available
                 enableXLA ? .define("HAS_XLA") : nil,
+                // Define HAS_METAL when Metal backend is available
+                enableMetal ? .define("HAS_METAL") : nil,
             ].compactMap { $0 },
             linkerSettings: xlaRuntimeLinkerSettings
         ),
@@ -152,6 +169,11 @@ let package = Package(
             name: "Benchmarks",
             dependencies: ["Magma"],
             path: "Examples/Benchmarks"
+        ),
+        .executableTarget(
+            name: "MetalExample",
+            dependencies: ["Magma"],
+            path: "Examples/Metal"
         ),
 
         // ════════════════════════════════════════════════════════════════════

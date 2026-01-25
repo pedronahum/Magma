@@ -453,6 +453,60 @@ public final class CompilationCache: @unchecked Sendable {
     }
 }
 
+// MARK: - Metal Compilation Cache
+
+#if os(macOS) && canImport(MetalHLO)
+
+/// Cache for compiled Metal executables
+public final class MetalCompilationCache: @unchecked Sendable {
+
+    /// Shared cache instance
+    public static let shared = MetalCompilationCache()
+
+    /// Cache entries keyed by structural hash
+    private var cache: [String: MetalHLOExecutable] = [:]
+
+    /// Lock for thread safety
+    private let lock = NSLock()
+
+    private init() {}
+
+    /// Look up a cached executable
+    public func get(hash: String) -> MetalHLOExecutable? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache[hash]
+    }
+
+    /// Store an executable in the cache
+    public func put(hash: String, executable: MetalHLOExecutable) {
+        lock.lock()
+        defer { lock.unlock() }
+        cache[hash] = executable
+    }
+
+    /// Clear all cached entries
+    public func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        cache.removeAll()
+        hitCount = 0
+        missCount = 0
+    }
+
+    /// Cache statistics
+    public var hitCount: Int = 0
+    public var missCount: Int = 0
+
+    /// Cache hit rate
+    public var hitRate: Double {
+        let total = hitCount + missCount
+        return total > 0 ? Double(hitCount) / Double(total) : 0
+    }
+}
+
+#endif
+
 // MARK: - Lazy Tensor Barrier
 
 /// Global XLA client (lazily initialized)
@@ -474,6 +528,30 @@ public func getGlobalClient(backend: Backend = .cpu) throws -> PJRTClient {
     return client
 }
 
+// MARK: - Metal Client
+
+#if os(macOS) && canImport(MetalHLO)
+
+/// Global MetalHLO client (lazily initialized)
+nonisolated(unsafe) private var _globalMetalClient: MetalHLOClient?
+private let _metalClientLock = NSLock()
+
+/// Get or create the global MetalHLO client
+public func getMetalHLOClient() throws -> MetalHLOClient {
+    _metalClientLock.lock()
+    defer { _metalClientLock.unlock() }
+
+    if let client = _globalMetalClient {
+        return client
+    }
+
+    let client = try MetalHLOClient.create()
+    _globalMetalClient = client
+    return client
+}
+
+#endif
+
 /// Trigger compilation and execution of all pending operations
 ///
 /// When called, all lazy tensors on the specified device are:
@@ -492,6 +570,14 @@ public func getGlobalClient(backend: Backend = .cpu) throws -> PJRTClient {
 /// print(y.scalars())           // Now we can read the results
 /// ```
 public func LazyTensorBarrier(on device: Device = .default) {
+    // Route to Metal-specific barrier if using Metal backend
+    #if os(macOS) && canImport(MetalHLO)
+    if device.backend == .metal {
+        MetalLazyTensorBarrier(on: device)
+        return
+    }
+    #endif
+
     // 1. Collect all pending tensors for this device
     let pending = TensorRegistry.shared.takePending(for: device)
     if pending.isEmpty {
@@ -617,6 +703,193 @@ public func LazyTensorBarrier(on device: Device = .default) {
         print("Magma: Execution failed: \(error)")
     }
 }
+
+// MARK: - Metal Lazy Tensor Barrier
+
+#if os(macOS) && canImport(MetalHLO)
+
+/// Metal-specific lazy tensor barrier
+///
+/// This function handles execution on Metal GPUs via MetalHLO.
+/// It follows the same pattern as the PJRT-based barrier but uses MetalHLO for compilation and execution.
+private func MetalLazyTensorBarrier(on device: Device) {
+    // 1. Collect all pending tensors for this device
+    let pending = TensorRegistry.shared.takePending(for: device)
+    if pending.isEmpty {
+        return // Nothing to execute
+    }
+
+    // Find all outputs (tensors that need to be materialized)
+    let outputs = pending.filter { !$0.isMaterialized }
+    if outputs.isEmpty {
+        return
+    }
+
+    // Mark outputs as live (for future memory optimization)
+    for output in outputs {
+        output.isLive = true
+    }
+
+    // 2. Build IR graph
+    let graph = IRGraph()
+    for output in outputs {
+        graph.addOutput(output)
+    }
+    graph.buildTopologicalOrder()
+
+    // 3. Validate graph (catch errors early with better messages)
+    do {
+        try graph.validate()
+    } catch {
+        print("Magma [Metal]: Graph validation failed: \(error)")
+        return
+    }
+
+    // 4. Analyze for constant promotion
+    let promotionResult = graph.analyzeForConstantPromotion()
+    let structuralHash = promotionResult.structuralHash
+
+    // 5. Check Metal compilation cache using structural hash
+    let cache = MetalCompilationCache.shared
+    var executable: MetalHLOExecutable
+    if let cached = cache.get(hash: structuralHash) {
+        cache.hitCount += 1
+        executable = cached
+    } else {
+        cache.missCount += 1
+
+        // 6. Emit StableHLO MLIR with constant promotion
+        let emitter = StableHLOEmitter(graph: graph)
+        let mlir = emitter.emit(
+            name: "metal_graph_\(structuralHash.prefix(8))",
+            promotedConstants: promotionResult.promotedConstants
+        )
+
+        // Debug: Print the MLIR being generated (opt-in via MAGMA_DEBUG=1)
+        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+            print("Magma [Metal]: Generated MLIR:")
+            print(mlir)
+            print("Magma [Metal]: Promoted constants count: \(promotionResult.promotedConstants.count)")
+            print("Magma [Metal]: Was promoted: \(promotionResult.wasPromoted)")
+        }
+
+        // 7. Compile via MetalHLO
+        do {
+            let client = try getMetalHLOClient()
+            executable = try client.compile(mlir)
+
+            if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+                print("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
+            }
+
+            cache.put(hash: structuralHash, executable: executable)
+        } catch {
+            // Always write failing MLIR to debug file for first unique failure
+            let debugPath = "/tmp/magma_metal_debug_\(structuralHash.prefix(8)).mlir"
+            if !FileManager.default.fileExists(atPath: debugPath) {
+                print("Magma [Metal]: MLIR that failed to compile (hash=\(structuralHash.prefix(8))):")
+                print(mlir.prefix(3000))
+                print("... (truncated)")
+                if let data = mlir.data(using: .utf8) {
+                    let url = URL(fileURLWithPath: debugPath)
+                    try? data.write(to: url)
+                    print("Magma [Metal]: Full MLIR written to \(debugPath)")
+                }
+            }
+            print("Magma [Metal]: Compilation failed: \(error)")
+            return
+        }
+    }
+
+    // 8. Collect input buffers
+    // For Metal, we need to handle both data nodes and promoted constants
+    // Note: Data nodes from PJRT buffers need to be converted to Metal buffers
+
+    var inputBuffers: [MetalHLOBuffer] = []
+
+    // First: Check for any data nodes - these would come from pre-existing PJRT buffers
+    // which is not typical for Metal-first execution, but we should handle it
+    for node in graph.nodes {
+        if case .data(let pjrtBuffer) = node.irNode {
+            // Transfer PJRT buffer data to Metal
+            do {
+                let client = try getMetalHLOClient()
+                let hostData = try pjrtBuffer.toFloatArray()
+                let metalBuffer = try client.createBuffer(
+                    hostData,
+                    shape: node.shape
+                )
+                inputBuffers.append(metalBuffer)
+            } catch {
+                print("Magma [Metal]: Failed to convert PJRT buffer to Metal: \(error)")
+                return
+            }
+        }
+    }
+
+    // Second: promoted constants (need to create buffers for their values)
+    if promotionResult.wasPromoted {
+        do {
+            let client = try getMetalHLOClient()
+            for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
+                let buffer = try client.createBuffer(
+                    promoted.values,
+                    shape: promoted.shape
+                )
+                inputBuffers.append(buffer)
+            }
+        } catch {
+            print("Magma [Metal]: Failed to create buffers for promoted constants: \(error)")
+            return
+        }
+    }
+
+    let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
+
+    if debugEnabled {
+        print("Magma [Metal]: Input buffers count: \(inputBuffers.count)")
+        print("Magma [Metal]: Outputs to materialize: \(outputs.count)")
+        for (i, output) in outputs.enumerated() {
+            print("Magma [Metal]: Output \(i) handle ID: \(output.id), shape: \(output.shape)")
+        }
+    }
+
+    // 9. Execute
+    do {
+        let outputBuffers = try executable.execute(inputBuffers)
+
+        if debugEnabled {
+            print("Magma [Metal]: Output buffers received: \(outputBuffers.count)")
+        }
+
+        // 10. Update tensor handles with results
+        // For Metal, we store the MetalHLO buffer data back to host and create a "virtual" PJRT buffer
+        // This allows seamless interop with the rest of the Magma system
+        for (i, output) in outputs.enumerated() {
+            if i < outputBuffers.count {
+                let metalBuffer = outputBuffers[i]
+                // Create a materialized result that can be read
+                output.materializedBuffer = nil  // No PJRT buffer for Metal
+                // Store a marker that this is a Metal-materialized tensor
+                // For now, we store the data in a special way
+                // In the future, we might want a proper dual-buffer system
+                let hostData = try metalBuffer.toFloatArray()
+
+                if debugEnabled {
+                    print("Magma [Metal]: Output \(i) - shape: \(output.shape), data count: \(hostData.count), first few: \(Array(hostData.prefix(5)))")
+                }
+
+                // Re-materialize via PJRT for compatibility (if needed)
+                // For now, mark as materialized without a PJRT buffer
+                output.irNode = .constant(values: hostData, shape: output.shape)
+            }
+        }
+    } catch {
+        print("Magma [Metal]: Execution failed: \(error)")
+    }
+}
+
+#endif // os(macOS) && canImport(MetalHLO)
 
 /// Execute a graph synchronously and return output buffers
 ///

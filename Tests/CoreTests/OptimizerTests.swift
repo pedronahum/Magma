@@ -1,16 +1,18 @@
 // Magma - Optimizer Tests
 // Tests for optimizer implementations
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - SGD Optimizer Tests
 
-final class SGDOptimizerTests: XCTestCase {
+@Suite("SGD Optimizer Tests")
+struct SGDOptimizerTests {
 
-    func testSGDBasic() {
+    @Test("SGD basic")
+    func sgdBasic() {
         // Create a simple parameter
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.SGD(parameters: [param], lr: 0.1)
@@ -22,10 +24,11 @@ final class SGDOptimizerTests: XCTestCase {
         optimizer.step([grad])
 
         // Parameter should be updated: 1 - 0.1 * 1 = 0.9
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testSGDMomentum() {
+    @Test("SGD momentum")
+    func sgdMomentum() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.SGD(parameters: [param], lr: 0.1, momentum: 0.9)
 
@@ -33,14 +36,15 @@ final class SGDOptimizerTests: XCTestCase {
 
         // First step: v = grad, p = p - lr * v
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
 
         // Second step: v = 0.9 * v + grad, p = p - lr * v
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testSGDWeightDecay() {
+    @Test("SGD weight decay")
+    func sgdWeightDecay() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.SGD(parameters: [param], lr: 0.1, weightDecay: 0.01)
 
@@ -48,10 +52,11 @@ final class SGDOptimizerTests: XCTestCase {
 
         // With zero gradient but weight decay, parameter should still decrease
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testSGDMultipleParameters() {
+    @Test("SGD multiple parameters")
+    func sgdMultipleParameters() {
         let param1 = Parameter(Tensor<Float>.ones([2, 3]), name: "w1")
         let param2 = Parameter(Tensor<Float>.ones([3, 4]), name: "w2")
         var optimizer = optim.SGD(parameters: [param1, param2], lr: 0.1)
@@ -61,11 +66,12 @@ final class SGDOptimizerTests: XCTestCase {
 
         optimizer.step([grad1, grad2])
 
-        XCTAssertEqual(param1.value.shape, [2, 3])
-        XCTAssertEqual(param2.value.shape, [3, 4])
+        #expect(param1.value.shape == [2, 3])
+        #expect(param2.value.shape == [3, 4])
     }
 
-    func testSGDZeroGrad() {
+    @Test("SGD zero grad")
+    func sgdZeroGrad() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.SGD(parameters: [param], lr: 0.1, momentum: 0.9)
 
@@ -76,10 +82,11 @@ final class SGDOptimizerTests: XCTestCase {
 
         // After zeroGrad, next step should be like first step
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testSGDSkipsNonGradParams() {
+    @Test("SGD skips non-grad params")
+    func sgdSkipsNonGradParams() {
         let param1 = Parameter(Tensor<Float>.ones([2, 3]), requiresGrad: true, name: "trainable")
         let param2 = Parameter(Tensor<Float>.ones([3, 4]), requiresGrad: false, name: "frozen")
         var optimizer = optim.SGD(parameters: [param1, param2], lr: 0.1)
@@ -90,26 +97,29 @@ final class SGDOptimizerTests: XCTestCase {
         optimizer.step([grad1, grad2])
 
         // param1 should be updated, param2 should remain unchanged
-        XCTAssertEqual(param1.value.shape, [2, 3])
-        XCTAssertEqual(param2.value.shape, [3, 4])
+        #expect(param1.value.shape == [2, 3])
+        #expect(param2.value.shape == [3, 4])
     }
 }
 
 // MARK: - Adam Optimizer Tests
 
-final class AdamOptimizerTests: XCTestCase {
+@Suite("Adam Optimizer Tests")
+struct AdamOptimizerTests {
 
-    func testAdamBasic() {
+    @Test("Adam basic")
+    func adamBasic() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.Adam(parameters: [param], lr: 0.001)
 
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdamMultipleSteps() {
+    @Test("Adam multiple steps")
+    func adamMultipleSteps() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.Adam(parameters: [param], lr: 0.001)
 
@@ -119,20 +129,22 @@ final class AdamOptimizerTests: XCTestCase {
         for _ in 0..<5 {
             optimizer.step([grad])
         }
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdamWeightDecay() {
+    @Test("Adam weight decay")
+    func adamWeightDecay() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.Adam(parameters: [param], lr: 0.001, weightDecay: 0.01)
 
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdamZeroGrad() {
+    @Test("Adam zero grad")
+    func adamZeroGrad() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.Adam(parameters: [param], lr: 0.001)
 
@@ -143,10 +155,11 @@ final class AdamOptimizerTests: XCTestCase {
 
         // After zeroGrad, moments should be reset
         optimizer.step([grad])
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdamCustomBetas() {
+    @Test("Adam custom betas")
+    func adamCustomBetas() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.Adam(
             parameters: [param],
@@ -158,15 +171,17 @@ final class AdamOptimizerTests: XCTestCase {
         let grad = Tensor<Float>.ones([2, 3])
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 }
 
 // MARK: - Training Loop Integration Tests
 
-final class TrainingLoopTests: XCTestCase {
+@Suite("Training Loop Tests")
+struct TrainingLoopTests {
 
-    func testSimpleTrainingLoop() {
+    @Test("Simple training loop")
+    func simpleTrainingLoop() {
         // Create a simple linear model
         let fc = nn.Linear(inputSize: 10, outputSize: 5)
         var optimizer = optim.SGD(parameters: fc.parameters(), lr: 0.01)
@@ -178,7 +193,7 @@ final class TrainingLoopTests: XCTestCase {
         for _ in 0..<3 {
             // Forward pass
             let output = fc(input)
-            XCTAssertEqual(output.shape, [32, 5])
+            #expect(output.shape == [32, 5])
 
             // Create dummy gradients for parameters
             let grads = fc.parameters().map { param in
@@ -190,11 +205,12 @@ final class TrainingLoopTests: XCTestCase {
         }
 
         // Verify parameters still have correct shapes
-        XCTAssertEqual(fc.weight.shape, [5, 10])
-        XCTAssertEqual(fc.bias.shape, [5])
+        #expect(fc.weight.shape == [5, 10])
+        #expect(fc.bias.shape == [5])
     }
 
-    func testSequentialModelTraining() {
+    @Test("Sequential model training")
+    func sequentialModelTraining() {
         // Create a simple MLP
         let model = nn.sequential {
             nn.Linear(inputSize: 784, outputSize: 256)
@@ -203,14 +219,14 @@ final class TrainingLoopTests: XCTestCase {
         }
 
         let params = model.parameters()
-        XCTAssertEqual(params.count, 4)  // 2 weights + 2 biases
+        #expect(params.count == 4)  // 2 weights + 2 biases
 
         var optimizer = optim.Adam(parameters: params, lr: 0.001)
 
         // Dummy forward pass
         let input = Tensor<Float>.ones([32, 784])
         let output = model(input)
-        XCTAssertEqual(output.shape, [32, 10])
+        #expect(output.shape == [32, 10])
 
         // Create dummy gradients
         let grads = params.map { param in
@@ -222,10 +238,11 @@ final class TrainingLoopTests: XCTestCase {
 
         // Verify model still works after update
         let output2 = model(input)
-        XCTAssertEqual(output2.shape, [32, 10])
+        #expect(output2.shape == [32, 10])
     }
 
-    func testGradientDescentConvergence() {
+    @Test("Gradient descent convergence")
+    func gradientDescentConvergence() {
         // Test that SGD actually decreases loss on a simple problem
         // y = x * 2, try to learn the weight
 
@@ -234,7 +251,7 @@ final class TrainingLoopTests: XCTestCase {
         var optimizer = optim.SGD(parameters: [weight], lr: 0.1)
 
         // Target: y = x * 2, so optimal weight is 2
-        let x = Tensor<Float>.full([1, 1], 1.0, on: .default)
+        let _ = Tensor<Float>.full([1, 1], 1.0, on: .default)
         let targetWeight: Float = 2.0
 
         // Multiple gradient descent steps
@@ -252,15 +269,17 @@ final class TrainingLoopTests: XCTestCase {
             optimizer.step([grad])
         }
 
-        XCTAssertEqual(weight.value.shape, [1, 1])
+        #expect(weight.value.shape == [1, 1])
     }
 }
 
 // MARK: - Autodiff + Optimizer Integration Tests
 
-final class AutodiffOptimizerIntegrationTests: XCTestCase {
+@Suite("Autodiff Optimizer Integration Tests")
+struct AutodiffOptimizerIntegrationTests {
 
-    func testGradientWithOptimizer() {
+    @Test("Gradient with optimizer")
+    func gradientWithOptimizer() {
         // Simple function: f(x) = sum(x^2)
         // Gradient: df/dx = 2x
 
@@ -271,10 +290,11 @@ final class AutodiffOptimizerIntegrationTests: XCTestCase {
         }
 
         // Gradient should have shape [2, 3]
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testLinearLayerGradient() {
+    @Test("Linear layer gradient")
+    func linearLayerGradient() {
         let fc = nn.Linear(inputSize: 10, outputSize: 5)
         let input = Tensor<Float>.ones([32, 10])
 
@@ -286,10 +306,11 @@ final class AutodiffOptimizerIntegrationTests: XCTestCase {
             return output.sum()
         }
 
-        XCTAssertEqual(grad.shape, [5, 10])
+        #expect(grad.shape == [5, 10])
     }
 
-    func testMLPGradient() {
+    @Test("MLP gradient")
+    func mlpGradient() {
         // Test gradient flow through a simple MLP
         let w1 = Tensor<Float>.ones([10, 20])
         let w2 = Tensor<Float>.ones([20, 5])
@@ -301,25 +322,28 @@ final class AutodiffOptimizerIntegrationTests: XCTestCase {
             return output.sum()
         }
 
-        XCTAssertEqual(gradW1.shape, [10, 20])
-        XCTAssertEqual(gradW2.shape, [20, 5])
+        #expect(gradW1.shape == [10, 20])
+        #expect(gradW2.shape == [20, 5])
     }
 }
 
 // MARK: - Sqrt Tests
 
-final class SqrtTests: XCTestCase {
+@Suite("Sqrt Tests")
+struct SqrtTests {
 
-    func testSqrt() {
+    @Test("Sqrt")
+    func sqrt() {
         let x = Tensor<Float>.full([2, 3], 4.0, on: .default)
         let result = x.sqrt()
 
         // sqrt(4) = 2
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
     // TODO: Re-enable once sqrt() is marked @differentiable
-    // func testSqrtGradient() {
+    // @Test("Sqrt gradient")
+    // func sqrtGradient() {
     //     let x = Tensor<Float>.full([2, 3], 4.0, on: .default)
     //
     //     let grad = gradient(at: x) { t in
@@ -327,6 +351,6 @@ final class SqrtTests: XCTestCase {
     //     }
     //
     //     // d/dx[sqrt(x)] = 0.5 / sqrt(x) = 0.5 / 2 = 0.25
-    //     XCTAssertEqual(grad.shape, [2, 3])
+    //     #expect(grad.shape == [2, 3])
     // }
 }

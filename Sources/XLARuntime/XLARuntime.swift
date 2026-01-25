@@ -21,13 +21,15 @@ public enum Backend: String, Sendable {
     case cpu
     case gpu
     case tpu
+    case metal  // Metal GPU via MetalHLO (macOS only)
 
     /// Get the default plugin path for this backend
     func pluginPath() -> String {
         // Check environment variable first
         if let envPath = getenv("MAGMA_XLA_PATH") {
             let basePath = String(cString: envPath)
-            return "\(basePath)/lib/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
+            // If the path already contains the library directory, use it directly
+            return "\(basePath)/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
         }
 
         // TPU has special paths on Cloud TPU VMs
@@ -88,18 +90,30 @@ public enum Backend: String, Sendable {
 
     /// Check if this backend's plugin is available on the system
     public var isAvailable: Bool {
-        let path = pluginPath()
-        return access(path, F_OK) == 0
+        switch self {
+        case .metal:
+            #if os(macOS) && canImport(MetalHLO)
+            return MetalBackend.isAvailable
+            #else
+            return false
+            #endif
+        default:
+            let path = pluginPath()
+            return access(path, F_OK) == 0
+        }
     }
 
     /// Get all available backends on this system
     public static var availableBackends: [Backend] {
-        [.cpu, .gpu, .tpu].filter { $0.isAvailable }
+        [.cpu, .gpu, .tpu, .metal].filter { $0.isAvailable }
     }
 
-    /// Get the best available backend (TPU > GPU > CPU)
+    /// Get the best available backend (TPU > Metal > GPU > CPU)
     public static var bestAvailable: Backend {
         if Backend.tpu.isAvailable { return .tpu }
+        #if os(macOS)
+        if Backend.metal.isAvailable { return .metal }
+        #endif
         if Backend.gpu.isAvailable { return .gpu }
         return .cpu
     }

@@ -1,59 +1,68 @@
 // Magma - Attention Tests
 // Tests for MultiheadAttention and related components
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Tensor Operation Tests
 
-final class TensorTransposeTests: XCTestCase {
+@Suite("Tensor Transpose Tests")
+struct TensorTransposeTests {
 
-    func testTransposeWithDims() {
+    @Test("Transpose with specific dimensions")
+    func transposeWithDims() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let result = x.transpose(0, 2)
-        XCTAssertEqual(result.shape, [4, 3, 2])
+        #expect(result.shape == [4, 3, 2])
     }
 
-    func testTransposeLastTwo() {
+    @Test("Transpose last two dimensions")
+    func transposeLastTwo() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let result = x.transposeLastTwo()
-        XCTAssertEqual(result.shape, [2, 4, 3])
+        #expect(result.shape == [2, 4, 3])
     }
 
-    func testTransposeLastTwo4D() {
+    @Test("Transpose last two dimensions 4D")
+    func transposeLastTwo4D() {
         let x = Tensor<Float>.ones([2, 8, 10, 64])
         let result = x.transposeLastTwo()
-        XCTAssertEqual(result.shape, [2, 8, 64, 10])
+        #expect(result.shape == [2, 8, 64, 10])
     }
 
-    func testTransposeNegativeIndices() {
+    @Test("Transpose with negative indices")
+    func transposeNegativeIndices() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let result = x.transpose(-2, -1)
-        XCTAssertEqual(result.shape, [2, 4, 3])
+        #expect(result.shape == [2, 4, 3])
     }
 }
 
 // MARK: - Batched MatMul Tests
 
-final class BatchedMatmulTests: XCTestCase {
+@Suite("Batched Matmul Tests")
+struct BatchedMatmulTests {
 
-    func testBatchedMatmul3D() {
+    @Test("Batched matmul 3D")
+    func batchedMatmul3D() {
         let a = Tensor<Float>.ones([4, 10, 32])
         let b = Tensor<Float>.ones([4, 32, 64])
         let result = a.batchedMatmul(b)
-        XCTAssertEqual(result.shape, [4, 10, 64])
+        #expect(result.shape == [4, 10, 64])
     }
 
-    func testBatchedMatmul4D() {
+    @Test("Batched matmul 4D")
+    func batchedMatmul4D() {
         let a = Tensor<Float>.ones([2, 8, 10, 64])
         let b = Tensor<Float>.ones([2, 8, 64, 10])
         let result = a.batchedMatmul(b)
-        XCTAssertEqual(result.shape, [2, 8, 10, 10])
+        #expect(result.shape == [2, 8, 10, 10])
     }
 
-    func testBatchedMatmulAttentionPattern() {
+    @Test("Batched matmul attention pattern")
+    func batchedMatmulAttentionPattern() {
         // Typical attention pattern: [batch, heads, seq, dim] @ [batch, heads, dim, seq]
         let batch = 4
         let heads = 8
@@ -65,32 +74,36 @@ final class BatchedMatmulTests: XCTestCase {
 
         // K^T
         let kT = k.transposeLastTwo()
-        XCTAssertEqual(kT.shape, [batch, heads, headDim, seqLen])
+        #expect(kT.shape == [batch, heads, headDim, seqLen])
 
         // Q @ K^T -> attention scores
         let scores = q.batchedMatmul(kT)
-        XCTAssertEqual(scores.shape, [batch, heads, seqLen, seqLen])
+        #expect(scores.shape == [batch, heads, seqLen, seqLen])
     }
 }
 
 // MARK: - Masked Fill Tests
 
-final class MaskedFillTests: XCTestCase {
+@Suite("Masked Fill Tests")
+struct MaskedFillTests {
 
-    func testMaskedFill() {
+    @Test("Masked fill operation")
+    func maskedFill() {
         let x = Tensor<Float>.ones([2, 3])
         let mask = Tensor<Float>.zeros([2, 3])
         let fillValue = Tensor<Float>.full([2, 3], -1e9, on: .default)
         let result = x.maskedFill(mask: mask, value: fillValue)
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 }
 
 // MARK: - Scaled Dot-Product Attention Tests
 
-final class ScaledDotProductAttentionTests: XCTestCase {
+@Suite("Scaled Dot-Product Attention Tests")
+struct ScaledDotProductAttentionTests {
 
-    func testScaledDotProductAttention3D() {
+    @Test("Scaled dot-product attention 3D")
+    func scaledDotProductAttention3D() {
         let batch = 4
         let seqLen = 16
         let embedDim = 64
@@ -105,11 +118,12 @@ final class ScaledDotProductAttentionTests: XCTestCase {
             value: value
         )
 
-        XCTAssertEqual(output.shape, [batch, seqLen, embedDim])
-        XCTAssertEqual(weights.shape, [batch, seqLen, seqLen])
+        #expect(output.shape == [batch, seqLen, embedDim])
+        #expect(weights.shape == [batch, seqLen, seqLen])
     }
 
-    func testScaledDotProductAttention4D() {
+    @Test("Scaled dot-product attention 4D")
+    func scaledDotProductAttention4D() {
         // With multiple heads
         let batch = 4
         let numHeads = 8
@@ -126,11 +140,12 @@ final class ScaledDotProductAttentionTests: XCTestCase {
             value: value
         )
 
-        XCTAssertEqual(output.shape, [batch, numHeads, seqLen, headDim])
-        XCTAssertEqual(weights.shape, [batch, numHeads, seqLen, seqLen])
+        #expect(output.shape == [batch, numHeads, seqLen, headDim])
+        #expect(weights.shape == [batch, numHeads, seqLen, seqLen])
     }
 
-    func testScaledDotProductAttentionWithMask() {
+    @Test("Scaled dot-product attention with mask")
+    func scaledDotProductAttentionWithMask() {
         let batch = 2
         let numHeads = 4
         let seqLen = 8
@@ -150,46 +165,51 @@ final class ScaledDotProductAttentionTests: XCTestCase {
             mask: mask
         )
 
-        XCTAssertEqual(output.shape, [batch, numHeads, seqLen, headDim])
-        XCTAssertEqual(weights.shape, [batch, numHeads, seqLen, seqLen])
+        #expect(output.shape == [batch, numHeads, seqLen, headDim])
+        #expect(weights.shape == [batch, numHeads, seqLen, seqLen])
     }
 }
 
 // MARK: - MultiheadAttention Tests
 
-final class MultiheadAttentionTests: XCTestCase {
+@Suite("Multihead Attention Tests")
+struct MultiheadAttentionTests {
 
-    func testMultiheadAttentionCreation() {
+    @Test("Creation")
+    func multiheadAttentionCreation() {
         let attention = nn.MultiheadAttention(embedDim: 512, numHeads: 8)
 
-        XCTAssertEqual(attention.embedDim, 512)
-        XCTAssertEqual(attention.numHeads, 8)
-        XCTAssertEqual(attention.headDim, 64)
+        #expect(attention.embedDim == 512)
+        #expect(attention.numHeads == 8)
+        #expect(attention.headDim == 64)
     }
 
-    func testMultiheadAttentionParameters() {
+    @Test("Parameters")
+    func multiheadAttentionParameters() {
         let attention = nn.MultiheadAttention(embedDim: 256, numHeads: 4)
         let params = attention.parameters()
 
         // 4 weight matrices + 4 bias vectors = 8 parameters
-        XCTAssertEqual(params.count, 8)
+        #expect(params.count == 8)
 
         // Check weight shapes
-        XCTAssertEqual(attention.wQ.shape, [256, 256])
-        XCTAssertEqual(attention.wK.shape, [256, 256])
-        XCTAssertEqual(attention.wV.shape, [256, 256])
-        XCTAssertEqual(attention.wO.shape, [256, 256])
+        #expect(attention.wQ.shape == [256, 256])
+        #expect(attention.wK.shape == [256, 256])
+        #expect(attention.wV.shape == [256, 256])
+        #expect(attention.wO.shape == [256, 256])
     }
 
-    func testMultiheadAttentionParametersNoBias() {
+    @Test("Parameters without bias")
+    func multiheadAttentionParametersNoBias() {
         let attention = nn.MultiheadAttention(embedDim: 256, numHeads: 4, bias: false)
         let params = attention.parameters()
 
         // 4 weight matrices, no biases
-        XCTAssertEqual(params.count, 4)
+        #expect(params.count == 4)
     }
 
-    func testMultiheadAttentionSelfAttention() {
+    @Test("Self attention")
+    func multiheadAttentionSelfAttention() {
         let attention = nn.MultiheadAttention(embedDim: 128, numHeads: 4)
         let batch = 2
         let seqLen = 10
@@ -199,10 +219,11 @@ final class MultiheadAttentionTests: XCTestCase {
         // Self-attention: query = key = value = x
         let output = attention(x)
 
-        XCTAssertEqual(output.shape, [batch, seqLen, 128])
+        #expect(output.shape == [batch, seqLen, 128])
     }
 
-    func testMultiheadAttentionForward() {
+    @Test("Forward pass")
+    func multiheadAttentionForward() {
         let attention = nn.MultiheadAttention(embedDim: 256, numHeads: 8)
         let batch = 4
         let seqLen = 16
@@ -218,11 +239,12 @@ final class MultiheadAttentionTests: XCTestCase {
             mask: nil
         )
 
-        XCTAssertEqual(output.shape, [batch, seqLen, 256])
-        XCTAssertEqual(weights.shape, [batch, 8, seqLen, seqLen])
+        #expect(output.shape == [batch, seqLen, 256])
+        #expect(weights.shape == [batch, 8, seqLen, seqLen])
     }
 
-    func testMultiheadAttentionCrossAttention() {
+    @Test("Cross attention")
+    func multiheadAttentionCrossAttention() {
         let attention = nn.MultiheadAttention(embedDim: 512, numHeads: 8)
         let batch = 2
 
@@ -239,16 +261,18 @@ final class MultiheadAttentionTests: XCTestCase {
             mask: nil
         )
 
-        XCTAssertEqual(output.shape, [batch, 10, 512])
-        XCTAssertEqual(weights.shape, [batch, 8, 10, 20])
+        #expect(output.shape == [batch, 10, 512])
+        #expect(weights.shape == [batch, 8, 10, 20])
     }
 }
 
 // MARK: - Integration Tests
 
-final class AttentionIntegrationTests: XCTestCase {
+@Suite("Attention Integration Tests")
+struct AttentionIntegrationTests {
 
-    func testTransformerEncoderBlockPattern() {
+    @Test("Transformer encoder block pattern")
+    func transformerEncoderBlockPattern() {
         // Test a simplified transformer encoder block pattern:
         // x -> MultiheadAttention -> Add & Norm -> FFN -> Add & Norm
 
@@ -279,10 +303,11 @@ final class AttentionIntegrationTests: XCTestCase {
         let ffnReshaped = ffnOut.reshape([batch, seqLen, embedDim])
         let output = afterAttn + ffnReshaped  // Residual connection
 
-        XCTAssertEqual(output.shape, [batch, seqLen, embedDim])
+        #expect(output.shape == [batch, seqLen, embedDim])
     }
 
-    func testAttentionWithDifferentSequenceLengths() {
+    @Test("Attention with different sequence lengths")
+    func attentionWithDifferentSequenceLengths() {
         let attention = nn.MultiheadAttention(embedDim: 128, numHeads: 4)
 
         // Different sequence lengths for query vs key/value
@@ -297,7 +322,7 @@ final class AttentionIntegrationTests: XCTestCase {
             mask: nil
         )
 
-        XCTAssertEqual(output.shape, [2, 8, 128])
-        XCTAssertEqual(weights.shape, [2, 4, 8, 32])
+        #expect(output.shape == [2, 8, 128])
+        #expect(weights.shape == [2, 4, 8, 32])
     }
 }

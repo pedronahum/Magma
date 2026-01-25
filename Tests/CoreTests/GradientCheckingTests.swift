@@ -1,82 +1,92 @@
 // Magma - Gradient Checking Tests
 // Tests for numerical gradient verification
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Basic Gradient Check Tests
 
-final class GradcheckBasicTests: XCTestCase {
+@Suite("Gradcheck Basic Tests")
+struct GradcheckBasicTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckSum() {
+    @Test("Gradcheck sum")
+    func gradcheckSum() {
         // Sum has gradient of all ones
         let x = Tensor<Float>.randn([2, 3])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for sum. MaxAbsDiff: \(result.maxAbsDiff)")
-        XCTAssertLessThan(result.maxAbsDiff, 0.01)  // Reasonable for float32
+        #expect(result.passed, "Gradcheck failed for sum. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.maxAbsDiff < 0.01)  // Reasonable for float32
     }
 
-    func testGradcheckMean() {
+    @Test("Gradcheck mean")
+    func gradcheckMean() {
         // Mean has gradient of 1/n for all elements
         let x = Tensor<Float>.randn([3, 4])
         let result = gradcheck({ $0.mean() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for mean. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for mean. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckAddition() {
+    @Test("Gradcheck addition")
+    func gradcheckAddition() {
         let x = Tensor<Float>.randn([2, 2])
         let result = gradcheck({ ($0 + $0).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for addition. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for addition. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckSubtraction() {
+    @Test("Gradcheck subtraction")
+    func gradcheckSubtraction() {
         let x = Tensor<Float>.randn([2, 2])
         let result = gradcheck({ ($0 - $0 * Tensor<Float>.full([2, 2], 0.5, on: .default)).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for subtraction. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for subtraction. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckMultiplication() {
+    @Test("Gradcheck multiplication")
+    func gradcheckMultiplication() {
         let x = Tensor<Float>.randn([2, 3]) + Tensor<Float>.full([2, 3], 1.0, on: .default)
         let result = gradcheck({ ($0 * $0).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for multiplication. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for multiplication. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckDivision() {
+    @Test("Gradcheck division")
+    func gradcheckDivision() {
         // Use positive values to avoid division issues
         let x = Tensor<Float>.randn([2, 3]).abs() + Tensor<Float>.full([2, 3], 1.0, on: .default)
         let ones = Tensor<Float>.ones([2, 3])
         let result = gradcheck({ (ones / $0).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for division. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for division. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckNegation() {
+    @Test("Gradcheck negation")
+    func gradcheckNegation() {
         let x = Tensor<Float>.randn([3, 3])
         let result = gradcheck({ (-$0).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for negation. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for negation. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 }
 
 // MARK: - Activation Function Gradient Tests
 
-final class GradcheckActivationTests: XCTestCase {
+@Suite("Gradcheck Activation Tests")
+struct GradcheckActivationTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckRelu() {
+    @Test("Gradcheck ReLU")
+    func gradcheckRelu() {
         // Use values away from 0 where ReLU is non-differentiable
         let x = Tensor<Float>.randn([3, 4])
         // Shift to avoid values near zero
@@ -84,81 +94,90 @@ final class GradcheckActivationTests: XCTestCase {
 
         let result = gradcheck({ $0.relu().sum() }, input: shifted, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for ReLU. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for ReLU. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckSigmoid() {
+    @Test("Gradcheck sigmoid")
+    func gradcheckSigmoid() {
         let x = Tensor<Float>.randn([2, 3])
         let result = gradcheck({ $0.sigmoid().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for sigmoid. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for sigmoid. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckTanh() {
+    @Test("Gradcheck tanh")
+    func gradcheckTanh() {
         let x = Tensor<Float>.randn([2, 3])
         let result = gradcheck({ $0.tanh().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for tanh. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for tanh. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckExp() {
+    @Test("Gradcheck exp")
+    func gradcheckExp() {
         // Use small values to avoid exp overflow
         let x = Tensor<Float>.randn([2, 3]) * Tensor<Float>.full([2, 3], 0.5, on: .default)
         let result = gradcheck({ $0.exp().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for exp. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for exp. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckLog() {
+    @Test("Gradcheck log")
+    func gradcheckLog() {
         // Use positive values for log
         let x = Tensor<Float>.randn([2, 3]).abs() + Tensor<Float>.full([2, 3], 0.5, on: .default)
         let result = gradcheck({ $0.log().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for log. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for log. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckAbs() {
+    @Test("Gradcheck abs")
+    func gradcheckAbs() {
         // Avoid values near zero where abs is non-differentiable
         let x = Tensor<Float>.randn([3, 3]) + Tensor<Float>.full([3, 3], 1.0, on: .default)
         let result = gradcheck({ $0.abs().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for abs. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for abs. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 }
 
 // MARK: - Matrix Operation Gradient Tests
 
-final class GradcheckMatrixTests: XCTestCase {
+@Suite("Gradcheck Matrix Tests")
+struct GradcheckMatrixTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckMatmul() {
+    @Test("Gradcheck matmul")
+    func gradcheckMatmul() {
         let a = Tensor<Float>.randn([2, 3])
         let b = Tensor<Float>.randn([3, 4])
 
         // Check gradient w.r.t. first input
         let result1 = gradcheck({ $0.matmul(b).sum() }, input: a, atol: atol, rtol: rtol)
-        XCTAssertTrue(result1.passed, "Gradcheck failed for matmul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
+        #expect(result1.passed, "Gradcheck failed for matmul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
 
         // Check gradient w.r.t. second input
         let result2 = gradcheck({ a.matmul($0).sum() }, input: b, atol: atol, rtol: rtol)
-        XCTAssertTrue(result2.passed, "Gradcheck failed for matmul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
+        #expect(result2.passed, "Gradcheck failed for matmul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
     }
 
-    func testGradcheckTranspose() {
+    @Test("Gradcheck transpose")
+    func gradcheckTranspose() {
         let x = Tensor<Float>.randn([3, 4])
         let result = gradcheck({ $0.transpose().sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for transpose. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for transpose. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckReshape() {
+    @Test("Gradcheck reshape")
+    func gradcheckReshape() {
         let x = Tensor<Float>.randn([2, 6])
         let result = gradcheck({ $0.reshape([3, 4]).sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for reshape. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for reshape. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
     // Note: Broadcast VJP has known issues with shape handling
@@ -168,48 +187,54 @@ final class GradcheckMatrixTests: XCTestCase {
 
 // MARK: - Multi-Input Gradient Tests
 
-final class GradcheckMultiInputTests: XCTestCase {
+@Suite("Gradcheck Multi-Input Tests")
+struct GradcheckMultiInputTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckTwoInputAdd() {
+    @Test("Gradcheck two-input add")
+    func gradcheckTwoInputAdd() {
         let a = Tensor<Float>.randn([2, 3])
         let b = Tensor<Float>.randn([2, 3])
 
         let (result1, result2) = gradcheck({ x, y in (x + y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result1.passed, "Gradcheck failed for add (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
-        XCTAssertTrue(result2.passed, "Gradcheck failed for add (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
+        #expect(result1.passed, "Gradcheck failed for add (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
+        #expect(result2.passed, "Gradcheck failed for add (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
     }
 
-    func testGradcheckTwoInputMul() {
+    @Test("Gradcheck two-input mul")
+    func gradcheckTwoInputMul() {
         let a = Tensor<Float>.randn([2, 3])
         let b = Tensor<Float>.randn([2, 3])
 
         let (result1, result2) = gradcheck({ x, y in (x * y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result1.passed, "Gradcheck failed for mul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
-        XCTAssertTrue(result2.passed, "Gradcheck failed for mul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
+        #expect(result1.passed, "Gradcheck failed for mul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
+        #expect(result2.passed, "Gradcheck failed for mul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
     }
 
-    func testGradcheckTwoInputMatmul() {
+    @Test("Gradcheck two-input matmul")
+    func gradcheckTwoInputMatmul() {
         let a = Tensor<Float>.randn([2, 3])
         let b = Tensor<Float>.randn([3, 2])
 
         let (result1, result2) = gradcheck({ x, y in x.matmul(y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result1.passed, "Gradcheck failed for matmul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
-        XCTAssertTrue(result2.passed, "Gradcheck failed for matmul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
+        #expect(result1.passed, "Gradcheck failed for matmul (first input). MaxAbsDiff: \(result1.maxAbsDiff)")
+        #expect(result2.passed, "Gradcheck failed for matmul (second input). MaxAbsDiff: \(result2.maxAbsDiff)")
     }
 }
 
 // MARK: - Numerical Gradient Tests
 
-final class NumericalGradientTests: XCTestCase {
+@Suite("Numerical Gradient Tests")
+struct NumericalGradientTests {
 
-    func testNumericalGradientSum() {
+    @Test("Numerical gradient sum")
+    func numericalGradientSum() {
         let x = Tensor<Float>.ones([2, 3])
         let grad = numericalGradient(of: { $0.sum() }, at: x)
 
@@ -218,43 +243,47 @@ final class NumericalGradientTests: XCTestCase {
 
         // Gradient of sum should be all ones (with numerical precision)
         for v in values {
-            XCTAssertEqual(v, 1.0, accuracy: 0.01)
+            #expect(abs(v - 1.0) < 0.01)
         }
     }
 
-    func testNumericalGradientSquare() {
+    @Test("Numerical gradient square")
+    func numericalGradientSquare() {
         let x = Tensor<Float>([Float(1.0), Float(2.0), Float(3.0)], shape: [3], on: .default)
         let grad = numericalGradient(of: { ($0 * $0).sum() }, at: x)
 
         let values = grad.scalars()
 
         // Gradient of x^2 is 2x (with numerical precision)
-        XCTAssertEqual(values[0], 2.0, accuracy: 0.01)
-        XCTAssertEqual(values[1], 4.0, accuracy: 0.01)
-        XCTAssertEqual(values[2], 6.0, accuracy: 0.01)
+        #expect(abs(values[0] - 2.0) < 0.01)
+        #expect(abs(values[1] - 4.0) < 0.01)
+        #expect(abs(values[2] - 6.0) < 0.01)
     }
 
+    @Test("Numerical gradient forward")
     func testNumericalGradientForward() {
         let x = Tensor<Float>.ones([2, 2])
-        let grad = numericalGradientForward(of: { $0.sum() }, at: x)
+        let grad = Magma.numericalGradientForward(of: { $0.sum() }, at: x)
 
         let values = grad.scalars()
 
         for v in values {
-            XCTAssertEqual(v, 1.0, accuracy: 0.01)  // Less accurate than centered
+            #expect(abs(v - 1.0) < 0.01)  // Less accurate than centered
         }
     }
 }
 
 // MARK: - Jacobian Tests
 
-final class JacobianTests: XCTestCase {
+@Suite("Jacobian Tests")
+struct JacobianTests {
 
-    func testJacobianIdentity() {
+    @Test("Jacobian identity")
+    func jacobianIdentity() {
         let x = Tensor<Float>.randn([3])
         let jacobian = numericalJacobian(of: { $0 }, at: x)
 
-        XCTAssertEqual(jacobian.shape, [3, 3])
+        #expect(jacobian.shape == [3, 3])
 
         let values = jacobian.scalars()
 
@@ -262,12 +291,13 @@ final class JacobianTests: XCTestCase {
         for i in 0..<3 {
             for j in 0..<3 {
                 let expected: Float = (i == j) ? 1.0 : 0.0
-                XCTAssertEqual(values[i * 3 + j], expected, accuracy: 0.01)
+                #expect(abs(values[i * 3 + j] - expected) < 0.01)
             }
         }
     }
 
-    func testJacobianLinear() {
+    @Test("Jacobian linear")
+    func jacobianLinear() {
         // f(x) = Ax where A is 2x3 matrix
         let aData: [Float] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         let A = Tensor<Float>(aData, shape: [2, 3], on: .default)
@@ -277,54 +307,61 @@ final class JacobianTests: XCTestCase {
             A.matmul(input.reshape([3, 1])).reshape([2])
         }, at: x)
 
-        XCTAssertEqual(jacobian.shape, [2, 3])
+        #expect(jacobian.shape == [2, 3])
 
         let jacobianValues = jacobian.scalars()
         let aValues = A.scalars()
 
         // Jacobian should equal A (with numerical tolerance)
         for i in 0..<6 {
-            XCTAssertEqual(jacobianValues[i], aValues[i], accuracy: 0.1)
+            #expect(abs(jacobianValues[i] - aValues[i]) < 0.1)
         }
     }
 }
 
 // MARK: - Convenience Function Tests
 
-final class GradcheckConvenienceTests: XCTestCase {
+@Suite("Gradcheck Convenience Tests")
+struct GradcheckConvenienceTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
+    @Test("Gradcheck passes")
     func testGradcheckPasses() {
         let x = Tensor<Float>.randn([2, 3])
-        XCTAssertTrue(gradcheckPasses({ $0.sum() }, input: x, atol: atol, rtol: rtol))
+        let passes = Magma.gradcheckPasses({ $0.sum() }, input: x, atol: atol, rtol: rtol)
+        #expect(passes)
     }
 
-    func testAssertGradcheckSuccess() {
+    @Test("Assert gradcheck success")
+    func assertGradcheckSuccess() throws {
         let x = Tensor<Float>.randn([2, 3])
-        XCTAssertNoThrow(try assertGradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol))
+        try assertGradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
     }
 
-    func testGradcheckVerbose() {
+    @Test("Gradcheck verbose")
+    func gradcheckVerbose() {
         let x = Tensor<Float>.randn([2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol, verbose: true)
 
-        XCTAssertNotNil(result.details)
-        XCTAssertEqual(result.details?.count, 4)  // 2x2 = 4 elements
+        #expect(result.details != nil)
+        #expect(result.details?.count == 4)  // 2x2 = 4 elements
     }
 }
 
 // MARK: - Complex Function Gradient Tests
 
-final class GradcheckComplexTests: XCTestCase {
+@Suite("Gradcheck Complex Tests")
+struct GradcheckComplexTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckChainedOperations() {
+    @Test("Gradcheck chained operations")
+    func gradcheckChainedOperations() {
         let x = Tensor<Float>.randn([2, 3])
         // Chained operations need slightly higher tolerance due to error accumulation
         let result = gradcheck({
@@ -333,10 +370,11 @@ final class GradcheckComplexTests: XCTestCase {
             return z.sum()  // reduce
         }, input: x, atol: 2e-3, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for chained ops. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for chained ops. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheckMatmulChain() {
+    @Test("Gradcheck matmul chain")
+    func gradcheckMatmulChain() {
         let x = Tensor<Float>.randn([2, 3])
         let w1 = Tensor<Float>.randn([3, 4])
         let w2 = Tensor<Float>.randn([4, 2])
@@ -347,7 +385,7 @@ final class GradcheckComplexTests: XCTestCase {
             return out.sum()
         }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for matmul chain. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for matmul chain. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
     // Note: Softmax VJP has known issues with dimension handling
@@ -357,67 +395,74 @@ final class GradcheckComplexTests: XCTestCase {
 
 // MARK: - Edge Case Tests
 
-final class GradcheckEdgeCaseTests: XCTestCase {
+@Suite("Gradcheck Edge Case Tests")
+struct GradcheckEdgeCaseTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testGradcheckScalar() {
+    @Test("Gradcheck scalar")
+    func gradcheckScalar() {
         let x = Tensor<Float>([Float(2.0)], shape: [], on: .default)
         let result = gradcheck({ $0 * $0 }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for scalar. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for scalar. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheck1D() {
+    @Test("Gradcheck 1D")
+    func gradcheck1D() {
         let x = Tensor<Float>.randn([5])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for 1D. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for 1D. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
-    func testGradcheck4D() {
+    @Test("Gradcheck 4D")
+    func gradcheck4D() {
         // Smaller size for speed
         let x = Tensor<Float>.randn([2, 2, 2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck failed for 4D. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck failed for 4D. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
     // Note: Very small eps can cause numerical instability
     // This is expected behavior, not a bug
-    func testGradcheckDefaultEps() {
+    @Test("Gradcheck default eps")
+    func gradcheckDefaultEps() {
         let x = Tensor<Float>.randn([2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
-        XCTAssertTrue(result.passed, "Gradcheck with default eps failed. MaxAbsDiff: \(result.maxAbsDiff)")
+        #expect(result.passed, "Gradcheck with default eps failed. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 }
 
 // MARK: - Linear Index Conversion Tests
 
-final class IndexConversionTests: XCTestCase {
+@Suite("Index Conversion Tests")
+struct IndexConversionTests {
 
     // Use reasonable tolerances for float32 numerical precision
     let atol: Float = 1e-3
     let rtol: Float = 1e-2
 
-    func testLinearToMultiIndex() {
+    @Test("Linear to multi-index")
+    func linearToMultiIndex() {
         // Test via verbose gradcheck which uses this function
         let x = Tensor<Float>.randn([2, 3])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol, verbose: true)
 
-        XCTAssertNotNil(result.details)
+        #expect(result.details != nil)
 
         if let details = result.details {
             // Check that indices are correctly computed
-            XCTAssertEqual(details[0].multiIndex, [0, 0])
-            XCTAssertEqual(details[1].multiIndex, [0, 1])
-            XCTAssertEqual(details[2].multiIndex, [0, 2])
-            XCTAssertEqual(details[3].multiIndex, [1, 0])
-            XCTAssertEqual(details[4].multiIndex, [1, 1])
-            XCTAssertEqual(details[5].multiIndex, [1, 2])
+            #expect(details[0].multiIndex == [0, 0])
+            #expect(details[1].multiIndex == [0, 1])
+            #expect(details[2].multiIndex == [0, 2])
+            #expect(details[3].multiIndex == [1, 0])
+            #expect(details[4].multiIndex == [1, 1])
+            #expect(details[5].multiIndex == [1, 2])
         }
     }
 }

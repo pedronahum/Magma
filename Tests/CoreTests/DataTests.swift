@@ -1,25 +1,28 @@
 // Magma - Data Loading Tests
 // Tests for Dataset and DataLoader
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - TensorDataset Tests
 
-final class TensorDatasetTests: XCTestCase {
+@Suite("TensorDataset Tests")
+struct TensorDatasetTests {
 
-    func testTensorDatasetCreation() {
+    @Test("TensorDataset creation")
+    func tensorDatasetCreation() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
         let dataset = TensorDataset(inputs: inputs, targets: targets)
 
-        XCTAssertEqual(dataset.count, 100)
+        #expect(dataset.count == 100)
     }
 
-    func testTensorDatasetShapeMismatch() {
+    @Test("TensorDataset shape mismatch")
+    func tensorDatasetShapeMismatch() {
         // Different number of samples should fail
         // (precondition will trigger in debug builds)
     }
@@ -27,22 +30,25 @@ final class TensorDatasetTests: XCTestCase {
 
 // MARK: - SimpleBatchLoader Tests
 
-final class SimpleBatchLoaderTests: XCTestCase {
+@Suite("SimpleBatchLoader Tests")
+struct SimpleBatchLoaderTests {
 
-    func testBatchLoaderCreation() {
+    @Test("BatchLoader creation")
+    func batchLoaderCreation() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
         let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 32)
 
-        XCTAssertEqual(loader.numSamples, 100)
-        XCTAssertEqual(loader.batchSize, 32)
-        XCTAssertEqual(loader.numBatches, 4)  // ceil(100/32) = 4
-        XCTAssertEqual(loader.shuffle, false)
-        XCTAssertEqual(loader.dropLast, false)
+        #expect(loader.numSamples == 100)
+        #expect(loader.batchSize == 32)
+        #expect(loader.numBatches == 4)  // ceil(100/32) = 4
+        #expect(loader.shuffle == false)
+        #expect(loader.dropLast == false)
     }
 
-    func testBatchLoaderIteration() {
+    @Test("BatchLoader iteration")
+    func batchLoaderIteration() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
@@ -50,54 +56,58 @@ final class SimpleBatchLoaderTests: XCTestCase {
 
         var batchCount = 0
         for batch in loader {
-            XCTAssertEqual(batch.input.shape[1], 784)
-            XCTAssertEqual(batch.target.shape[1], 10)
+            #expect(batch.input.shape[1] == 784)
+            #expect(batch.target.shape[1] == 10)
             batchCount += 1
         }
 
-        XCTAssertEqual(batchCount, 4)
+        #expect(batchCount == 4)
     }
 
-    func testBatchLoaderExactDivision() {
+    @Test("BatchLoader exact division")
+    func batchLoaderExactDivision() {
         let inputs = Tensor<Float>.ones([64, 784])
         let targets = Tensor<Float>.zeros([64, 10])
 
         let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 32)
 
-        XCTAssertEqual(loader.numBatches, 2)
+        #expect(loader.numBatches == 2)
 
         var batchCount = 0
         for _ in loader {
             batchCount += 1
         }
-        XCTAssertEqual(batchCount, 2)
+        #expect(batchCount == 2)
     }
 
-    func testBatchLoaderSingleBatch() {
+    @Test("BatchLoader single batch")
+    func batchLoaderSingleBatch() {
         let inputs = Tensor<Float>.ones([16, 784])
         let targets = Tensor<Float>.zeros([16, 10])
 
         let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 32)
 
-        XCTAssertEqual(loader.numBatches, 1)
+        #expect(loader.numBatches == 1)
     }
 
-    func testGetSpecificBatch() {
+    @Test("Get specific batch")
+    func getSpecificBatch() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
         let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 32)
 
         let batch0 = loader.batch(0)
-        XCTAssertEqual(batch0.input.shape[0], 32)
+        #expect(batch0.input.shape[0] == 32)
 
         let batch3 = loader.batch(3)  // Last batch (100 - 96 = 4 samples)
-        XCTAssertEqual(batch3.input.shape[0], 4)
+        #expect(batch3.input.shape[0] == 4)
     }
 
     // MARK: - Shuffle Tests
 
-    func testBatchLoaderWithShuffle() {
+    @Test("BatchLoader with shuffle")
+    func batchLoaderWithShuffle() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
@@ -108,20 +118,21 @@ final class SimpleBatchLoaderTests: XCTestCase {
             shuffle: true
         )
 
-        XCTAssertEqual(loader.shuffle, true)
-        XCTAssertEqual(loader.numBatches, 4)
+        #expect(loader.shuffle == true)
+        #expect(loader.numBatches == 4)
 
         var batchCount = 0
         for batch in loader {
-            XCTAssertEqual(batch.input.shape[1], 784)
-            XCTAssertEqual(batch.target.shape[1], 10)
+            #expect(batch.input.shape[1] == 784)
+            #expect(batch.target.shape[1] == 10)
             batchCount += 1
         }
 
-        XCTAssertEqual(batchCount, 4)
+        #expect(batchCount == 4)
     }
 
-    func testShuffleProducesDifferentOrder() {
+    @Test("Shuffle produces different order")
+    func shuffleProducesDifferentOrder() {
         // Create inputs with unique values per sample so we can verify shuffling
         var inputData = [Float]()
         for i in 0..<10 {
@@ -146,14 +157,15 @@ final class SimpleBatchLoaderTests: XCTestCase {
         }
 
         // Both should have same number of batches
-        XCTAssertEqual(batches1.count, 2)
-        XCTAssertEqual(batches2.count, 2)
+        #expect(batches1.count == 2)
+        #expect(batches2.count == 2)
 
         // Shapes should be preserved
-        XCTAssertEqual(batches1[0].count, 20)  // 5 samples * 4 features
+        #expect(batches1[0].count == 20)  // 5 samples * 4 features
     }
 
-    func testShufflePreservesAllSamples() {
+    @Test("Shuffle preserves all samples")
+    func shufflePreservesAllSamples() {
         // Verify that shuffling doesn't lose any samples
         var inputData = [Float]()
         for i in 0..<8 {
@@ -173,12 +185,13 @@ final class SimpleBatchLoaderTests: XCTestCase {
         }
 
         // All 8 unique values should be present
-        XCTAssertEqual(allValues.count, 8)
+        #expect(allValues.count == 8)
     }
 
     // MARK: - DropLast Tests
 
-    func testBatchLoaderWithDropLast() {
+    @Test("BatchLoader with dropLast")
+    func batchLoaderWithDropLast() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
@@ -189,8 +202,8 @@ final class SimpleBatchLoaderTests: XCTestCase {
             dropLast: true
         )
 
-        XCTAssertEqual(loader.dropLast, true)
-        XCTAssertEqual(loader.numBatches, 3)  // 100 / 32 = 3 (drops last 4 samples)
+        #expect(loader.dropLast == true)
+        #expect(loader.numBatches == 3)  // 100 / 32 = 3 (drops last 4 samples)
 
         var batchCount = 0
         var allBatchSizes: [Int] = []
@@ -199,12 +212,13 @@ final class SimpleBatchLoaderTests: XCTestCase {
             batchCount += 1
         }
 
-        XCTAssertEqual(batchCount, 3)
+        #expect(batchCount == 3)
         // All batches should be full size
-        XCTAssertTrue(allBatchSizes.allSatisfy { $0 == 32 })
+        #expect(allBatchSizes.allSatisfy { $0 == 32 })
     }
 
-    func testBatchLoaderDropLastExactDivision() {
+    @Test("BatchLoader dropLast exact division")
+    func batchLoaderDropLastExactDivision() {
         let inputs = Tensor<Float>.ones([64, 784])
         let targets = Tensor<Float>.zeros([64, 10])
 
@@ -216,16 +230,17 @@ final class SimpleBatchLoaderTests: XCTestCase {
         )
 
         // Exact division should still work
-        XCTAssertEqual(loader.numBatches, 2)
+        #expect(loader.numBatches == 2)
 
         var batchCount = 0
         for _ in loader {
             batchCount += 1
         }
-        XCTAssertEqual(batchCount, 2)
+        #expect(batchCount == 2)
     }
 
-    func testBatchLoaderShuffleAndDropLast() {
+    @Test("BatchLoader shuffle and dropLast")
+    func batchLoaderShuffleAndDropLast() {
         let inputs = Tensor<Float>.ones([100, 784])
         let targets = Tensor<Float>.zeros([100, 10])
 
@@ -237,22 +252,23 @@ final class SimpleBatchLoaderTests: XCTestCase {
             dropLast: true
         )
 
-        XCTAssertEqual(loader.shuffle, true)
-        XCTAssertEqual(loader.dropLast, true)
-        XCTAssertEqual(loader.numBatches, 3)
+        #expect(loader.shuffle == true)
+        #expect(loader.dropLast == true)
+        #expect(loader.numBatches == 3)
 
         var batchCount = 0
         for batch in loader {
-            XCTAssertEqual(batch.input.shape[0], 32)  // All batches should be full
+            #expect(batch.input.shape[0] == 32)  // All batches should be full
             batchCount += 1
         }
 
-        XCTAssertEqual(batchCount, 3)
+        #expect(batchCount == 3)
     }
 
     // MARK: - Multi-epoch Shuffle Tests
 
-    func testShuffleEachEpoch() {
+    @Test("Shuffle each epoch")
+    func shuffleEachEpoch() {
         var inputData = [Float]()
         for i in 0..<16 {
             inputData.append(Float(i))
@@ -273,7 +289,7 @@ final class SimpleBatchLoaderTests: XCTestCase {
         }
 
         // We collected 3 first-batch-first-values from 3 epochs
-        XCTAssertEqual(firstBatchFirstValues.count, 3)
+        #expect(firstBatchFirstValues.count == 3)
         // At least two epochs should have different first values (highly likely with shuffling)
         // Note: This could theoretically fail with very bad luck, but probability is low
     }
@@ -281,37 +297,43 @@ final class SimpleBatchLoaderTests: XCTestCase {
 
 // MARK: - Tensor Slice Tests
 
-final class TensorSliceTests: XCTestCase {
+@Suite("Tensor Slice Tests")
+struct TensorSliceTests {
 
-    func testSliceBasic() {
+    @Test("Slice basic")
+    func sliceBasic() {
         let x = Tensor<Float>.ones([100, 784])
         let sliced = x.slice(start: 0, size: 32)
 
-        XCTAssertEqual(sliced.shape, [32, 784])
+        #expect(sliced.shape == [32, 784])
     }
 
-    func testSliceMiddle() {
+    @Test("Slice middle")
+    func sliceMiddle() {
         let x = Tensor<Float>.ones([100, 784])
         let sliced = x.slice(start: 32, size: 32)
 
-        XCTAssertEqual(sliced.shape, [32, 784])
+        #expect(sliced.shape == [32, 784])
     }
 
-    func testSliceEnd() {
+    @Test("Slice end")
+    func sliceEnd() {
         let x = Tensor<Float>.ones([100, 784])
         let sliced = x.slice(start: 96, size: 4)
 
-        XCTAssertEqual(sliced.shape, [4, 784])
+        #expect(sliced.shape == [4, 784])
     }
 
-    func testSlice3D() {
+    @Test("Slice 3D")
+    func slice3D() {
         let x = Tensor<Float>.ones([100, 28, 28])
         let sliced = x.slice(start: 0, size: 16)
 
-        XCTAssertEqual(sliced.shape, [16, 28, 28])
+        #expect(sliced.shape == [16, 28, 28])
     }
 
-    func testSliceGradient() {
+    @Test("Slice gradient")
+    func sliceGradient() {
         let x = Tensor<Float>.ones([100, 10])
 
         let grad = gradient(at: x) { t in
@@ -319,15 +341,17 @@ final class TensorSliceTests: XCTestCase {
         }
 
         // Gradient should have original shape
-        XCTAssertEqual(grad.shape, [100, 10])
+        #expect(grad.shape == [100, 10])
     }
 }
 
 // MARK: - Training Loop Integration Tests
 
-final class DataLoaderTrainingTests: XCTestCase {
+@Suite("DataLoader Training Tests")
+struct DataLoaderTrainingTests {
 
-    func testTrainingLoopWithLoader() {
+    @Test("Training loop with loader")
+    func trainingLoopWithLoader() {
         // Create synthetic dataset
         let trainX = Tensor<Float>.ones([64, 784])
         let trainY = Tensor<Float>.zeros([64, 10])
@@ -348,7 +372,7 @@ final class DataLoaderTrainingTests: XCTestCase {
         for batch in loader {
             // Forward pass
             let output = model(batch.input)
-            XCTAssertEqual(output.shape[1], 10)
+            #expect(output.shape[1] == 10)
 
             // Create dummy gradients (normally computed via autodiff)
             let grads = model.parameters().map { Tensor<Float>.ones($0.shape) }
@@ -358,10 +382,11 @@ final class DataLoaderTrainingTests: XCTestCase {
             totalBatches += 1
         }
 
-        XCTAssertEqual(totalBatches, 2)
+        #expect(totalBatches == 2)
     }
 
-    func testMultiEpochTraining() {
+    @Test("Multi-epoch training")
+    func multiEpochTraining() {
         let trainX = Tensor<Float>.ones([32, 784])
         let trainY = Tensor<Float>.zeros([32, 10])
 
@@ -381,7 +406,7 @@ final class DataLoaderTrainingTests: XCTestCase {
         for _ in 0..<numEpochs {
             for batch in loader {
                 let output = model(batch.input)
-                XCTAssertEqual(output.shape[1], 10)
+                #expect(output.shape[1] == 10)
 
                 let grads = model.parameters().map { Tensor<Float>.ones($0.shape) }
                 optimizer.step(grads)
@@ -389,47 +414,53 @@ final class DataLoaderTrainingTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(totalBatches, numEpochs * 2)
+        #expect(totalBatches == numEpochs * 2)
     }
 }
 
 // MARK: - Gather Operation Tests
 
-final class GatherTests: XCTestCase {
+@Suite("Gather Tests")
+struct GatherTests {
 
-    func testGatherBasic2D() {
+    @Test("Gather basic 2D")
+    func gatherBasic2D() {
         let x = Tensor<Float>.randn([4, 8])  // [4, 8]
         let indices = Tensor<Float>.zeros([4, 3])  // Gather 3 elements per row
 
         let result = x.gather(indices: indices, axis: 1)
-        XCTAssertEqual(result.shape, [4, 3])
+        #expect(result.shape == [4, 3])
     }
 
-    func testGatherAxis0() {
+    @Test("Gather axis 0")
+    func gatherAxis0() {
         let x = Tensor<Float>.randn([10, 5])  // [10, 5]
         let indices = Tensor<Float>.zeros([3, 5])  // Gather 3 rows
 
         let result = x.gather(indices: indices, axis: 0)
-        XCTAssertEqual(result.shape, [3, 5])
+        #expect(result.shape == [3, 5])
     }
 
-    func testGather3D() {
+    @Test("Gather 3D")
+    func gather3D() {
         let x = Tensor<Float>.randn([2, 8, 16])
         let indices = Tensor<Float>.zeros([2, 4, 16])  // Gather 4 elements along axis 1
 
         let result = x.gather(indices: indices, axis: 1)
-        XCTAssertEqual(result.shape, [2, 4, 16])
+        #expect(result.shape == [2, 4, 16])
     }
 
-    func testGatherNegativeAxis() {
+    @Test("Gather negative axis")
+    func gatherNegativeAxis() {
         let x = Tensor<Float>.randn([4, 8])
         let indices = Tensor<Float>.zeros([4, 2])
 
         let result = x.gather(indices: indices, axis: -1)  // Same as axis=1
-        XCTAssertEqual(result.shape, [4, 2])
+        #expect(result.shape == [4, 2])
     }
 
-    func testGatherGradient() {
+    @Test("Gather gradient")
+    func gatherGradient() {
         let x = Tensor<Float>.randn([4, 8])
         let indices = Tensor<Float>.zeros([4, 2])
 
@@ -437,51 +468,57 @@ final class GatherTests: XCTestCase {
             t.gather(indices: indices, axis: 1).sum()
         }
 
-        XCTAssertEqual(grad.shape, [4, 8])
+        #expect(grad.shape == [4, 8])
     }
 }
 
 // MARK: - Scatter Operation Tests
 
-final class ScatterTests: XCTestCase {
+@Suite("Scatter Tests")
+struct ScatterTests {
 
-    func testScatterBasic2D() {
+    @Test("Scatter basic 2D")
+    func scatterBasic2D() {
         let x = Tensor<Float>.zeros([4, 8])
         let indices = Tensor<Float>.zeros([4, 2])
         let updates = Tensor<Float>.ones([4, 2])
 
         let result = x.scatter(indices: indices, updates: updates, axis: 1)
-        XCTAssertEqual(result.shape, [4, 8])
+        #expect(result.shape == [4, 8])
     }
 
-    func testScatterAxis0() {
+    @Test("Scatter axis 0")
+    func scatterAxis0() {
         let x = Tensor<Float>.zeros([10, 5])
         let indices = Tensor<Float>.zeros([3, 5])
         let updates = Tensor<Float>.ones([3, 5])
 
         let result = x.scatter(indices: indices, updates: updates, axis: 0)
-        XCTAssertEqual(result.shape, [10, 5])
+        #expect(result.shape == [10, 5])
     }
 
-    func testScatter3D() {
+    @Test("Scatter 3D")
+    func scatter3D() {
         let x = Tensor<Float>.zeros([2, 8, 16])
         let indices = Tensor<Float>.zeros([2, 3, 16])
         let updates = Tensor<Float>.ones([2, 3, 16])
 
         let result = x.scatter(indices: indices, updates: updates, axis: 1)
-        XCTAssertEqual(result.shape, [2, 8, 16])
+        #expect(result.shape == [2, 8, 16])
     }
 
-    func testScatterNegativeAxis() {
+    @Test("Scatter negative axis")
+    func scatterNegativeAxis() {
         let x = Tensor<Float>.zeros([4, 8])
         let indices = Tensor<Float>.zeros([4, 2])
         let updates = Tensor<Float>.ones([4, 2])
 
         let result = x.scatter(indices: indices, updates: updates, axis: -1)
-        XCTAssertEqual(result.shape, [4, 8])
+        #expect(result.shape == [4, 8])
     }
 
-    func testScatterGradient() {
+    @Test("Scatter gradient")
+    func scatterGradient() {
         let x = Tensor<Float>.zeros([4, 8])
         let indices = Tensor<Float>.zeros([4, 2])
         let updates = Tensor<Float>.ones([4, 2])
@@ -490,44 +527,50 @@ final class ScatterTests: XCTestCase {
             base.scatter(indices: indices, updates: upd, axis: 1).sum()
         }
 
-        XCTAssertEqual(inputGrad.shape, [4, 8])
-        XCTAssertEqual(updatesGrad.shape, [4, 2])
+        #expect(inputGrad.shape == [4, 8])
+        #expect(updatesGrad.shape == [4, 2])
     }
 }
 
 // MARK: - Expand Operation Tests
 
-final class ExpandTests: XCTestCase {
+@Suite("Expand Tests")
+struct ExpandTests {
 
-    func testExpandBasic() {
+    @Test("Expand basic")
+    func expandBasic() {
         let x = Tensor<Float>.ones([1, 4])
         let result = x.expand([3, 4])
 
-        XCTAssertEqual(result.shape, [3, 4])
+        #expect(result.shape == [3, 4])
     }
 
-    func testExpandMultipleDims() {
+    @Test("Expand multiple dims")
+    func expandMultipleDims() {
         let x = Tensor<Float>.ones([1, 1, 4])
         let result = x.expand([3, 5, 4])
 
-        XCTAssertEqual(result.shape, [3, 5, 4])
+        #expect(result.shape == [3, 5, 4])
     }
 
-    func testExpandMiddleDim() {
+    @Test("Expand middle dim")
+    func expandMiddleDim() {
         let x = Tensor<Float>.ones([2, 1, 4])
         let result = x.expand([2, 8, 4])
 
-        XCTAssertEqual(result.shape, [2, 8, 4])
+        #expect(result.shape == [2, 8, 4])
     }
 
-    func testExpandNoChange() {
+    @Test("Expand no change")
+    func expandNoChange() {
         let x = Tensor<Float>.ones([2, 4])
         let result = x.expand([2, 4])  // Same shape
 
-        XCTAssertEqual(result.shape, [2, 4])
+        #expect(result.shape == [2, 4])
     }
 
-    func testExpandGradient() {
+    @Test("Expand gradient")
+    func expandGradient() {
         let x = Tensor<Float>.ones([1, 4])
 
         let grad = gradient(at: x) { t in
@@ -535,582 +578,639 @@ final class ExpandTests: XCTestCase {
         }
 
         // Gradient should be summed back to original shape
-        XCTAssertEqual(grad.shape, [1, 4])
+        #expect(grad.shape == [1, 4])
     }
 
-    func testExpandGradient3D() {
+    @Test("Expand gradient 3D")
+    func expandGradient3D() {
         let x = Tensor<Float>.ones([1, 1, 8])
 
         let grad = gradient(at: x) { t in
             t.expand([4, 6, 8]).sum()
         }
 
-        XCTAssertEqual(grad.shape, [1, 1, 8])
+        #expect(grad.shape == [1, 1, 8])
     }
 }
 
 // MARK: - Sum with Dims Tests
 
-final class SumWithDimsTests: XCTestCase {
+@Suite("Sum with Dims Tests")
+struct SumWithDimsTests {
 
-    func testSumSingleDim() {
+    @Test("Sum single dim")
+    func sumSingleDim() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [1], keepDims: false)
 
-        XCTAssertEqual(result.shape, [4, 16])
+        #expect(result.shape == [4, 16])
     }
 
-    func testSumSingleDimKeepDims() {
+    @Test("Sum single dim keepDims")
+    func sumSingleDimKeepDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [1], keepDims: true)
 
-        XCTAssertEqual(result.shape, [4, 1, 16])
+        #expect(result.shape == [4, 1, 16])
     }
 
-    func testSumMultipleDims() {
+    @Test("Sum multiple dims")
+    func sumMultipleDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [0, 2], keepDims: false)
 
-        XCTAssertEqual(result.shape, [8])
+        #expect(result.shape == [8])
     }
 
-    func testSumMultipleDimsKeepDims() {
+    @Test("Sum multiple dims keepDims")
+    func sumMultipleDimsKeepDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [0, 2], keepDims: true)
 
-        XCTAssertEqual(result.shape, [1, 8, 1])
+        #expect(result.shape == [1, 8, 1])
     }
 
-    func testSumNegativeDim() {
+    @Test("Sum negative dim")
+    func sumNegativeDim() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [-1], keepDims: true)
 
-        XCTAssertEqual(result.shape, [4, 8, 1])
+        #expect(result.shape == [4, 8, 1])
     }
 
-    func testSumAllDims() {
+    @Test("Sum all dims")
+    func sumAllDims() {
         let x = Tensor<Float>.ones([4, 8, 16])
         let result = x.sum(dims: [0, 1, 2], keepDims: false)
 
-        XCTAssertEqual(result.shape, [])  // Scalar
+        #expect(result.shape == [])  // Scalar
     }
 }
 
 // MARK: - Concat Tests
 
-final class ConcatTests: XCTestCase {
+@Suite("Concat Tests")
+struct ConcatTests {
 
-    func testConcatAxis0() {
+    @Test("Concat axis 0")
+    func concatAxis0() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([3, 3])
         let c = Tensor<Float>.concat([a, b], axis: 0)
-        XCTAssertEqual(c.shape, [5, 3])
+        #expect(c.shape == [5, 3])
     }
 
-    func testConcatAxis1() {
+    @Test("Concat axis 1")
+    func concatAxis1() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 4])
         let c = Tensor<Float>.concat([a, b], axis: 1)
-        XCTAssertEqual(c.shape, [2, 7])
+        #expect(c.shape == [2, 7])
     }
 
-    func testConcatNegativeAxis() {
+    @Test("Concat negative axis")
+    func concatNegativeAxis() {
         let a = Tensor<Float>.ones([2, 3, 4])
         let b = Tensor<Float>.zeros([2, 3, 5])
         let c = Tensor<Float>.concat([a, b], axis: -1)
-        XCTAssertEqual(c.shape, [2, 3, 9])
+        #expect(c.shape == [2, 3, 9])
     }
 
-    func testConcatMultipleTensors() {
+    @Test("Concat multiple tensors")
+    func concatMultipleTensors() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = Tensor<Float>.randn([2, 3])
         let d = Tensor<Float>.concat([a, b, c], axis: 0)
-        XCTAssertEqual(d.shape, [6, 3])
+        #expect(d.shape == [6, 3])
     }
 
-    func testConcatSingleTensor() {
+    @Test("Concat single tensor")
+    func concatSingleTensor() {
         let a = Tensor<Float>.ones([2, 3])
         let c = Tensor<Float>.concat([a], axis: 0)
-        XCTAssertEqual(c.shape, [2, 3])
+        #expect(c.shape == [2, 3])
     }
 
-    func testConcatInstanceMethod() {
+    @Test("Concat instance method")
+    func concatInstanceMethod() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = a.concat(with: [b], axis: 0)
-        XCTAssertEqual(c.shape, [4, 3])
+        #expect(c.shape == [4, 3])
     }
 }
 
 // MARK: - Stack Tests
 
-final class StackTests: XCTestCase {
+@Suite("Stack Tests")
+struct StackTests {
 
-    func testStackAxis0() {
+    @Test("Stack axis 0")
+    func stackAxis0() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = Tensor<Float>.stack([a, b], axis: 0)
-        XCTAssertEqual(c.shape, [2, 2, 3])
+        #expect(c.shape == [2, 2, 3])
     }
 
-    func testStackAxis1() {
+    @Test("Stack axis 1")
+    func stackAxis1() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = Tensor<Float>.stack([a, b], axis: 1)
-        XCTAssertEqual(c.shape, [2, 2, 3])
+        #expect(c.shape == [2, 2, 3])
     }
 
-    func testStackAxis2() {
+    @Test("Stack axis 2")
+    func stackAxis2() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = Tensor<Float>.stack([a, b], axis: 2)
-        XCTAssertEqual(c.shape, [2, 3, 2])
+        #expect(c.shape == [2, 3, 2])
     }
 
-    func testStackNegativeAxis() {
+    @Test("Stack negative axis")
+    func stackNegativeAxis() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = Tensor<Float>.stack([a, b], axis: -1)
-        XCTAssertEqual(c.shape, [2, 3, 2])
+        #expect(c.shape == [2, 3, 2])
     }
 
-    func testStackMultipleTensors() {
+    @Test("Stack multiple tensors")
+    func stackMultipleTensors() {
         let tensors = (0..<5).map { _ in Tensor<Float>.randn([4, 8]) }
         let stacked = Tensor<Float>.stack(tensors, axis: 0)
-        XCTAssertEqual(stacked.shape, [5, 4, 8])
+        #expect(stacked.shape == [5, 4, 8])
     }
 
-    func testStackSingleTensor() {
+    @Test("Stack single tensor")
+    func stackSingleTensor() {
         let a = Tensor<Float>.ones([2, 3])
         let c = Tensor<Float>.stack([a], axis: 0)
-        XCTAssertEqual(c.shape, [1, 2, 3])
+        #expect(c.shape == [1, 2, 3])
     }
 
-    func testStackInstanceMethod() {
+    @Test("Stack instance method")
+    func stackInstanceMethod() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.zeros([2, 3])
         let c = a.stack(with: [b], axis: 0)
-        XCTAssertEqual(c.shape, [2, 2, 3])
+        #expect(c.shape == [2, 2, 3])
     }
 
-    func testStack3DTensors() {
+    @Test("Stack 3D tensors")
+    func stack3DTensors() {
         let a = Tensor<Float>.ones([2, 3, 4])
         let b = Tensor<Float>.zeros([2, 3, 4])
         let c = Tensor<Float>.stack([a, b], axis: 1)
-        XCTAssertEqual(c.shape, [2, 2, 3, 4])
+        #expect(c.shape == [2, 2, 3, 4])
     }
 }
 
 // MARK: - SliceAxis Tests
 
-final class SliceAxisTests: XCTestCase {
+@Suite("SliceAxis Tests")
+struct SliceAxisTests {
 
-    func testSliceAxis0() {
+    @Test("SliceAxis 0")
+    func sliceAxis0() {
         let x = Tensor<Float>.randn([10, 5, 3])
         let s = x.sliceAxis(axis: 0, start: 2, size: 4)
-        XCTAssertEqual(s.shape, [4, 5, 3])
+        #expect(s.shape == [4, 5, 3])
     }
 
-    func testSliceAxis1() {
+    @Test("SliceAxis 1")
+    func sliceAxis1() {
         let x = Tensor<Float>.randn([10, 8, 3])
         let s = x.sliceAxis(axis: 1, start: 1, size: 5)
-        XCTAssertEqual(s.shape, [10, 5, 3])
+        #expect(s.shape == [10, 5, 3])
     }
 
-    func testSliceAxis2() {
+    @Test("SliceAxis 2")
+    func sliceAxis2() {
         let x = Tensor<Float>.randn([10, 5, 8])
         let s = x.sliceAxis(axis: 2, start: 3, size: 2)
-        XCTAssertEqual(s.shape, [10, 5, 2])
+        #expect(s.shape == [10, 5, 2])
     }
 
-    func testSliceAxisNegative() {
+    @Test("SliceAxis negative")
+    func sliceAxisNegative() {
         let x = Tensor<Float>.randn([10, 5, 8])
         let s = x.sliceAxis(axis: -1, start: 0, size: 4)
-        XCTAssertEqual(s.shape, [10, 5, 4])
+        #expect(s.shape == [10, 5, 4])
     }
 
-    func testSliceAxisSingleElement() {
+    @Test("SliceAxis single element")
+    func sliceAxisSingleElement() {
         let x = Tensor<Float>.randn([10, 5, 8])
         let s = x.sliceAxis(axis: 0, start: 3, size: 1)
-        XCTAssertEqual(s.shape, [1, 5, 8])
+        #expect(s.shape == [1, 5, 8])
     }
 }
 
 // MARK: - Advanced Slicing Tests
 
-final class AdvancedSlicingTests: XCTestCase {
+@Suite("Advanced Slicing Tests")
+struct AdvancedSlicingTests {
 
     // MARK: - Negative Index Tests
 
-    func testSliceNegativeStart() {
+    @Test("Slice negative start")
+    func sliceNegativeStart() {
         let x = Tensor<Float>.randn([10, 8])
         // Last 3 elements along axis 0
         let s = x.slice(axis: 0, start: -3, stop: nil)
-        XCTAssertEqual(s.shape, [3, 8])
+        #expect(s.shape == [3, 8])
     }
 
-    func testSliceNegativeStop() {
+    @Test("Slice negative stop")
+    func sliceNegativeStop() {
         let x = Tensor<Float>.randn([10, 8])
         // All but last 2 elements
         let s = x.slice(axis: 0, start: 0, stop: -2)
-        XCTAssertEqual(s.shape, [8, 8])
+        #expect(s.shape == [8, 8])
     }
 
-    func testSliceNegativeStartAndStop() {
+    @Test("Slice negative start and stop")
+    func sliceNegativeStartAndStop() {
         let x = Tensor<Float>.randn([10, 8])
         // Elements from -5 to -2 (indices 5, 6, 7)
         let s = x.slice(axis: 0, start: -5, stop: -2)
-        XCTAssertEqual(s.shape, [3, 8])
+        #expect(s.shape == [3, 8])
     }
 
-    func testSliceNegativeAxis() {
+    @Test("Slice negative axis")
+    func sliceNegativeAxis() {
         let x = Tensor<Float>.randn([4, 10, 8])
         // Slice last axis
         let s = x.slice(axis: -1, start: 2, stop: 6)
-        XCTAssertEqual(s.shape, [4, 10, 4])
+        #expect(s.shape == [4, 10, 4])
     }
 
-    func testSliceNegativeAxisWithNegativeIndices() {
+    @Test("Slice negative axis with negative indices")
+    func sliceNegativeAxisWithNegativeIndices() {
         let x = Tensor<Float>.randn([4, 10, 8])
         // Last 3 along last axis
         let s = x.slice(axis: -1, start: -3, stop: nil)
-        XCTAssertEqual(s.shape, [4, 10, 3])
+        #expect(s.shape == [4, 10, 3])
     }
 
     // MARK: - Step/Stride Tests
 
-    func testSliceWithStep() {
+    @Test("Slice with step")
+    func sliceWithStep() {
         let x = Tensor<Float>.randn([10, 8])
         // Every other element
         let s = x.slice(axis: 0, start: 0, stop: nil, step: 2)
-        XCTAssertEqual(s.shape, [5, 8])
+        #expect(s.shape == [5, 8])
     }
 
-    func testSliceWithStepAndStart() {
+    @Test("Slice with step and start")
+    func sliceWithStepAndStart() {
         let x = Tensor<Float>.randn([10, 8])
         // Start at 1, every 2 elements: 1, 3, 5, 7, 9
         let s = x.slice(axis: 0, start: 1, stop: nil, step: 2)
-        XCTAssertEqual(s.shape, [5, 8])
+        #expect(s.shape == [5, 8])
     }
 
-    func testSliceWithStepAndStop() {
+    @Test("Slice with step and stop")
+    func sliceWithStepAndStop() {
         let x = Tensor<Float>.randn([10, 8])
         // From 0 to 8, step 3: 0, 3, 6
         let s = x.slice(axis: 0, start: 0, stop: 8, step: 3)
-        XCTAssertEqual(s.shape, [3, 8])
+        #expect(s.shape == [3, 8])
     }
 
-    func testSliceWithStep3() {
+    @Test("Slice with step 3")
+    func sliceWithStep3() {
         let x = Tensor<Float>.randn([12, 8])
         // Every 3rd element: 0, 3, 6, 9
         let s = x.slice(axis: 0, start: nil, stop: nil, step: 3)
-        XCTAssertEqual(s.shape, [4, 8])
+        #expect(s.shape == [4, 8])
     }
 
-    func testSliceWithStepOn3D() {
+    @Test("Slice with step on 3D")
+    func sliceWithStepOn3D() {
         let x = Tensor<Float>.randn([4, 20, 16])
         // Every 4th along axis 1
         let s = x.slice(axis: 1, start: nil, stop: nil, step: 4)
-        XCTAssertEqual(s.shape, [4, 5, 16])
+        #expect(s.shape == [4, 5, 16])
     }
 
-    func testSliceWithStepAndNegativeIndices() {
+    @Test("Slice with step and negative indices")
+    func sliceWithStepAndNegativeIndices() {
         let x = Tensor<Float>.randn([10, 8])
         // From index 1 to -1 (9), step 2: 1, 3, 5, 7
         let s = x.slice(axis: 0, start: 1, stop: -1, step: 2)
-        XCTAssertEqual(s.shape, [4, 8])
+        #expect(s.shape == [4, 8])
     }
 
     // MARK: - Edge Cases
 
-    func testSliceNilStartAndStop() {
+    @Test("Slice nil start and stop")
+    func sliceNilStartAndStop() {
         let x = Tensor<Float>.randn([10, 8])
         // Full slice (no-op)
         let s = x.slice(axis: 0, start: nil, stop: nil)
-        XCTAssertEqual(s.shape, [10, 8])
+        #expect(s.shape == [10, 8])
     }
 
-    func testSliceSingleElement() {
+    @Test("Slice single element")
+    func sliceSingleElement() {
         let x = Tensor<Float>.randn([10, 8])
         // Single element slice
         let s = x.slice(axis: 0, start: 5, stop: 6)
-        XCTAssertEqual(s.shape, [1, 8])
+        #expect(s.shape == [1, 8])
     }
 
-    func testSliceLastElement() {
+    @Test("Slice last element")
+    func sliceLastElement() {
         let x = Tensor<Float>.randn([10, 8])
         // Last element using negative index
         let s = x.slice(axis: 0, start: -1, stop: nil)
-        XCTAssertEqual(s.shape, [1, 8])
+        #expect(s.shape == [1, 8])
     }
 
-    func testSliceFirstElement() {
+    @Test("Slice first element")
+    func sliceFirstElement() {
         let x = Tensor<Float>.randn([10, 8])
         let s = x.slice(axis: 0, start: 0, stop: 1)
-        XCTAssertEqual(s.shape, [1, 8])
+        #expect(s.shape == [1, 8])
     }
 
     // MARK: - Gradient Tests
 
-    func testAdvancedSliceGradient() {
+    @Test("Advanced slice gradient")
+    func advancedSliceGradient() {
         let x = Tensor<Float>.randn([10, 8])
         let grad = gradient(at: x) { t in
             t.slice(axis: 0, start: 2, stop: 7).sum()
         }
-        XCTAssertEqual(grad.shape, [10, 8])
+        #expect(grad.shape == [10, 8])
     }
 
-    func testAdvancedSliceGradientWithStep() {
+    @Test("Advanced slice gradient with step")
+    func advancedSliceGradientWithStep() {
         let x = Tensor<Float>.randn([10, 8])
         let grad = gradient(at: x) { t in
             t.slice(axis: 0, start: nil, stop: nil, step: 2).sum()
         }
-        XCTAssertEqual(grad.shape, [10, 8])
+        #expect(grad.shape == [10, 8])
     }
 
-    func testAdvancedSliceGradientNegativeIndices() {
+    @Test("Advanced slice gradient negative indices")
+    func advancedSliceGradientNegativeIndices() {
         let x = Tensor<Float>.randn([10, 8])
         let grad = gradient(at: x) { t in
             t.slice(axis: 0, start: -5, stop: -1).sum()
         }
-        XCTAssertEqual(grad.shape, [10, 8])
+        #expect(grad.shape == [10, 8])
     }
 }
 
 // MARK: - Comparison Operations Tests
 
-final class ComparisonTests: XCTestCase {
+@Suite("Comparison Tests")
+struct ComparisonTests {
 
-    func testLessThan() {
+    @Test("Less than")
+    func lessThan() {
         let x = Tensor<Float>.randn([4, 8])
         let y = Tensor<Float>.randn([4, 8])
         let mask = x.lessThan(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testLessThanScalar() {
+    @Test("Less than scalar")
+    func lessThanScalar() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x.lessThan(0.0)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testGreaterThan() {
+    @Test("Greater than")
+    func greaterThan() {
         let x = Tensor<Float>.randn([4, 8])
         let y = Tensor<Float>.randn([4, 8])
         let mask = x.greaterThan(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testGreaterThanScalar() {
+    @Test("Greater than scalar")
+    func greaterThanScalar() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x.greaterThan(0.5)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testEqualTo() {
+    @Test("Equal to")
+    func equalTo() {
         let x = Tensor<Float>.ones([4, 8])
         let y = Tensor<Float>.ones([4, 8])
         let mask = x.equalTo(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testEqualToScalar() {
+    @Test("Equal to scalar")
+    func equalToScalar() {
         let x = Tensor<Float>.ones([4, 8])
         let mask = x.equalTo(1.0)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testLessThanOrEqual() {
+    @Test("Less than or equal")
+    func lessThanOrEqual() {
         let x = Tensor<Float>.randn([4, 8])
         let y = Tensor<Float>.randn([4, 8])
         let mask = x.lessThanOrEqual(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testGreaterThanOrEqual() {
+    @Test("Greater than or equal")
+    func greaterThanOrEqual() {
         let x = Tensor<Float>.randn([4, 8])
         let y = Tensor<Float>.randn([4, 8])
         let mask = x.greaterThanOrEqual(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testNotEqual() {
+    @Test("Not equal")
+    func notEqual() {
         let x = Tensor<Float>.ones([4, 8])
         let y = Tensor<Float>.zeros([4, 8])
         let mask = x.notEqual(y)
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
     // MARK: - Operator Tests
 
-    func testLessThanOperator() {
+    @Test("Less than operator")
+    func lessThanOperator() {
         let x = Tensor<Float>.randn([4, 8])
         let y = Tensor<Float>.randn([4, 8])
         let mask = x .< y
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testGreaterThanOperator() {
+    @Test("Greater than operator")
+    func greaterThanOperator() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x .> 0.0
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testLessOrEqualOperator() {
+    @Test("Less or equal operator")
+    func lessOrEqualOperator() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x .<= 0.5
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testGreaterOrEqualOperator() {
+    @Test("Greater or equal operator")
+    func greaterOrEqualOperator() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x .>= -0.5
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testEqualityOperator() {
+    @Test("Equality operator")
+    func equalityOperator() {
         let x = Tensor<Float>.ones([4, 8])
         let mask = x .== 1.0
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 
-    func testNotEqualOperator() {
+    @Test("Not equal operator")
+    func notEqualOperator() {
         let x = Tensor<Float>.ones([4, 8])
         let mask = x .!= 0.0
-        XCTAssertEqual(mask.shape, [4, 8])
+        #expect(mask.shape == [4, 8])
     }
 }
 
 // MARK: - Boolean Masking Tests
 
-final class BooleanMaskingTests: XCTestCase {
+@Suite("Boolean Masking Tests")
+struct BooleanMaskingTests {
 
-    func testMaskedSelect() {
+    @Test("Masked select")
+    func maskedSelect() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x.greaterThan(0.0)
         let result = x.maskedSelect(mask)
         // Result is flattened with zeros where mask is false
-        XCTAssertEqual(result.shape, [32])
+        #expect(result.shape == [32])
     }
 
-    func testWhereFunction() {
+    @Test("Where function")
+    func whereFunction() {
         let x = Tensor<Float>.ones([4, 8])
         let y = Tensor<Float>.zeros([4, 8])
         let mask = Tensor<Float>.randn([4, 8]).greaterThan(0.0)
 
         let result = Tensor<Float>.where_(mask, x, y)
-        XCTAssertEqual(result.shape, [4, 8])
+        #expect(result.shape == [4, 8])
     }
 
-    func testWhereMethod() {
+    @Test("Where method")
+    func whereMethod() {
         let x = Tensor<Float>.ones([4, 8])
         let y = Tensor<Float>.zeros([4, 8])
         let mask = Tensor<Float>.randn([4, 8]).greaterThan(0.0)
 
         let result = x.where_(mask, y)
-        XCTAssertEqual(result.shape, [4, 8])
+        #expect(result.shape == [4, 8])
     }
 
-    func testWhereWithScalarValues() {
+    @Test("Where with scalar values")
+    func whereWithScalarValues() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x.greaterThan(0.0)
 
         // Replace negative values with zero
         let positive = Tensor<Float>.where_(mask, x, Tensor<Float>.zeros([4, 8]))
-        XCTAssertEqual(positive.shape, [4, 8])
+        #expect(positive.shape == [4, 8])
     }
 
-    func testMaskChaining() {
+    @Test("Mask chaining")
+    func maskChaining() {
         let x = Tensor<Float>.randn([4, 8])
         // Values between -0.5 and 0.5
         let inRange = x.greaterThan(-0.5) * x.lessThan(0.5)
-        XCTAssertEqual(inRange.shape, [4, 8])
+        #expect(inRange.shape == [4, 8])
     }
 
-    func testMaskedFillWithComparison() {
+    @Test("Masked fill with comparison")
+    func maskedFillWithComparison() {
         let x = Tensor<Float>.randn([4, 8])
         let mask = x.lessThan(0.0)
         // Set all negative values to zero
         let result = x.maskedFill(mask: mask, value: Tensor<Float>.zeros([4, 8]))
-        XCTAssertEqual(result.shape, [4, 8])
+        #expect(result.shape == [4, 8])
     }
 }
 
 // MARK: - MNIST Dataset Tests
 
-final class MNISTDatasetTests: XCTestCase {
+@Suite("MNIST Dataset Tests")
+struct MNISTDatasetTests {
 
     /// Test that MNIST data files can be downloaded and parsed (requires network)
     /// This test is skipped by default - run manually to verify network download
-    func testMNISTDownloadAndParse() throws {
+    @Test("MNIST download and parse")
+    func mnistDownloadAndParse() throws {
         // Skip if MNIST data directory doesn't exist or network is unavailable
         // This test requires network access, so we'll make it conditional
 
         // Try to load MNIST - if data is cached, this will be fast
         // If not, it will download (~10MB per file)
-        do {
-            let mnist = try MNIST(split: .train, normalize: true, flatten: true)
+        let mnist = try MNIST(split: .train, normalize: true, flatten: true)
 
-            // Verify shapes
-            XCTAssertEqual(mnist.count, 60000, "Training set should have 60000 samples")
-            XCTAssertEqual(mnist.images.shape, [60000, 784], "Images should be [60000, 784]")
-            XCTAssertEqual(mnist.labels.shape, [60000, 10], "Labels should be [60000, 10] (one-hot)")
-        } catch {
-            // If network is unavailable or download fails, skip the test
-            throw XCTSkip("MNIST download failed (network may be unavailable): \(error)")
-        }
+        // Verify shapes
+        #expect(mnist.count == 60000, "Training set should have 60000 samples")
+        #expect(mnist.images.shape == [60000, 784], "Images should be [60000, 784]")
+        #expect(mnist.labels.shape == [60000, 10], "Labels should be [60000, 10] (one-hot)")
     }
 
-    func testMNISTTestSplit() throws {
-        do {
-            let mnist = try MNIST(split: .test, normalize: true, flatten: true)
+    @Test("MNIST test split")
+    func mnistTestSplit() throws {
+        let mnist = try MNIST(split: .test, normalize: true, flatten: true)
 
-            XCTAssertEqual(mnist.count, 10000, "Test set should have 10000 samples")
-            XCTAssertEqual(mnist.images.shape, [10000, 784])
-            XCTAssertEqual(mnist.labels.shape, [10000, 10])
-        } catch {
-            throw XCTSkip("MNIST download failed: \(error)")
-        }
+        #expect(mnist.count == 10000, "Test set should have 10000 samples")
+        #expect(mnist.images.shape == [10000, 784])
+        #expect(mnist.labels.shape == [10000, 10])
     }
 
-    func testMNISTUnflattenedImages() throws {
-        do {
-            let mnist = try MNIST(split: .train, normalize: true, flatten: false)
+    @Test("MNIST unflattened images")
+    func mnistUnflattenedImages() throws {
+        let mnist = try MNIST(split: .train, normalize: true, flatten: false)
 
-            // Unflattened images should be [N, 28, 28, 1]
-            XCTAssertEqual(mnist.images.shape, [60000, 28, 28, 1])
-        } catch {
-            throw XCTSkip("MNIST download failed: \(error)")
-        }
+        // Unflattened images should be [N, 28, 28, 1]
+        #expect(mnist.images.shape == [60000, 28, 28, 1])
     }
 
-    func testMNISTNonOneHotLabels() throws {
-        do {
-            let mnist = try MNIST(split: .train, normalize: true, flatten: true, oneHot: false)
+    @Test("MNIST non-one-hot labels")
+    func mnistNonOneHotLabels() throws {
+        let mnist = try MNIST(split: .train, normalize: true, flatten: true, oneHot: false)
 
-            // Non-one-hot labels should just be [N]
-            XCTAssertEqual(mnist.labels.shape, [60000])
-        } catch {
-            throw XCTSkip("MNIST download failed: \(error)")
-        }
+        // Non-one-hot labels should just be [N]
+        #expect(mnist.labels.shape == [60000])
     }
 
-    func testMNISTWithSimpleBatchLoader() throws {
-        do {
-            let mnist = try MNIST(split: .train, normalize: true, flatten: true)
-            let loader = SimpleBatchLoader(inputs: mnist.images, targets: mnist.labels, batchSize: 64)
+    @Test("MNIST with SimpleBatchLoader")
+    func mnistWithSimpleBatchLoader() throws {
+        let mnist = try MNIST(split: .train, normalize: true, flatten: true)
+        let loader = SimpleBatchLoader(inputs: mnist.images, targets: mnist.labels, batchSize: 64)
 
-            XCTAssertEqual(loader.numSamples, 60000)
-            XCTAssertEqual(loader.batchSize, 64)
-            XCTAssertEqual(loader.numBatches, 938)  // ceil(60000/64) = 938
+        #expect(loader.numSamples == 60000)
+        #expect(loader.batchSize == 64)
+        #expect(loader.numBatches == 938)  // ceil(60000/64) = 938
 
-            // Get first batch
-            let batch = loader.batch(0)
-            XCTAssertEqual(batch.input.shape, [64, 784])
-            XCTAssertEqual(batch.target.shape, [64, 10])
-        } catch {
-            throw XCTSkip("MNIST download failed: \(error)")
-        }
+        // Get first batch
+        let batch = loader.batch(0)
+        #expect(batch.input.shape == [64, 784])
+        #expect(batch.target.shape == [64, 10])
     }
 }

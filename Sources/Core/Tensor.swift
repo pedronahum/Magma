@@ -597,7 +597,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
 
     /// Get tensor values as a Swift array (triggers computation)
     public func scalars() -> [Scalar] {
-        // If already materialized, return cached values
+        // If already materialized with a PJRT buffer, return cached values
         if let buffer = handle.materializedBuffer {
             do {
                 if Scalar.self == Float.self {
@@ -613,18 +613,16 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             }
         }
 
-        // If this is a constant, we can return values directly
+        // If this is a constant (including Metal-materialized tensors), return values directly
         if case .constant(let values, _) = handle.irNode {
-            if Scalar.self == Float.self {
-                return values as! [Scalar]
-            }
+            return convertFloatArrayToScalar(values)
         }
 
         // Mark this tensor for materialization and trigger computation
         TensorRegistry.shared.markForMaterialization(handle)
         LazyTensorBarrier(on: device)
 
-        // Now check if we have a materialized buffer
+        // Check for PJRT buffer (CPU/GPU/TPU backends)
         if let buffer = handle.materializedBuffer {
             do {
                 if Scalar.self == Float.self {
@@ -640,8 +638,36 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             }
         }
 
+        // Check for constant (Metal backend stores results as constants)
+        if case .constant(let values, _) = handle.irNode {
+            return convertFloatArrayToScalar(values)
+        }
+
         // No data available
         return []
+    }
+
+    /// Helper to convert Float array to the tensor's Scalar type
+    private func convertFloatArrayToScalar(_ values: [Float]) -> [Scalar] {
+        if Scalar.self == Float.self {
+            return values as! [Scalar]
+        } else if Scalar.self == Double.self {
+            return values.map { Double($0) as! Scalar }
+        } else if Scalar.self == Int32.self {
+            return values.map { Int32($0) as! Scalar }
+        } else if Scalar.self == Int64.self {
+            return values.map { Int64($0) as! Scalar }
+        } else if Scalar.self == Bool.self {
+            return values.map { ($0 != 0) as! Scalar }
+        } else {
+            // Generic fallback - try to convert through string representation
+            return values.compactMap { value -> Scalar? in
+                if let scalar = Float(exactly: value) as? Scalar {
+                    return scalar
+                }
+                return nil
+            }
+        }
     }
 
     /// Get single scalar value (for 0-d tensors)
@@ -1927,6 +1953,9 @@ public enum MixedPrecision {
             return true
         case .gpu:
             // Most modern GPUs benefit from mixed precision
+            return true
+        case .metal:
+            // Apple Silicon GPUs support mixed precision
             return true
         case .cpu:
             // CPUs don't typically benefit from bfloat16

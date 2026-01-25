@@ -2,179 +2,205 @@
 // End-to-end tests for the PyTorch-compatible API
 // These require XLA for full functionality
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 @testable import StableHLO
 
-final class TensorCreationTests: XCTestCase {
+@Suite("Tensor Creation Tests")
+struct TensorCreationTests {
 
-    func testZeros() {
+    @Test("Zeros")
+    func zeros() {
         let t = Tensor<Float>.zeros([2, 3])
-        XCTAssertEqual(t.shape, [2, 3])
-        XCTAssertEqual(t.dtype, .float32)
-        XCTAssertEqual(t.rank, 2)
-        XCTAssertEqual(t.elementCount, 6)
+        #expect(t.shape == [2, 3])
+        #expect(t.dtype == .float32)
+        #expect(t.rank == 2)
+        #expect(t.elementCount == 6)
     }
 
-    func testOnes() {
+    @Test("Ones")
+    func ones() {
         let t = Tensor<Float>.ones([3, 4, 5])
-        XCTAssertEqual(t.shape, [3, 4, 5])
-        XCTAssertEqual(t.elementCount, 60)
+        #expect(t.shape == [3, 4, 5])
+        #expect(t.elementCount == 60)
     }
 
-    func testDevice() {
+    @Test("Device")
+    func device() {
         let t = Tensor<Float>.zeros([2, 2], on: .default)
-        XCTAssertEqual(t.device, .default)
-        XCTAssertEqual(t.device.backend, .cpu)
+        #expect(t.device == .default)
+        #expect(t.device.backend == .cpu)
     }
 }
 
-final class TensorArithmeticTests: XCTestCase {
+@Suite("Tensor Arithmetic Tests")
+struct TensorArithmeticTests {
 
-    func testAdd() {
+    @Test("Add")
+    func add() {
         let a = Tensor<Float>.zeros([2, 3])
         let b = Tensor<Float>.ones([2, 3])
         let c = a + b
 
-        XCTAssertEqual(c.shape, [2, 3])
-        XCTAssertEqual(c.dtype, .float32)
+        #expect(c.shape == [2, 3])
+        #expect(c.dtype == .float32)
 
         // Verify IR node is created
         if case .operation(let op, let inputs, _) = c.handle.irNode {
-            XCTAssertEqual(op, .add)
-            XCTAssertEqual(inputs.count, 2)
+            #expect(op == .add)
+            #expect(inputs.count == 2)
         } else {
-            XCTFail("Expected operation node")
+            Issue.record("Expected operation node")
         }
     }
 
-    func testSubtract() {
+    @Test("Subtract")
+    func subtract() {
         let a = Tensor<Float>.zeros([2, 3])
         let b = Tensor<Float>.ones([2, 3])
         let c = a - b
 
-        XCTAssertEqual(c.shape, [2, 3])
+        #expect(c.shape == [2, 3])
     }
 
-    func testMultiply() {
+    @Test("Multiply")
+    func multiply() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.ones([2, 3])
         let c = a * b
 
-        XCTAssertEqual(c.shape, [2, 3])
+        #expect(c.shape == [2, 3])
     }
 
-    func testDivide() {
+    @Test("Divide")
+    func divide() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.ones([2, 3])
         let c = a / b
 
-        XCTAssertEqual(c.shape, [2, 3])
+        #expect(c.shape == [2, 3])
     }
 }
 
-final class TensorMatrixTests: XCTestCase {
+@Suite("Tensor Matrix Tests")
+struct TensorMatrixTests {
 
-    func testMatmul() {
+    @Test("Matmul")
+    func matmul() {
         let a = Tensor<Float>.zeros([32, 784])
         let b = Tensor<Float>.zeros([784, 256])
         let c = a.matmul(b)
 
-        XCTAssertEqual(c.shape, [32, 256])
+        #expect(c.shape == [32, 256])
     }
 
-    func testTranspose() {
+    @Test("Transpose")
+    func transpose() {
         let a = Tensor<Float>.zeros([3, 4])
         let b = a.transpose()
 
-        XCTAssertEqual(b.shape, [4, 3])
+        #expect(b.shape == [4, 3])
     }
 
-    func testReshape() {
+    @Test("Reshape")
+    func reshape() {
         let a = Tensor<Float>.zeros([2, 3, 4])
         let b = a.reshape([6, 4])
 
-        XCTAssertEqual(b.shape, [6, 4])
-        XCTAssertEqual(b.elementCount, 24)
+        #expect(b.shape == [6, 4])
+        #expect(b.elementCount == 24)
     }
 }
 
-final class TensorReductionTests: XCTestCase {
+@Suite("Tensor Reduction Tests")
+struct TensorReductionTests {
 
-    func testSum() {
+    @Test("Sum")
+    func sum() {
         let a = Tensor<Float>.ones([2, 3])
         let b = a.sum()
 
-        XCTAssertEqual(b.shape, [])  // Scalar
-        XCTAssertEqual(b.rank, 0)
+        #expect(b.shape == [])  // Scalar
+        #expect(b.rank == 0)
     }
 
-    func testMean() {
+    @Test("Mean")
+    func mean() {
         let a = Tensor<Float>.ones([2, 3])
         let b = a.mean()
 
-        XCTAssertEqual(b.shape, [])
+        #expect(b.shape == [])
     }
 
-    func testMax() {
+    @Test("Max")
+    func max() {
         let a = Tensor<Float>.ones([2, 3])
         let b = a.max()
 
-        XCTAssertEqual(b.shape, [])
+        #expect(b.shape == [])
     }
 }
 
-final class TensorActivationTests: XCTestCase {
+@Suite("Tensor Activation Tests")
+struct TensorActivationTests {
 
-    func testRelu() {
+    @Test("ReLU")
+    func relu() {
         let a = Tensor<Float>.zeros([2, 3])
         let b = a.relu()
 
-        XCTAssertEqual(b.shape, [2, 3])
+        #expect(b.shape == [2, 3])
 
         if case .operation(let op, _, _) = b.handle.irNode {
-            XCTAssertEqual(op, .relu)
+            #expect(op == .relu)
         } else {
-            XCTFail("Expected relu operation")
+            Issue.record("Expected relu operation")
         }
     }
 
-    func testSigmoid() {
+    @Test("Sigmoid")
+    func sigmoid() {
         let a = Tensor<Float>.zeros([2, 3])
         let b = a.sigmoid()
 
-        XCTAssertEqual(b.shape, [2, 3])
+        #expect(b.shape == [2, 3])
     }
 
-    func testTanh() {
+    @Test("Tanh")
+    func tanh() {
         let a = Tensor<Float>.zeros([2, 3])
         let b = a.tanh()
 
-        XCTAssertEqual(b.shape, [2, 3])
+        #expect(b.shape == [2, 3])
     }
 }
 
-final class TensorFunctionalTests: XCTestCase {
+@Suite("Tensor Functional Tests")
+struct TensorFunctionalTests {
 
-    func testFunctionalRelu() {
+    @Test("Functional ReLU")
+    func functionalRelu() {
         let x = Tensor<Float>.zeros([2, 3])
         let y = nn.functional.relu(x)
 
-        XCTAssertEqual(y.shape, x.shape)
+        #expect(y.shape == x.shape)
     }
 
-    func testFunctionalSigmoid() {
+    @Test("Functional Sigmoid")
+    func functionalSigmoid() {
         let x = Tensor<Float>.zeros([2, 3])
         let y = nn.functional.sigmoid(x)
 
-        XCTAssertEqual(y.shape, x.shape)
+        #expect(y.shape == x.shape)
     }
 }
 
-final class TensorChainedOperationsTests: XCTestCase {
+@Suite("Tensor Chained Operations Tests")
+struct TensorChainedOperationsTests {
 
-    func testLinearLayerSimulation() {
+    @Test("Linear layer simulation")
+    func linearLayerSimulation() {
         // Simulates: y = relu(x @ w + b)
         let x = Tensor<Float>.zeros([32, 784])
         let w = Tensor<Float>.zeros([784, 256])
@@ -182,24 +208,27 @@ final class TensorChainedOperationsTests: XCTestCase {
 
         let y = (x.matmul(w) + b).relu()
 
-        XCTAssertEqual(y.shape, [32, 256])
+        #expect(y.shape == [32, 256])
     }
 
-    func testMultipleOperations() {
+    @Test("Multiple operations")
+    func multipleOperations() {
         let a = Tensor<Float>.zeros([10, 20])
         let b = Tensor<Float>.ones([10, 20])
 
         let result = ((a + b) * b).mean()
 
-        XCTAssertEqual(result.shape, [])
+        #expect(result.shape == [])
     }
 }
 
 // MARK: - Scan and While Loop Tests
 
-final class ScanTests: XCTestCase {
+@Suite("Scan Tests")
+struct ScanTests {
 
-    func testScanCounter() {
+    @Test("Scan counter")
+    func scanCounter() {
         // Test basic scan with simple counter
         let initial = Tensor<Float>([0.0], shape: [1])
         let iterations = 10
@@ -208,7 +237,7 @@ final class ScanTests: XCTestCase {
             state + Tensor<Float>([1.0], shape: [1])
         }
 
-        XCTAssertEqual(final.shape, [1])
+        #expect(final.shape == [1])
 
         // Verify IR structure
         // For now scan uses unrolling, so we should see the result
@@ -216,11 +245,12 @@ final class ScanTests: XCTestCase {
         LazyTensorBarrier()
 
         let values = final.scalars()
-        XCTAssertEqual(values.count, 1)
-        XCTAssertEqual(values[0], Float(iterations), accuracy: 0.001)
+        #expect(values.count == 1)
+        #expect(abs(values[0] - Float(iterations)) < 0.001)
     }
 
-    func testScanDoubling() {
+    @Test("Scan doubling")
+    func scanDoubling() {
         // Test scan with multiplication
         let initial = Tensor<Float>([1.0], shape: [1])
 
@@ -232,40 +262,42 @@ final class ScanTests: XCTestCase {
         LazyTensorBarrier()
 
         let values = final.scalars()
-        XCTAssertEqual(values[0], 32.0, accuracy: 0.001) // 1 * 2^5 = 32
+        #expect(abs(values[0] - 32.0) < 0.001) // 1 * 2^5 = 32
     }
 
+    @Test("Scan XLA tensor")
     func testScanXLATensor() {
         // Test the XLA tensor scan variant
         let initial = Tensor<Float>([0.0], shape: [1])
 
-        let final = scanXLATensor(iterations: 10, initial: initial) { x in
+        let final = Magma.scanXLATensor(iterations: 10, initial: initial) { x in
             x + Tensor<Float>([1.0], shape: [1])
         }
 
-        XCTAssertEqual(final.shape, [1])
+        #expect(final.shape == [1])
 
         // This uses traced while loop - the IR should contain a whileLoopTraced node
         if case .whileLoopTraced(let iterations, _, _, _, _) = final.handle.irNode {
-            XCTAssertEqual(iterations, 10)
+            #expect(iterations == 10)
         } else {
-            XCTFail("Expected whileLoopTraced node")
+            Issue.record("Expected whileLoopTraced node")
         }
     }
 
+    @Test("Scan XLA tensor execution")
     func testScanXLATensorExecution() {
         // Test that XLA while loop actually executes correctly
         let initial = Tensor<Float>([1.0], shape: [1])
 
-        let final = scanXLATensor(iterations: 5, initial: initial) { x in
+        let final = Magma.scanXLATensor(iterations: 5, initial: initial) { x in
             x * Tensor<Float>([2.0], shape: [1])
         }
 
         // Verify IR structure
         if case .whileLoopTraced(let iterations, _, _, _, _) = final.handle.irNode {
-            XCTAssertEqual(iterations, 5)
+            #expect(iterations == 5)
         } else {
-            XCTFail("Expected whileLoopTraced node")
+            Issue.record("Expected whileLoopTraced node")
         }
 
         // Execute and verify result
@@ -273,222 +305,257 @@ final class ScanTests: XCTestCase {
         LazyTensorBarrier()
 
         let values = final.scalars()
-        XCTAssertEqual(values.count, 1)
-        XCTAssertEqual(values[0], 32.0, accuracy: 0.001) // 1 * 2^5 = 32
+        #expect(values.count == 1)
+        #expect(abs(values[0] - 32.0) < 0.001) // 1 * 2^5 = 32
     }
 }
 
 // MARK: - Tensor Helper Operation Tests (Shape Verification - No XLA Required)
 
-final class TensorEyeTests: XCTestCase {
+@Suite("Tensor Eye Tests")
+struct TensorEyeTests {
 
-    func testEyeShape() {
+    @Test("Eye shape")
+    func eyeShape() {
         let I = Tensor<Float>.eye(3)
-        XCTAssertEqual(I.shape, [3, 3])
-        XCTAssertEqual(I.dtype, .float32)
+        #expect(I.shape == [3, 3])
+        #expect(I.dtype == .float32)
     }
 
-    func testEyeLargerShape() {
+    @Test("Eye larger shape")
+    func eyeLargerShape() {
         let I = Tensor<Float>.eye(5)
-        XCTAssertEqual(I.shape, [5, 5])
-        XCTAssertEqual(I.dtype, .float32)
+        #expect(I.shape == [5, 5])
+        #expect(I.dtype == .float32)
     }
 
-    func testEyeIRStructure() {
+    @Test("Eye IR structure")
+    func eyeIRStructure() {
         // Verify eye creates comparison-based IR
         let I = Tensor<Float>.eye(3)
         // Eye uses equalTo which creates a comparison operation
         if case .operation(let op, _, _) = I.handle.irNode {
-            XCTAssertEqual(op, .equal)  // equalTo uses .equal operation
+            #expect(op == .equal)  // equalTo uses .equal operation
         } else {
-            XCTFail("Expected operation node for eye")
+            Issue.record("Expected operation node for eye")
         }
     }
 }
 
-final class TensorLinspaceTests: XCTestCase {
+@Suite("Tensor Linspace Tests")
+struct TensorLinspaceTests {
 
-    func testLinspaceShape() {
+    @Test("Linspace shape")
+    func linspaceShape() {
         let x = Tensor<Float>.linspace(0, 1, steps: 5)
-        XCTAssertEqual(x.shape, [5])
+        #expect(x.shape == [5])
     }
 
-    func testLinspaceShapeLarge() {
+    @Test("Linspace shape large")
+    func linspaceShapeLarge() {
         let x = Tensor<Float>.linspace(0, 100, steps: 101)
-        XCTAssertEqual(x.shape, [101])
+        #expect(x.shape == [101])
     }
 
-    func testLinspaceSingleStepShape() {
+    @Test("Linspace single step shape")
+    func linspaceSingleStepShape() {
         let x = Tensor<Float>.linspace(5, 10, steps: 1)
-        XCTAssertEqual(x.shape, [1])
+        #expect(x.shape == [1])
     }
 
-    func testLinspaceIRStructure() {
+    @Test("Linspace IR structure")
+    func linspaceIRStructure() {
         let x = Tensor<Float>.linspace(0, 1, steps: 5)
         // linspace uses arange + arithmetic operations
         if case .operation(let op, _, _) = x.handle.irNode {
-            XCTAssertEqual(op, .add)  // Final operation is addition
+            #expect(op == .add)  // Final operation is addition
         } else {
-            XCTFail("Expected operation node for linspace")
+            Issue.record("Expected operation node for linspace")
         }
     }
 }
 
-final class TensorTriangularTests: XCTestCase {
+@Suite("Tensor Triangular Tests")
+struct TensorTriangularTests {
 
-    func testTrilShape() {
+    @Test("Tril shape")
+    func trilShape() {
         let x = Tensor<Float>.ones([3, 3])
         let lower = x.tril()
-        XCTAssertEqual(lower.shape, [3, 3])
+        #expect(lower.shape == [3, 3])
     }
 
-    func testTriuShape() {
+    @Test("Triu shape")
+    func triuShape() {
         let x = Tensor<Float>.ones([3, 3])
         let upper = x.triu()
-        XCTAssertEqual(upper.shape, [3, 3])
+        #expect(upper.shape == [3, 3])
     }
 
-    func testTrilNonSquareShape() {
+    @Test("Tril non-square shape")
+    func trilNonSquareShape() {
         let x = Tensor<Float>.ones([2, 4])
         let lower = x.tril()
-        XCTAssertEqual(lower.shape, [2, 4])
+        #expect(lower.shape == [2, 4])
     }
 
-    func testTriuNonSquareShape() {
+    @Test("Triu non-square shape")
+    func triuNonSquareShape() {
         let x = Tensor<Float>.ones([4, 2])
         let upper = x.triu()
-        XCTAssertEqual(upper.shape, [4, 2])
+        #expect(upper.shape == [4, 2])
     }
 
-    func testTrilIRStructure() {
+    @Test("Tril IR structure")
+    func trilIRStructure() {
         let x = Tensor<Float>.ones([3, 3])
         let lower = x.tril()
         // tril uses multiplication with mask
         if case .operation(let op, _, _) = lower.handle.irNode {
-            XCTAssertEqual(op, .multiply)
+            #expect(op == .multiply)
         } else {
-            XCTFail("Expected multiply operation for tril")
+            Issue.record("Expected multiply operation for tril")
         }
     }
 }
 
-final class TensorArgmaxArgminTests: XCTestCase {
+@Suite("Tensor Argmax Argmin Tests")
+struct TensorArgmaxArgminTests {
 
-    func testArgmaxGlobalShape() {
+    @Test("Argmax global shape")
+    func argmaxGlobalShape() {
         let x = Tensor<Float>([1, 3, 2, 3], shape: [4])
         let idx = x.argmax()
         // Global argmax should return scalar-like shape
-        XCTAssertEqual(idx.shape, [])  // Scalar
+        #expect(idx.shape == [])  // Scalar
     }
 
-    func testArgmaxDimShape() {
+    @Test("Argmax dim shape")
+    func argmaxDimShape() {
         // [[1, 2, 3], [6, 5, 4]]
         let x = Tensor<Float>([1, 2, 3, 6, 5, 4], shape: [2, 3])
         let rowMax = x.argmax(dim: 1)  // Max along columns for each row
-        XCTAssertEqual(rowMax.shape, [2])  // One index per row
+        #expect(rowMax.shape == [2])  // One index per row
     }
 
-    func testArgmaxDim0Shape() {
+    @Test("Argmax dim 0 shape")
+    func argmaxDim0Shape() {
         // [[1, 2, 3], [6, 5, 4]]
         let x = Tensor<Float>([1, 2, 3, 6, 5, 4], shape: [2, 3])
         let colMax = x.argmax(dim: 0)  // Max along rows for each column
-        XCTAssertEqual(colMax.shape, [3])  // One index per column
+        #expect(colMax.shape == [3])  // One index per column
     }
 
-    func testArgminGlobalShape() {
+    @Test("Argmin global shape")
+    func argminGlobalShape() {
         let x = Tensor<Float>([3, 1, 2, 1], shape: [4])
         let idx = x.argmin()
-        XCTAssertEqual(idx.shape, [])  // Scalar
+        #expect(idx.shape == [])  // Scalar
     }
 
-    func testArgminDimShape() {
+    @Test("Argmin dim shape")
+    func argminDimShape() {
         // [[3, 2, 1], [4, 5, 6]]
         let x = Tensor<Float>([3, 2, 1, 4, 5, 6], shape: [2, 3])
         let rowMin = x.argmin(dim: 1)
-        XCTAssertEqual(rowMin.shape, [2])
+        #expect(rowMin.shape == [2])
     }
 
-    func testArgmaxNegativeDimShape() {
+    @Test("Argmax negative dim shape")
+    func argmaxNegativeDimShape() {
         let x = Tensor<Float>([1, 2, 3, 6, 5, 4], shape: [2, 3])
         let rowMax = x.argmax(dim: -1)  // Same as dim: 1
-        XCTAssertEqual(rowMax.shape, [2])
+        #expect(rowMax.shape == [2])
     }
 
-    func testArgmax3DShape() {
+    @Test("Argmax 3D shape")
+    func argmax3DShape() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let result = x.argmax(dim: 1)
-        XCTAssertEqual(result.shape, [2, 4])  // Remove dim 1
+        #expect(result.shape == [2, 4])  // Remove dim 1
     }
 }
 
-final class TensorSqueezeTests: XCTestCase {
+@Suite("Tensor Squeeze Tests")
+struct TensorSqueezeTests {
 
-    func testSqueezeDim() {
+    @Test("Squeeze dim")
+    func squeezeDim() {
         let x = Tensor<Float>.ones([2, 1, 3])
         let squeezed = x.squeeze(dim: 1)
-        XCTAssertEqual(squeezed.shape, [2, 3])
+        #expect(squeezed.shape == [2, 3])
     }
 
-    func testSqueezeAll() {
+    @Test("Squeeze all")
+    func squeezeAll() {
         let x = Tensor<Float>.ones([1, 2, 1, 3, 1])
         let squeezed = x.squeeze()
-        XCTAssertEqual(squeezed.shape, [2, 3])
+        #expect(squeezed.shape == [2, 3])
     }
 
-    func testSqueezeNoDimOne() {
+    @Test("Squeeze no dim one")
+    func squeezeNoDimOne() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let squeezed = x.squeeze()
-        XCTAssertEqual(squeezed.shape, [2, 3, 4])  // No change
+        #expect(squeezed.shape == [2, 3, 4])  // No change
     }
 
-    func testSqueezeNegativeDim() {
+    @Test("Squeeze negative dim")
+    func squeezeNegativeDim() {
         let x = Tensor<Float>.ones([2, 3, 1])
         let squeezed = x.squeeze(dim: -1)
-        XCTAssertEqual(squeezed.shape, [2, 3])
+        #expect(squeezed.shape == [2, 3])
     }
 
-    func testExpandingShapeAndSqueeze() {
+    @Test("Expanding shape and squeeze")
+    func expandingShapeAndSqueeze() {
         let x = Tensor<Float>.ones([2, 3])
         let expanded = x.expandingShape(at: 1)
-        XCTAssertEqual(expanded.shape, [2, 1, 3])
+        #expect(expanded.shape == [2, 1, 3])
         let squeezed = expanded.squeeze(dim: 1)
-        XCTAssertEqual(squeezed.shape, [2, 3])
+        #expect(squeezed.shape == [2, 3])
     }
 
-    func testSqueezeFirstDim() {
+    @Test("Squeeze first dim")
+    func squeezeFirstDim() {
         let x = Tensor<Float>.ones([1, 3, 4])
         let squeezed = x.squeeze(dim: 0)
-        XCTAssertEqual(squeezed.shape, [3, 4])
+        #expect(squeezed.shape == [3, 4])
     }
 }
 
-final class TensorMinAlongAxesTests: XCTestCase {
+@Suite("Tensor Min Along Axes Tests")
+struct TensorMinAlongAxesTests {
 
-    func testMinAlongAxisShape() {
+    @Test("Min along axis shape")
+    func minAlongAxisShape() {
         let x = Tensor<Float>([3, 1, 4, 1, 5, 9], shape: [2, 3])
         let minVals = x.min(alongAxes: [1])  // Min along last axis
-        XCTAssertEqual(minVals.shape, [2])
+        #expect(minVals.shape == [2])
     }
 
-    func testMinAlongAxis0Shape() {
+    @Test("Min along axis 0 shape")
+    func minAlongAxis0Shape() {
         let x = Tensor<Float>([3, 1, 4, 1, 5, 9], shape: [2, 3])
         let minVals = x.min(alongAxes: [0])  // Min along first axis
-        XCTAssertEqual(minVals.shape, [3])
+        #expect(minVals.shape == [3])
     }
 
-    func testMinAlongMultipleAxesShape() {
+    @Test("Min along multiple axes shape")
+    func minAlongMultipleAxesShape() {
         let x = Tensor<Float>.ones([2, 3, 4])
         let minVals = x.min(alongAxes: [0, 2])
-        XCTAssertEqual(minVals.shape, [3])
+        #expect(minVals.shape == [3])
     }
 
-    func testMinIRStructure() {
+    @Test("Min IR structure")
+    func minIRStructure() {
         let x = Tensor<Float>([3, 1, 4, 1, 5, 9], shape: [2, 3])
         let minVals = x.min(alongAxes: [1])
         if case .operation(let op, _, _) = minVals.handle.irNode {
-            XCTAssertEqual(op, .reduceMin)
+            #expect(op == .reduceMin)
         } else {
-            XCTFail("Expected reduceMin operation")
+            Issue.record("Expected reduceMin operation")
         }
     }
 }

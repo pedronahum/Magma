@@ -1,196 +1,222 @@
 // Magma - Advanced Activation Tests
 // Tests for Phase 4 activation functions
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Leaky ReLU Tests
 
-final class LeakyReLUTests: XCTestCase {
+@Suite("Leaky ReLU Tests")
+struct LeakyReLUTests {
 
-    func testLeakyReluTensor() {
+    @Test("Leaky ReLU tensor operation")
+    func leakyReluTensor() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.leakyRelu()
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testLeakyReluLayer() {
+    @Test("Leaky ReLU layer")
+    func leakyReluLayer() {
         let layer = nn.LeakyReLU()
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 
-    func testLeakyReluCustomSlope() {
+    @Test("Leaky ReLU custom slope")
+    func leakyReluCustomSlope() {
         let layer = nn.LeakyReLU(negativeSlope: 0.2)
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 }
 
 // MARK: - SiLU Tests
 
-final class SiLUTests: XCTestCase {
+@Suite("SiLU Tests")
+struct SiLUTests {
 
-    func testSiluTensor() {
+    @Test("SiLU tensor operation")
+    func siluTensor() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.silu()
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testSiluLayer() {
+    @Test("SiLU layer")
+    func siluLayer() {
         let layer = nn.SiLU()
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 }
 
 // MARK: - ELU Tests
 
-final class ELUTests: XCTestCase {
+@Suite("ELU Tests")
+struct ELUTests {
 
-    func testEluTensor() {
+    @Test("ELU tensor operation")
+    func eluTensor() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.elu()
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testEluLayer() {
+    @Test("ELU layer")
+    func eluLayer() {
         let layer = nn.ELU()
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 
-    func testEluCustomAlpha() {
+    @Test("ELU custom alpha")
+    func eluCustomAlpha() {
         let layer = nn.ELU(alpha: 0.5)
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 }
 
 // MARK: - Hardtanh Tests
 
-final class HardtanhTests: XCTestCase {
+@Suite("Hardtanh Tests")
+struct HardtanhTests {
 
-    func testHardtanhTensor() {
+    @Test("Hardtanh tensor operation")
+    func hardtanhTensor() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.hardtanh()
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testHardtanhLayer() {
+    @Test("Hardtanh layer")
+    func hardtanhLayer() {
         let layer = nn.Hardtanh()
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 
-    func testHardtanhCustomRange() {
+    @Test("Hardtanh custom range")
+    func hardtanhCustomRange() {
         let layer = nn.Hardtanh(minVal: -2.0, maxVal: 2.0)
         let x = Tensor<Float>.ones([32, 128])
         let result = layer(x)
-        XCTAssertEqual(result.shape, [32, 128])
+        #expect(result.shape == [32, 128])
     }
 
-    func testClampFunction() {
+    @Test("Clamp function")
+    func clampFunction() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.clamp(min: 0.0, max: 1.0)
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 }
 
 // MARK: - Abs and Pow Tests
 
-final class MathOpsTests: XCTestCase {
+@Suite("Math Ops Tests")
+struct MathOpsTests {
 
-    func testAbs() {
+    @Test("Abs operation")
+    func abs() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.abs()
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testPow() {
+    @Test("Pow operation")
+    func pow() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.pow(2.0)
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 
-    func testPowFractional() {
+    @Test("Pow fractional exponent")
+    func powFractional() {
         let x = Tensor<Float>.ones([2, 3])
         let result = x.pow(0.5)
-        XCTAssertEqual(result.shape, [2, 3])
+        #expect(result.shape == [2, 3])
     }
 }
 
 // MARK: - Learning Rate Scheduler Tests
 
-final class LRSchedulerTests: XCTestCase {
+@Suite("LR Scheduler Tests")
+struct LRSchedulerTests {
 
-    func testStepLR() {
+    @Test("Step LR scheduler")
+    func stepLR() {
         var scheduler = optim.StepLR(baseLR: 0.1, stepSize: 3, gamma: 0.1)
 
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)
 
         scheduler.step()
         scheduler.step()
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)  // Before step size
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)  // Before step size
 
         scheduler.step()
-        XCTAssertEqual(scheduler.currentLR, 0.01, accuracy: 1e-6)  // After step size
+        #expect(abs(scheduler.currentLR - 0.01) < 1e-6)  // After step size
 
         scheduler.reset()
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)
     }
 
-    func testExponentialLR() {
+    @Test("Exponential LR scheduler")
+    func exponentialLR() {
         var scheduler = optim.ExponentialLR(baseLR: 0.1, gamma: 0.9)
 
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)
 
         scheduler.step()
-        XCTAssertEqual(scheduler.currentLR, 0.09, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.09) < 1e-6)
 
         scheduler.step()
-        XCTAssertEqual(scheduler.currentLR, 0.081, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.081) < 1e-6)
     }
 
-    func testCosineAnnealingLR() {
+    @Test("Cosine annealing LR scheduler")
+    func cosineAnnealingLR() {
         var scheduler = optim.CosineAnnealingLR(baseLR: 0.1, totalEpochs: 10, minLR: 0.0)
 
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)  // Start
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)  // Start
 
         for _ in 0..<5 {
             scheduler.step()
         }
-        XCTAssertEqual(scheduler.currentLR, 0.05, accuracy: 1e-6)  // Midpoint
+        #expect(abs(scheduler.currentLR - 0.05) < 1e-6)  // Midpoint
 
         for _ in 0..<5 {
             scheduler.step()
         }
-        XCTAssertEqual(scheduler.currentLR, 0.0, accuracy: 1e-6)  // End
+        #expect(abs(scheduler.currentLR - 0.0) < 1e-6)  // End
     }
 
-    func testWarmupLR() {
+    @Test("Warmup LR scheduler")
+    func warmupLR() {
         var scheduler = optim.WarmupLR(baseLR: 0.1, warmupSteps: 5)
 
-        XCTAssertEqual(scheduler.currentLR, 0.02, accuracy: 1e-6)  // Step 0
+        #expect(abs(scheduler.currentLR - 0.02) < 1e-6)  // Step 0
 
         scheduler.step()
-        XCTAssertEqual(scheduler.currentLR, 0.04, accuracy: 1e-6)  // Step 1
+        #expect(abs(scheduler.currentLR - 0.04) < 1e-6)  // Step 1
 
         for _ in 0..<10 {
             scheduler.step()
         }
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)  // After warmup
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)  // After warmup
     }
 
-    func testWarmupCosineScheduler() {
+    @Test("Warmup cosine scheduler")
+    func warmupCosineScheduler() {
         var scheduler = optim.WarmupCosineScheduler(
             baseLR: 0.1,
             warmupSteps: 10,
@@ -199,26 +225,28 @@ final class LRSchedulerTests: XCTestCase {
         )
 
         // Warmup phase
-        XCTAssertEqual(scheduler.currentLR, 0.01, accuracy: 1e-6)  // Step 0
+        #expect(abs(scheduler.currentLR - 0.01) < 1e-6)  // Step 0
 
         for _ in 0..<10 {
             scheduler.step()
         }
-        XCTAssertEqual(scheduler.currentLR, 0.1, accuracy: 1e-6)  // After warmup
+        #expect(abs(scheduler.currentLR - 0.1) < 1e-6)  // After warmup
 
         // Decay phase
         for _ in 0..<45 {
             scheduler.step()
         }
-        XCTAssertEqual(scheduler.currentLR, 0.05, accuracy: 0.01)  // ~Midpoint
+        #expect(abs(scheduler.currentLR - 0.05) < 0.01)  // ~Midpoint
     }
 }
 
 // MARK: - Integration Tests
 
-final class AdvancedActivationIntegrationTests: XCTestCase {
+@Suite("Advanced Activation Integration Tests")
+struct AdvancedActivationIntegrationTests {
 
-    func testModelWithAdvancedActivations() {
+    @Test("Model with advanced activations")
+    func modelWithAdvancedActivations() {
         let model = nn.sequential {
             nn.Linear(inputSize: 784, outputSize: 256)
             nn.LeakyReLU(negativeSlope: 0.1)
@@ -229,10 +257,11 @@ final class AdvancedActivationIntegrationTests: XCTestCase {
 
         let x = Tensor<Float>.randn([32, 784])
         let output = model(x)
-        XCTAssertEqual(output.shape, [32, 10])
+        #expect(output.shape == [32, 10])
     }
 
-    func testTrainingWithScheduler() {
+    @Test("Training with scheduler")
+    func trainingWithScheduler() {
         let model = nn.sequential {
             nn.Linear(inputSize: 10, outputSize: 5)
             nn.LeakyReLU()
@@ -245,7 +274,7 @@ final class AdvancedActivationIntegrationTests: XCTestCase {
         let x = Tensor<Float>.ones([8, 10])
 
         // Simulate 5 epochs
-        for epoch in 0..<5 {
+        for _ in 0..<5 {
             let _ = model(x)
 
             // Update optimizer LR from scheduler
@@ -259,6 +288,6 @@ final class AdvancedActivationIntegrationTests: XCTestCase {
         }
 
         // After 4 steps, LR should be 0.01 * 0.5^2 = 0.0025
-        XCTAssertEqual(scheduler.currentLR, 0.0025, accuracy: 1e-6)
+        #expect(abs(scheduler.currentLR - 0.0025) < 1e-6)
     }
 }

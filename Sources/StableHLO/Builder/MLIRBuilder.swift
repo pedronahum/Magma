@@ -623,16 +623,28 @@ public final class MLIRBuilder: @unchecked Sendable {
     ///   - axis: The axis along which to gather
     /// - Returns: Gathered tensor
     public func gather(_ input: Value, indices: Value, axis: Int) -> Value {
+        // StableHLO gather requires integer indices - convert if needed
+        let intIndices: Value
+        if indices.type.dtype == .float32 || indices.type.dtype == .float16 || indices.type.dtype == .bfloat16 {
+            // Convert float indices to int64
+            let intType = TensorType(shape: indices.type.shape, dtype: .int64)
+            intIndices = nextValue(type: intType)
+            let convertOp = "    \(intIndices.name) = stablehlo.convert \(indices.displayName) : (\(indices.type.mlirType)) -> \(intType.mlirType)"
+            operations.append(convertOp)
+        } else {
+            intIndices = indices
+        }
+
         // Compute result shape: replace the gather axis with indices shape
         var resultShape = input.type.shape
 
         // For 1D indices gathering along axis: result replaces axis dim with indices shape
-        if indices.type.shape.count == 1 {
-            resultShape[axis] = indices.type.shape[0]
+        if intIndices.type.shape.count == 1 {
+            resultShape[axis] = intIndices.type.shape[0]
         } else {
             // Multi-dimensional indices
             resultShape.remove(at: axis)
-            resultShape.insert(contentsOf: indices.type.shape, at: axis)
+            resultShape.insert(contentsOf: intIndices.type.shape, at: axis)
         }
 
         let resultType = TensorType(shape: resultShape, dtype: input.type.dtype)
@@ -654,10 +666,10 @@ public final class MLIRBuilder: @unchecked Sendable {
         sliceSizes[axis] = 1
         let sliceSizesStr = sliceSizes.map { String($0) }.joined(separator: ", ")
 
-        let indexVectorDim = indices.type.shape.count  // indices treated as scalar indices
+        let indexVectorDim = intIndices.type.shape.count  // indices treated as scalar indices
 
         let op = """
-            \(result.name) = "stablehlo.gather"(\(input.displayName), \(indices.displayName)) {
+            \(result.name) = "stablehlo.gather"(\(input.displayName), \(intIndices.displayName)) {
               dimension_numbers = #stablehlo.gather<
                 offset_dims = [\(offsetDims)],
                 collapsed_slice_dims = [\(collapsedSliceDims)],
@@ -666,7 +678,7 @@ public final class MLIRBuilder: @unchecked Sendable {
               >,
               slice_sizes = array<i64: \(sliceSizesStr)>,
               indices_are_sorted = false
-            } : (\(input.type.mlirType), \(indices.type.mlirType)) -> \(resultType.mlirType)
+            } : (\(input.type.mlirType), \(intIndices.type.mlirType)) -> \(resultType.mlirType)
         """
         operations.append(op)
         return result

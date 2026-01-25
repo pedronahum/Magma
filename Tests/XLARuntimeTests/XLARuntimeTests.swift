@@ -2,47 +2,53 @@
 // These tests require XLA to be installed
 // Skip in CI if XLA is not available
 
-import XCTest
+import Testing
 @testable import XLARuntime
 
-final class XLARuntimeTests: XCTestCase {
+@Suite("XLA Runtime Tests")
+struct XLARuntimeTests {
 
     // MARK: - Device Tests
 
-    func testDefaultDevice() {
+    @Test("Default device")
+    func defaultDevice() {
         let device = Device.default
-        XCTAssertEqual(device.backend, .cpu)
-        XCTAssertEqual(device.index, 0)
+        #expect(device.backend == .cpu)
+        #expect(device.index == 0)
     }
 
-    func testDeviceDescription() {
+    @Test("Device description")
+    func deviceDescription() {
         let cpu = Device(backend: .cpu, index: 0)
-        XCTAssertEqual(cpu.description, "CPU:0")
+        #expect(cpu.description == "CPU:0")
 
         let gpu = Device(backend: .gpu, index: 1)
-        XCTAssertEqual(gpu.description, "GPU:1")
+        #expect(gpu.description == "GPU:1")
     }
 
-    func testDeviceEquality() {
+    @Test("Device equality")
+    func deviceEquality() {
         let d1 = Device(backend: .cpu, index: 0)
         let d2 = Device(backend: .cpu, index: 0)
         let d3 = Device(backend: .gpu, index: 0)
 
-        XCTAssertEqual(d1, d2)
-        XCTAssertNotEqual(d1, d3)
+        #expect(d1 == d2)
+        #expect(d1 != d3)
     }
 
     // MARK: - Backend Tests
 
-    func testBackendRawValues() {
-        XCTAssertEqual(Backend.cpu.rawValue, "cpu")
-        XCTAssertEqual(Backend.gpu.rawValue, "gpu")
-        XCTAssertEqual(Backend.tpu.rawValue, "tpu")
+    @Test("Backend raw values")
+    func backendRawValues() {
+        #expect(Backend.cpu.rawValue == "cpu")
+        #expect(Backend.gpu.rawValue == "gpu")
+        #expect(Backend.tpu.rawValue == "tpu")
     }
 
     // MARK: - Error Tests
 
-    func testXLAErrorDescriptions() {
+    @Test("XLA error descriptions")
+    func xlaErrorDescriptions() {
         let errors: [XLAError] = [
             .clientCreationFailed("test"),
             .compilationFailed("test"),
@@ -53,36 +59,40 @@ final class XLARuntimeTests: XCTestCase {
         ]
 
         for error in errors {
-            XCTAssertFalse(error.description.isEmpty)
+            #expect(!error.description.isEmpty)
         }
     }
 
     // MARK: - Client Tests (Requires XLA)
 
-    func testClientCreation() throws {
+    @Test("Client creation")
+    func clientCreation() throws {
         // This test tries to load the XLA plugin
         // It will fail with clientCreationFailed if the plugin isn't installed
         // which is the expected behavior when XLA is not available
         do {
             let client = try PJRTClient.create(backend: .cpu)
             // If we get here, XLA is installed - verify client was created
-            XCTAssertEqual(client.backend, .cpu)
-            XCTAssertFalse(client.devices.isEmpty, "Client should have at least one device")
-        } catch XLAError.clientCreationFailed(let msg) {
+            #expect(client.backend == .cpu)
+            #expect(!client.devices.isEmpty, "Client should have at least one device")
+        } catch let error as XLAError {
             // Expected when XLA is not installed
-            XCTAssertTrue(msg.contains("plugin"), "Error should mention plugin: \(msg)")
+            if case .clientCreationFailed(let msg) = error {
+                #expect(msg.contains("plugin"), "Error should mention plugin: \(msg)")
+            }
         }
     }
 
     // MARK: - Placeholder Tests
 
-    func testPlaceholderForFutureIntegration() {
+    @Test("Placeholder for future integration")
+    func placeholderForFutureIntegration() {
         // TODO: Add real integration tests once XLA is available
         // These will test:
         // - Client creation with real PJRT plugins
         // - Buffer creation and data transfer
         // - MLIR compilation
         // - Program execution
-        XCTAssertTrue(true, "Placeholder test")
+        #expect(true, "Placeholder test")
     }
 }

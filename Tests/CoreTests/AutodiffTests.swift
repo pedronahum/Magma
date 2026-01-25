@@ -1,49 +1,55 @@
 // Magma - Autodiff Tests
 // Tests for automatic differentiation functionality
 
-import XCTest
+import Testing
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Basic Differentiable Conformance Tests
 
-final class DifferentiableConformanceTests: XCTestCase {
+@Suite("Differentiable Conformance Tests")
+struct DifferentiableConformanceTests {
 
-    func testTensorIsDifferentiable() {
+    @Test("Tensor is Differentiable")
+    func tensorIsDifferentiable() {
         let x = Tensor<Float>.ones([2, 3])
 
         // Tensor should conform to Differentiable
         // If it compiles, conformance is verified
-        XCTAssertEqual(x.shape, [2, 3])
+        #expect(x.shape == [2, 3])
     }
 
-    func testTensorIsAdditiveArithmetic() {
+    @Test("Tensor is AdditiveArithmetic")
+    func tensorIsAdditiveArithmetic() {
         let x = Tensor<Float>.ones([2, 3])
         let y = Tensor<Float>.ones([2, 3])
 
         // AdditiveArithmetic operations
         let sum = x + y
-        XCTAssertEqual(sum.shape, [2, 3])
+        #expect(sum.shape == [2, 3])
 
         let zero = Tensor<Float>.zero
-        XCTAssertEqual(zero.shape, [])
+        #expect(zero.shape == [])
     }
 
-    func testTensorEquatable() {
+    @Test("Tensor Equatable")
+    func tensorEquatable() {
         let x = Tensor<Float>.ones([2, 3])
         let y = x  // Same handle
 
         // Identity equality
-        XCTAssertEqual(x, y)
+        #expect(x == y)
     }
 }
 
 // MARK: - Gradient Computation Tests
 
-final class GradientComputationTests: XCTestCase {
+@Suite("Gradient Computation Tests")
+struct GradientComputationTests {
 
-    func testSumGradient() {
+    @Test("Sum gradient")
+    func sumGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -51,10 +57,11 @@ final class GradientComputationTests: XCTestCase {
         }
 
         // Gradient of sum is all ones (broadcast to original shape)
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testMeanGradient() {
+    @Test("Mean gradient")
+    func meanGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -62,10 +69,11 @@ final class GradientComputationTests: XCTestCase {
         }
 
         // Gradient of mean is 1/n broadcast to original shape
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testAdditionGradient() {
+    @Test("Addition gradient")
+    func additionGradient() {
         let x = Tensor<Float>.ones([2, 3])
         let y = Tensor<Float>.ones([2, 3])
 
@@ -74,11 +82,12 @@ final class GradientComputationTests: XCTestCase {
         }
 
         // Both gradients should have same shape
-        XCTAssertEqual(gradX.shape, [2, 3])
-        XCTAssertEqual(gradY.shape, [2, 3])
+        #expect(gradX.shape == [2, 3])
+        #expect(gradY.shape == [2, 3])
     }
 
-    func testMultiplicationGradient() {
+    @Test("Multiplication gradient")
+    func multiplicationGradient() {
         let x = Tensor<Float>.ones([2, 3])
         let y = Tensor<Float>.ones([2, 3])
 
@@ -87,37 +96,41 @@ final class GradientComputationTests: XCTestCase {
         }
 
         // d(sum(a*b))/da = b, d(sum(a*b))/db = a
-        XCTAssertEqual(gradX.shape, [2, 3])
-        XCTAssertEqual(gradY.shape, [2, 3])
+        #expect(gradX.shape == [2, 3])
+        #expect(gradY.shape == [2, 3])
     }
 
-    func testValueWithGradient() {
+    @Test("Value with gradient")
+    func valueWithGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
-        let (value, grad) = valueWithGradient(at: x) { t in
+        let (value, grad) = Magma.valueWithGradient(at: x) { t in
             t.sum()
         }
 
-        XCTAssertEqual(value.shape, [])  // Scalar output
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(value.shape == [])  // Scalar output
+        #expect(grad.shape == [2, 3])
     }
 }
 
 // MARK: - Activation Gradient Tests
 
-final class ActivationGradientTests: XCTestCase {
+@Suite("Activation Gradient Tests")
+struct ActivationGradientTests {
 
-    func testReluGradient() {
+    @Test("ReLU gradient")
+    func reluGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
             t.relu().sum()
         }
 
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testSigmoidGradient() {
+    @Test("Sigmoid gradient")
+    func sigmoidGradient() {
         let x = Tensor<Float>.zeros([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -125,10 +138,11 @@ final class ActivationGradientTests: XCTestCase {
         }
 
         // sigmoid'(0) = sigmoid(0) * (1 - sigmoid(0)) = 0.5 * 0.5 = 0.25
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testTanhGradient() {
+    @Test("Tanh gradient")
+    func tanhGradient() {
         let x = Tensor<Float>.zeros([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -136,10 +150,11 @@ final class ActivationGradientTests: XCTestCase {
         }
 
         // tanh'(0) = 1 - tanh(0)^2 = 1 - 0 = 1
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testExpGradient() {
+    @Test("Exp gradient")
+    func expGradient() {
         let x = Tensor<Float>.zeros([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -148,10 +163,11 @@ final class ActivationGradientTests: XCTestCase {
 
         // exp'(x) = exp(x)
         // exp'(0) = 1
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testLogGradient() {
+    @Test("Log gradient")
+    func logGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
@@ -160,15 +176,17 @@ final class ActivationGradientTests: XCTestCase {
 
         // log'(x) = 1/x
         // log'(1) = 1
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 }
 
 // MARK: - Matrix Operation Gradient Tests
 
-final class MatrixGradientTests: XCTestCase {
+@Suite("Matrix Gradient Tests")
+struct MatrixGradientTests {
 
-    func testMatmulGradient() {
+    @Test("Matmul gradient")
+    func matmulGradient() {
         let a = Tensor<Float>.ones([2, 3])
         let b = Tensor<Float>.ones([3, 4])
 
@@ -178,36 +196,40 @@ final class MatrixGradientTests: XCTestCase {
 
         // d(sum(A@B))/dA has shape [2, 3]
         // d(sum(A@B))/dB has shape [3, 4]
-        XCTAssertEqual(gradA.shape, [2, 3])
-        XCTAssertEqual(gradB.shape, [3, 4])
+        #expect(gradA.shape == [2, 3])
+        #expect(gradB.shape == [3, 4])
     }
 
-    func testTransposeGradient() {
+    @Test("Transpose gradient")
+    func transposeGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
             t.transpose().sum()
         }
 
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    func testReshapeGradient() {
+    @Test("Reshape gradient")
+    func reshapeGradient() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x) { t in
             t.reshape([6]).sum()
         }
 
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 }
 
 // MARK: - Chained Operations Gradient Tests
 
-final class ChainedGradientTests: XCTestCase {
+@Suite("Chained Gradient Tests")
+struct ChainedGradientTests {
 
-    func testLinearLayerGradient() {
+    @Test("Linear layer gradient")
+    func linearLayerGradient() {
         // y = relu(x @ w + b)
         let x = Tensor<Float>.ones([32, 784])
         let w = Tensor<Float>.ones([784, 256])
@@ -217,10 +239,11 @@ final class ChainedGradientTests: XCTestCase {
             return output.relu().sum()
         }
 
-        XCTAssertEqual(grad.shape, [784, 256])
+        #expect(grad.shape == [784, 256])
     }
 
-    func testMultiLayerGradient() {
+    @Test("Multi-layer gradient")
+    func multiLayerGradient() {
         // y = relu(relu(x @ w1) @ w2)
         let x = Tensor<Float>.ones([32, 10])
         let w1 = Tensor<Float>.ones([10, 20])
@@ -232,11 +255,12 @@ final class ChainedGradientTests: XCTestCase {
             return out.sum()
         }
 
-        XCTAssertEqual(gradW1.shape, [10, 20])
-        XCTAssertEqual(gradW2.shape, [20, 5])
+        #expect(gradW1.shape == [10, 20])
+        #expect(gradW2.shape == [20, 5])
     }
 
-    func testMSELossGradient() {
+    @Test("MSE loss gradient")
+    func mseLossGradient() {
         let prediction = Tensor<Float>.ones([32, 10])
         let target = Tensor<Float>.zeros([32, 10])
 
@@ -245,38 +269,41 @@ final class ChainedGradientTests: XCTestCase {
             return (diff * diff).mean()
         }
 
-        XCTAssertEqual(grad.shape, [32, 10])
+        #expect(grad.shape == [32, 10])
     }
 }
 
 // MARK: - Differentiable Function Tests
 
-final class DifferentiableFunctionTests: XCTestCase {
+@differentiable(reverse)
+func simpleForward(_ x: Tensor<Float>) -> Tensor<Float> {
+    x.relu().sum()
+}
 
-    @differentiable(reverse)
-    func simpleForward(_ x: Tensor<Float>) -> Tensor<Float> {
-        x.relu().sum()
-    }
+@differentiable(reverse)
+func mlpForward(
+    _ input: Tensor<Float>,
+    _ w1: Tensor<Float>,
+    _ w2: Tensor<Float>
+) -> Tensor<Float> {
+    let h = input.matmul(w1).relu()
+    return h.matmul(w2).sum()
+}
 
-    func testDifferentiableFunction() {
+@Suite("Differentiable Function Tests")
+struct DifferentiableFunctionTests {
+
+    @Test("Differentiable function")
+    func differentiableFunction() {
         let x = Tensor<Float>.ones([2, 3])
 
         let grad = gradient(at: x, of: simpleForward)
 
-        XCTAssertEqual(grad.shape, [2, 3])
+        #expect(grad.shape == [2, 3])
     }
 
-    @differentiable(reverse)
-    func mlpForward(
-        _ input: Tensor<Float>,
-        _ w1: Tensor<Float>,
-        _ w2: Tensor<Float>
-    ) -> Tensor<Float> {
-        let h = input.matmul(w1).relu()
-        return h.matmul(w2).sum()
-    }
-
-    func testDifferentiableMLP() {
+    @Test("Differentiable MLP")
+    func differentiableMLP() {
         let x = Tensor<Float>.ones([32, 10])
         let w1 = Tensor<Float>.ones([10, 20])
         let w2 = Tensor<Float>.ones([20, 5])
@@ -285,8 +312,8 @@ final class DifferentiableFunctionTests: XCTestCase {
         let (_, pb) = valueWithPullback(at: x, w1, w2, of: mlpForward)
         let (gradX, gradW1, gradW2) = pb(Tensor<Float>.ones([], on: .default))
 
-        XCTAssertEqual(gradX.shape, [32, 10])
-        XCTAssertEqual(gradW1.shape, [10, 20])
-        XCTAssertEqual(gradW2.shape, [20, 5])
+        #expect(gradX.shape == [32, 10])
+        #expect(gradW1.shape == [10, 20])
+        #expect(gradW2.shape == [20, 5])
     }
 }

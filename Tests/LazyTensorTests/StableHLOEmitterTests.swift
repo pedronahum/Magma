@@ -1,12 +1,14 @@
 // Magma - StableHLOEmitter Tests
 
-import XCTest
+import Testing
 @testable import LazyTensor
 @testable import StableHLO
 
-final class StableHLOEmitterTests: XCTestCase {
+@Suite("StableHLO Emitter Tests")
+struct StableHLOEmitterTests {
 
-    func testSimpleAdd() {
+    @Test("Simple add")
+    func simpleAdd() {
         // Create two constant handles
         let id1 = TensorRegistry.shared.nextTensorId()
         let handle1 = LazyTensorHandle(id: id1, shape: [2, 3], dtype: .float32, device: .default)
@@ -31,12 +33,13 @@ final class StableHLOEmitterTests: XCTestCase {
         let mlir = emitter.emit(name: "test_add")
 
         // Verify MLIR structure
-        XCTAssertTrue(mlir.contains("module @test_add"))
-        XCTAssertTrue(mlir.contains("stablehlo.add"))
-        XCTAssertTrue(mlir.contains("stablehlo.constant"))
+        #expect(mlir.contains("module @test_add"))
+        #expect(mlir.contains("stablehlo.add"))
+        #expect(mlir.contains("stablehlo.constant"))
     }
 
-    func testMatmulRelu() {
+    @Test("Matmul relu")
+    func matmulRelu() {
         // Create input constants
         let id1 = TensorRegistry.shared.nextTensorId()
         let handle1 = LazyTensorHandle(id: id1, shape: [2, 3], dtype: .float32, device: .default)
@@ -65,11 +68,12 @@ final class StableHLOEmitterTests: XCTestCase {
         let mlir = graph.emitStableHLO(name: "test_matmul_relu")
 
         // Verify MLIR structure
-        XCTAssertTrue(mlir.contains("stablehlo.dot"))
-        XCTAssertTrue(mlir.contains("stablehlo.maximum")) // ReLU is implemented as max(x, 0)
+        #expect(mlir.contains("stablehlo.dot"))
+        #expect(mlir.contains("stablehlo.maximum")) // ReLU is implemented as max(x, 0)
     }
 
-    func testReduceSum() {
+    @Test("Reduce sum")
+    func reduceSum() {
         // Create input constant
         let id1 = TensorRegistry.shared.nextTensorId()
         let handle1 = LazyTensorHandle(id: id1, shape: [2, 3, 4], dtype: .float32, device: .default)
@@ -88,11 +92,12 @@ final class StableHLOEmitterTests: XCTestCase {
         let mlir = graph.emitStableHLO(name: "test_reduce")
 
         // Verify MLIR structure
-        XCTAssertTrue(mlir.contains("stablehlo.reduce"))
-        XCTAssertTrue(mlir.contains("stablehlo.add"))
+        #expect(mlir.contains("stablehlo.reduce"))
+        #expect(mlir.contains("stablehlo.add"))
     }
 
-    func testGraphHash() {
+    @Test("Graph hash")
+    func graphHash() {
         // Create a simple graph
         let id1 = TensorRegistry.shared.nextTensorId()
         let handle1 = LazyTensorHandle(id: id1, shape: [2, 3], dtype: .float32, device: .default)
@@ -115,12 +120,13 @@ final class StableHLOEmitterTests: XCTestCase {
         let hash1 = graph1.computeHash()
         let hash2 = graph2.computeHash()
 
-        XCTAssertFalse(hash1.isEmpty)
-        XCTAssertFalse(hash2.isEmpty)
+        #expect(!hash1.isEmpty)
+        #expect(!hash2.isEmpty)
         // Note: Due to different tensor IDs, hashes might differ
     }
 
-    func testTopologicalSort() {
+    @Test("Topological sort")
+    func topologicalSort() {
         // Create a diamond-shaped graph:
         //     A
         //    / \
@@ -149,7 +155,7 @@ final class StableHLOEmitterTests: XCTestCase {
         graph.buildTopologicalOrder()
 
         // Verify topological order
-        XCTAssertEqual(graph.nodes.count, 4)
+        #expect(graph.nodes.count == 4)
 
         // A must come before B, C, and D
         let idxA = graph.nodes.firstIndex(where: { $0.id == idA })!
@@ -157,9 +163,9 @@ final class StableHLOEmitterTests: XCTestCase {
         let idxC = graph.nodes.firstIndex(where: { $0.id == idC })!
         let idxD = graph.nodes.firstIndex(where: { $0.id == idD })!
 
-        XCTAssertLessThan(idxA, idxB)
-        XCTAssertLessThan(idxA, idxC)
-        XCTAssertLessThan(idxB, idxD)
-        XCTAssertLessThan(idxC, idxD)
+        #expect(idxA < idxB)
+        #expect(idxA < idxC)
+        #expect(idxB < idxD)
+        #expect(idxC < idxD)
     }
 }

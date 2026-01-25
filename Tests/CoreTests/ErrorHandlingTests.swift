@@ -1,15 +1,17 @@
 // Magma - Error Handling Tests
 // Tests for TensorError and debugging utilities
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import StableHLO
 
 // MARK: - TensorError Description Tests
 
-final class TensorErrorDescriptionTests: XCTestCase {
+@Suite("TensorError Description Tests")
+struct TensorErrorDescriptionTests {
 
-    func testShapeMismatchDescription() {
+    @Test("Shape mismatch description")
+    func shapeMismatchDescription() {
         let error = TensorError.shapeMismatch(
             operation: "add",
             lhsShape: [2, 3],
@@ -17,13 +19,14 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Shape mismatch"))
-        XCTAssertTrue(desc.contains("add"))
-        XCTAssertTrue(desc.contains("[2, 3]"))
-        XCTAssertTrue(desc.contains("[4, 5]"))
+        #expect(desc.contains("Shape mismatch"))
+        #expect(desc.contains("add"))
+        #expect(desc.contains("[2, 3]"))
+        #expect(desc.contains("[4, 5]"))
     }
 
-    func testShapeMismatchWithMessage() {
+    @Test("Shape mismatch with message")
+    func shapeMismatchWithMessage() {
         let error = TensorError.shapeMismatch(
             operation: "concat",
             lhsShape: [2, 3],
@@ -32,10 +35,11 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("All dimensions except"))
+        #expect(desc.contains("All dimensions except"))
     }
 
-    func testIncompatibleShapeDescription() {
+    @Test("Incompatible shape description")
+    func incompatibleShapeDescription() {
         let error = TensorError.incompatibleShape(
             operation: "matmul",
             shape: [3],
@@ -43,50 +47,54 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Incompatible shape"))
-        XCTAssertTrue(desc.contains("matmul"))
-        XCTAssertTrue(desc.contains("[3]"))
-        XCTAssertTrue(desc.contains("Requires at least 2D"))
+        #expect(desc.contains("Incompatible shape"))
+        #expect(desc.contains("matmul"))
+        #expect(desc.contains("[3]"))
+        #expect(desc.contains("Requires at least 2D"))
     }
 
-    func testInvalidReshapeDescription() {
+    @Test("Invalid reshape description")
+    func invalidReshapeDescription() {
         let error = TensorError.invalidReshape(
             from: [2, 3],
             to: [2, 4]
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Invalid reshape"))
-        XCTAssertTrue(desc.contains("6 elements"))
-        XCTAssertTrue(desc.contains("8 elements"))
+        #expect(desc.contains("Invalid reshape"))
+        #expect(desc.contains("6 elements"))
+        #expect(desc.contains("8 elements"))
     }
 
-    func testInvalidBroadcastDescription() {
+    @Test("Invalid broadcast description")
+    func invalidBroadcastDescription() {
         let error = TensorError.invalidBroadcast(
             from: [2, 3],
             to: [4, 5]
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Invalid broadcast"))
-        XCTAssertTrue(desc.contains("[2, 3]"))
-        XCTAssertTrue(desc.contains("[4, 5]"))
+        #expect(desc.contains("Invalid broadcast"))
+        #expect(desc.contains("[2, 3]"))
+        #expect(desc.contains("[4, 5]"))
     }
 
-    func testAxisOutOfBoundsDescription() {
+    @Test("Axis out of bounds description")
+    func axisOutOfBoundsDescription() {
         let error = TensorError.axisOutOfBounds(
             axis: 5,
             rank: 3
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Axis out of bounds"))
-        XCTAssertTrue(desc.contains("5"))
-        XCTAssertTrue(desc.contains("rank: 3"))
-        XCTAssertTrue(desc.contains("[-3, 2]"))  // Valid range
+        #expect(desc.contains("Axis out of bounds"))
+        #expect(desc.contains("5"))
+        #expect(desc.contains("rank: 3"))
+        #expect(desc.contains("[-3, 2]"))  // Valid range
     }
 
-    func testIndexOutOfBoundsDescription() {
+    @Test("Index out of bounds description")
+    func indexOutOfBoundsDescription() {
         let error = TensorError.indexOutOfBounds(
             index: 10,
             dimension: 0,
@@ -94,12 +102,13 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Index out of bounds"))
-        XCTAssertTrue(desc.contains("10"))
-        XCTAssertTrue(desc.contains("size 5"))
+        #expect(desc.contains("Index out of bounds"))
+        #expect(desc.contains("10"))
+        #expect(desc.contains("size 5"))
     }
 
-    func testDeviceMismatchDescription() {
+    @Test("Device mismatch description")
+    func deviceMismatchDescription() {
         let error = TensorError.deviceMismatch(
             lhsDevice: "CPU:0",
             rhsDevice: "GPU:0",
@@ -107,12 +116,13 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Device mismatch"))
-        XCTAssertTrue(desc.contains("CPU:0"))
-        XCTAssertTrue(desc.contains("GPU:0"))
+        #expect(desc.contains("Device mismatch"))
+        #expect(desc.contains("CPU:0"))
+        #expect(desc.contains("GPU:0"))
     }
 
-    func testTypeMismatchDescription() {
+    @Test("Type mismatch description")
+    func typeMismatchDescription() {
         let error = TensorError.typeMismatch(
             lhsType: .float32,
             rhsType: .int32,
@@ -120,97 +130,108 @@ final class TensorErrorDescriptionTests: XCTestCase {
         )
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Type mismatch"))
-        XCTAssertTrue(desc.contains("float32"))
-        XCTAssertTrue(desc.contains("int32"))
+        #expect(desc.contains("Type mismatch"))
+        #expect(desc.contains("float32"))
+        #expect(desc.contains("int32"))
     }
 
-    func testEmptyTensorDescription() {
+    @Test("Empty tensor description")
+    func emptyTensorDescription() {
         let error = TensorError.emptyTensor(operation: "sum")
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Empty tensor"))
-        XCTAssertTrue(desc.contains("sum"))
+        #expect(desc.contains("Empty tensor"))
+        #expect(desc.contains("sum"))
     }
 
-    func testNotScalarDescription() {
+    @Test("Not scalar description")
+    func notScalarDescription() {
         let error = TensorError.notScalar(shape: [2, 3])
 
         let desc = error.description
-        XCTAssertTrue(desc.contains("Expected scalar"))
-        XCTAssertTrue(desc.contains("[2, 3]"))
+        #expect(desc.contains("Expected scalar"))
+        #expect(desc.contains("[2, 3]"))
     }
 }
 
 // MARK: - TensorDebug Tests
 
-final class TensorDebugTests: XCTestCase {
+@Suite("TensorDebug Tests")
+struct TensorDebugTests {
 
-    func testAreBroadcastableTrue() {
+    @Test("Are broadcastable true")
+    func areBroadcastableTrue() {
         // Same shape
-        XCTAssertTrue(TensorDebug.areBroadcastable([2, 3], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([2, 3], [2, 3]))
 
         // Scalar with anything
-        XCTAssertTrue(TensorDebug.areBroadcastable([], [2, 3]))
-        XCTAssertTrue(TensorDebug.areBroadcastable([2, 3], []))
+        #expect(TensorDebug.areBroadcastable([], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([2, 3], []))
 
         // Different ranks with 1
-        XCTAssertTrue(TensorDebug.areBroadcastable([1, 3], [2, 3]))
-        XCTAssertTrue(TensorDebug.areBroadcastable([2, 1], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([1, 3], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([2, 1], [2, 3]))
 
         // Higher rank
-        XCTAssertTrue(TensorDebug.areBroadcastable([3], [2, 3]))
-        XCTAssertTrue(TensorDebug.areBroadcastable([1, 1, 3], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([3], [2, 3]))
+        #expect(TensorDebug.areBroadcastable([1, 1, 3], [2, 3]))
     }
 
-    func testAreBroadcastableFalse() {
+    @Test("Are broadcastable false")
+    func areBroadcastableFalse() {
         // Incompatible dimensions
-        XCTAssertFalse(TensorDebug.areBroadcastable([2, 3], [4, 5]))
-        XCTAssertFalse(TensorDebug.areBroadcastable([2, 3], [2, 4]))
-        XCTAssertFalse(TensorDebug.areBroadcastable([3, 3], [2, 3]))
+        #expect(!TensorDebug.areBroadcastable([2, 3], [4, 5]))
+        #expect(!TensorDebug.areBroadcastable([2, 3], [2, 4]))
+        #expect(!TensorDebug.areBroadcastable([3, 3], [2, 3]))
     }
 
-    func testBroadcastResultShape() {
+    @Test("Broadcast result shape")
+    func broadcastResultShape() {
         // Same shape
-        XCTAssertEqual(TensorDebug.broadcastResultShape([2, 3], [2, 3]), [2, 3])
+        #expect(TensorDebug.broadcastResultShape([2, 3], [2, 3]) == [2, 3])
 
         // Broadcasting
-        XCTAssertEqual(TensorDebug.broadcastResultShape([1, 3], [2, 3]), [2, 3])
-        XCTAssertEqual(TensorDebug.broadcastResultShape([2, 1], [2, 3]), [2, 3])
-        XCTAssertEqual(TensorDebug.broadcastResultShape([3], [2, 3]), [2, 3])
+        #expect(TensorDebug.broadcastResultShape([1, 3], [2, 3]) == [2, 3])
+        #expect(TensorDebug.broadcastResultShape([2, 1], [2, 3]) == [2, 3])
+        #expect(TensorDebug.broadcastResultShape([3], [2, 3]) == [2, 3])
 
         // Invalid
-        XCTAssertNil(TensorDebug.broadcastResultShape([2, 3], [4, 5]))
+        #expect(TensorDebug.broadcastResultShape([2, 3], [4, 5]) == nil)
     }
 
-    func testIsValidReshape() {
-        XCTAssertTrue(TensorDebug.isValidReshape(from: [2, 3], to: [6]))
-        XCTAssertTrue(TensorDebug.isValidReshape(from: [2, 3], to: [3, 2]))
-        XCTAssertTrue(TensorDebug.isValidReshape(from: [2, 3], to: [1, 6]))
+    @Test("Is valid reshape")
+    func isValidReshape() {
+        #expect(TensorDebug.isValidReshape(from: [2, 3], to: [6]))
+        #expect(TensorDebug.isValidReshape(from: [2, 3], to: [3, 2]))
+        #expect(TensorDebug.isValidReshape(from: [2, 3], to: [1, 6]))
 
-        XCTAssertFalse(TensorDebug.isValidReshape(from: [2, 3], to: [5]))
-        XCTAssertFalse(TensorDebug.isValidReshape(from: [2, 3], to: [2, 4]))
+        #expect(!TensorDebug.isValidReshape(from: [2, 3], to: [5]))
+        #expect(!TensorDebug.isValidReshape(from: [2, 3], to: [2, 4]))
     }
 }
 
 // MARK: - TensorAssert Tests
 
-final class TensorAssertTests: XCTestCase {
+@Suite("TensorAssert Tests")
+struct TensorAssertTests {
 
-    func testBroadcastablePass() {
+    @Test("Broadcastable pass")
+    func broadcastablePass() {
         // Should not crash
         TensorAssert.broadcastable([2, 3], [2, 3], operation: "add")
         TensorAssert.broadcastable([1, 3], [2, 3], operation: "add")
         TensorAssert.broadcastable([3], [2, 3], operation: "add")
     }
 
-    func testShapesEqualPass() {
+    @Test("Shapes equal pass")
+    func shapesEqualPass() {
         // Should not crash
         TensorAssert.shapesEqual([2, 3], [2, 3], operation: "assign")
         TensorAssert.shapesEqual([], [], operation: "assign")
     }
 
-    func testValidAxisPass() {
+    @Test("Valid axis pass")
+    func validAxisPass() {
         // Should not crash
         TensorAssert.validAxis(0, rank: 3)
         TensorAssert.validAxis(2, rank: 3)
@@ -218,27 +239,31 @@ final class TensorAssertTests: XCTestCase {
         TensorAssert.validAxis(-3, rank: 3)  // First axis
     }
 
-    func testValidReshapePass() {
+    @Test("Valid reshape pass")
+    func validReshapePass() {
         // Should not crash
         TensorAssert.validReshape(from: [2, 3], to: [6])
         TensorAssert.validReshape(from: [2, 3, 4], to: [24])
         TensorAssert.validReshape(from: [], to: [1])
     }
 
-    func testValidMatmulPass() {
+    @Test("Valid matmul pass")
+    func validMatmulPass() {
         // Should not crash
         TensorAssert.validMatmul(lhs: [2, 3], rhs: [3, 4])
         TensorAssert.validMatmul(lhs: [5, 2, 3], rhs: [5, 3, 4])
     }
 
-    func testNonEmptyPass() {
+    @Test("Non-empty pass")
+    func nonEmptyPass() {
         // Should not crash
         TensorAssert.nonEmpty(shape: [2, 3], operation: "sum")
         TensorAssert.nonEmpty(shape: [], operation: "sum")  // Scalar is 1 element
         TensorAssert.nonEmpty(shape: [1], operation: "sum")
     }
 
-    func testIsScalarPass() {
+    @Test("Is scalar pass")
+    func isScalarPass() {
         // Should not crash
         TensorAssert.isScalar(shape: [])
         TensorAssert.isScalar(shape: [1])
@@ -248,9 +273,11 @@ final class TensorAssertTests: XCTestCase {
 
 // MARK: - Matmul Shape Help Tests
 
-final class MatmulShapeHelpTests: XCTestCase {
+@Suite("Matmul Shape Help Tests")
+struct MatmulShapeHelpTests {
 
-    func testMatmulShapeMismatchHelp() {
+    @Test("Matmul shape mismatch help")
+    func matmulShapeMismatchHelp() {
         let error = TensorError.shapeMismatch(
             operation: "matmul",
             lhsShape: [2, 3],
@@ -259,21 +286,24 @@ final class MatmulShapeHelpTests: XCTestCase {
 
         let desc = error.description
         // Should contain helpful matmul info
-        XCTAssertTrue(desc.contains("inner dimensions"))
+        #expect(desc.contains("inner dimensions"))
     }
 }
 
 // MARK: - Error Conformances
 
-final class ErrorConformanceTests: XCTestCase {
+@Suite("Error Conformance Tests")
+struct ErrorConformanceTests {
 
-    func testTensorErrorConformsToError() {
+    @Test("TensorError conforms to Error")
+    func tensorErrorConformsToError() {
         let error: Error = TensorError.emptyTensor(operation: "test")
-        XCTAssertNotNil(error)
+        #expect(error != nil)
     }
 
-    func testTensorErrorConformsToCustomStringConvertible() {
+    @Test("TensorError conforms to CustomStringConvertible")
+    func tensorErrorConformsToCustomStringConvertible() {
         let error: CustomStringConvertible = TensorError.emptyTensor(operation: "test")
-        XCTAssertFalse(error.description.isEmpty)
+        #expect(!error.description.isEmpty)
     }
 }

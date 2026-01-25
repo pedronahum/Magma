@@ -55,6 +55,7 @@ for (images, labels) in dataLoader {
 
 - **PyTorch-compatible API**: Familiar `nn.Module`, `nn.Linear`, `optim.Adam`, etc.
 - **XLA backend**: Automatic operation fusion, hardware portability (CPU/GPU/TPU)
+- **Metal backend**: Native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO)
 - **Swift-native autodiff**: First-class `@differentiable` support, not a bolted-on tape
 - **Lazy execution**: x10-style tracing with explicit barriers for optimal compilation
 - **Pure Swift StableHLO**: IR generation with no C dependencies
@@ -69,7 +70,8 @@ for (images, labels) in dataLoader {
 ├─────────────────────────────────────────────────────────────┤
 │  StableHLO      Pure Swift MLIR generation                  │
 ├─────────────────────────────────────────────────────────────┤
-│  XLARuntime     PJRT execution (CPU, GPU, TPU)              │
+│  XLARuntime     PJRT execution    │  MetalHLO (macOS)       │
+│                 (CPU, GPU, TPU)   │  Metal GPU via MPSGraph │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -83,9 +85,10 @@ for (images, labels) in dataLoader {
 |---------|--------|-------|
 | **CPU** | ✅ Supported | Full functionality via PJRT CPU plugin |
 | **TPU** | ✅ Supported | On Google Cloud TPU VMs with `libtpu.so` |
+| **Metal** | 🔬 Experimental | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) - performance under review |
 | **GPU** | 🚧 Planned | CUDA support planned for future release |
 
-> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0.
+> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0. Metal backend is functional but performance optimization is ongoing.
 
 ## Heritage
 
@@ -121,15 +124,27 @@ Magma uses [OpenXLA's PJRT](https://openxla.org/xla) (Portable JAX Runtime) for 
 | TPU | `libtpu.so` | Available on GCP TPU VMs |
 
 **Option 1: Build XLA from source**
+
+> **Tested Version**: Magma has been tested with XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (compatible with jaxlib 0.9.0). Using this specific version is recommended for compatibility.
+
 ```bash
 # Clone XLA
 git clone https://github.com/openxla/xla.git
 cd xla
 
+# Checkout the tested version (recommended)
+git checkout bb760b047bdbfeff962f0366ad5cc782c98657e0
+
 # Build PJRT CPU plugin (requires Bazel)
+# On macOS:
+bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.dylib
+# On Linux:
 bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
 
 # Copy to your preferred location
+# macOS:
+cp bazel-bin/xla/pjrt/c/pjrt_c_api_cpu_plugin.dylib /opt/xla/lib/
+# Linux:
 cp bazel-bin/xla/pjrt/c/pjrt_c_api_cpu_plugin.so /opt/xla/lib/
 ```
 

@@ -1,54 +1,61 @@
 // Magma - Profiling Tests
 // Tests for profiling and benchmarking utilities
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Timing Tests
 
-final class TimingTests: XCTestCase {
+@Suite("Timing Tests")
+struct TimingTests {
 
-    func testTimingCreation() {
+    @Test("Timing creation")
+    func timingCreation() {
         let timing = Timing(nanoseconds: 1_000_000_000)  // 1 second
 
-        XCTAssertEqual(timing.nanoseconds, 1_000_000_000)
-        XCTAssertEqual(timing.microseconds, 1_000_000, accuracy: 1)
-        XCTAssertEqual(timing.milliseconds, 1_000, accuracy: 0.001)
-        XCTAssertEqual(timing.seconds, 1.0, accuracy: 0.001)
+        #expect(timing.nanoseconds == 1_000_000_000)
+        #expect(abs(timing.microseconds - 1_000_000) < 1)
+        #expect(abs(timing.milliseconds - 1_000) < 0.001)
+        #expect(abs(timing.seconds - 1.0) < 0.001)
     }
 
-    func testTimingDescription() {
+    @Test("Timing description")
+    func timingDescription() {
         let microsecondTiming = Timing(nanoseconds: 500_000)  // 0.5 ms = 500 µs
-        XCTAssertTrue(microsecondTiming.description.contains("µs"))
+        #expect(microsecondTiming.description.contains("µs"))
 
         let millisecondTiming = Timing(nanoseconds: 50_000_000)  // 50 ms
-        XCTAssertTrue(millisecondTiming.description.contains("ms"))
+        #expect(millisecondTiming.description.contains("ms"))
 
         let secondTiming = Timing(nanoseconds: 2_000_000_000)  // 2 seconds
-        XCTAssertTrue(secondTiming.description.contains("s"))
+        #expect(secondTiming.description.contains("s"))
     }
 
-    func testTimingAddition() {
+    @Test("Timing addition")
+    func timingAddition() {
         let a = Timing(nanoseconds: 100)
         let b = Timing(nanoseconds: 200)
         let sum = a + b
 
-        XCTAssertEqual(sum.nanoseconds, 300)
+        #expect(sum.nanoseconds == 300)
     }
 
-    func testTimingZero() {
+    @Test("Timing zero")
+    func timingZero() {
         let zero = Timing.zero
-        XCTAssertEqual(zero.nanoseconds, 0)
-        XCTAssertEqual(zero.milliseconds, 0)
+        #expect(zero.nanoseconds == 0)
+        #expect(zero.milliseconds == 0)
     }
 }
 
 // MARK: - Profiler Timing Tests
 
-final class ProfilerTimingTests: XCTestCase {
+@Suite("Profiler Timing Tests")
+struct ProfilerTimingTests {
 
-    func testTimedBlock() {
+    @Test("Timed block")
+    func timedBlock() {
         let (result, timing) = Profiler.timed {
             // Simple computation
             var sum = 0
@@ -58,23 +65,25 @@ final class ProfilerTimingTests: XCTestCase {
             return sum
         }
 
-        XCTAssertEqual(result, 499500)  // Sum of 0..999
-        XCTAssertTrue(timing.nanoseconds > 0, "Timing should be positive")
+        #expect(result == 499500)  // Sum of 0..999
+        #expect(timing.nanoseconds > 0)
     }
 
-    func testTimedTensorOperation() {
+    @Test("Timed tensor operation")
+    func timedTensorOperation() {
         let (result, timing) = Profiler.timed {
             let a = Tensor<Float>.ones([10, 10])
             let b = Tensor<Float>.ones([10, 10])
             return (a + b).scalars()
         }
 
-        XCTAssertEqual(result.count, 100)
-        XCTAssertEqual(result[0], 2.0, accuracy: 1e-5)
-        XCTAssertTrue(timing.nanoseconds > 0)
+        #expect(result.count == 100)
+        #expect(abs(result[0] - 2.0) < 1e-5)
+        #expect(timing.nanoseconds > 0)
     }
 
-    func testTimedWithBarrier() {
+    @Test("Timed with barrier")
+    func timedWithBarrier() {
         var outputTensor: Tensor<Float>!
 
         let (_, timing) = Profiler.timedWithBarrier({
@@ -85,16 +94,18 @@ final class ProfilerTimingTests: XCTestCase {
             [outputTensor!]
         })
 
-        XCTAssertTrue(timing.nanoseconds > 0)
-        XCTAssertEqual(outputTensor.shape, [100, 100])
+        #expect(timing.nanoseconds > 0)
+        #expect(outputTensor.shape == [100, 100])
     }
 }
 
 // MARK: - Benchmark Tests
 
-final class BenchmarkTests: XCTestCase {
+@Suite("Benchmark Tests")
+struct BenchmarkTests {
 
-    func testBasicBenchmark() {
+    @Test("Basic benchmark")
+    func basicBenchmark() {
         let stats = Benchmark.measure(iterations: 10, warmup: 2) {
             // Simple work
             var sum = 0.0
@@ -103,50 +114,54 @@ final class BenchmarkTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(stats.iterations, 10)
-        XCTAssertTrue(stats.mean.nanoseconds > 0)
-        XCTAssertTrue(stats.min.nanoseconds <= stats.mean.nanoseconds)
-        XCTAssertTrue(stats.max.nanoseconds >= stats.mean.nanoseconds)
-        XCTAssertTrue(stats.median.nanoseconds > 0)
+        #expect(stats.iterations == 10)
+        #expect(stats.mean.nanoseconds > 0)
+        #expect(stats.min.nanoseconds <= stats.mean.nanoseconds)
+        #expect(stats.max.nanoseconds >= stats.mean.nanoseconds)
+        #expect(stats.median.nanoseconds > 0)
     }
 
-    func testBenchmarkWithBarrier() {
+    @Test("Benchmark with barrier")
+    func benchmarkWithBarrier() {
         let stats = Benchmark.measureWithBarrier(iterations: 5, warmup: 1, {
             let a = Tensor<Float>.ones([50, 50])
             let b = Tensor<Float>.ones([50, 50])
             return a + b
         }, result: { $0 })
 
-        XCTAssertEqual(stats.iterations, 5)
-        XCTAssertTrue(stats.mean.nanoseconds > 0)
+        #expect(stats.iterations == 5)
+        #expect(stats.mean.nanoseconds > 0)
     }
 
-    func testBenchmarkStatistics() {
+    @Test("Benchmark statistics")
+    func benchmarkStatistics() {
         // Create synthetic timing data
         let timings: [UInt64] = [100, 200, 150, 300, 250]
 
         let stats = BenchmarkStats(timings: timings)
 
-        XCTAssertEqual(stats.iterations, 5)
-        XCTAssertEqual(stats.min.nanoseconds, 100)
-        XCTAssertEqual(stats.max.nanoseconds, 300)
+        #expect(stats.iterations == 5)
+        #expect(stats.min.nanoseconds == 100)
+        #expect(stats.max.nanoseconds == 300)
 
         // Mean should be 200
-        XCTAssertEqual(stats.mean.nanoseconds, 200)
+        #expect(stats.mean.nanoseconds == 200)
 
         // Median of sorted [100, 150, 200, 250, 300] is 200
-        XCTAssertEqual(stats.median.nanoseconds, 200)
+        #expect(stats.median.nanoseconds == 200)
     }
 
-    func testBenchmarkOpsPerSecond() {
+    @Test("Benchmark ops per second")
+    func benchmarkOpsPerSecond() {
         // If mean is 1ms, ops/sec should be 1000
         let timings: [UInt64] = [1_000_000]  // 1ms
         let stats = BenchmarkStats(timings: timings)
 
-        XCTAssertEqual(stats.opsPerSecond, 1000, accuracy: 1)
+        #expect(abs(stats.opsPerSecond - 1000) < 1)
     }
 
-    func testCompare() throws {
+    @Test("Compare")
+    func compare() throws {
         let results = try Benchmark.compare(
             iterations: 5,
             warmup: 1,
@@ -164,17 +179,19 @@ final class BenchmarkTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(results.count, 2)
-        XCTAssertEqual(results[0].name, "add")
-        XCTAssertEqual(results[1].name, "multiply")
+        #expect(results.count == 2)
+        #expect(results[0].name == "add")
+        #expect(results[1].name == "multiply")
     }
 }
 
 // MARK: - ExecutionProfile Tests
 
-final class ExecutionProfileTests: XCTestCase {
+@Suite("ExecutionProfile Tests")
+struct ExecutionProfileTests {
 
-    func testExecutionProfileDescription() {
+    @Test("Execution profile description")
+    func executionProfileDescription() {
         let profile = ExecutionProfile(
             h2dTransfer: Timing(nanoseconds: 100_000),
             execution: Timing(nanoseconds: 500_000),
@@ -187,27 +204,30 @@ final class ExecutionProfileTests: XCTestCase {
         )
 
         let desc = profile.description
-        XCTAssertTrue(desc.contains("ExecutionProfile"))
-        XCTAssertTrue(desc.contains("H2D Transfer"))
-        XCTAssertTrue(desc.contains("Execution"))
-        XCTAssertTrue(desc.contains("Total"))
-        XCTAssertTrue(desc.contains("Inputs"))
-        XCTAssertTrue(desc.contains("Outputs"))
+        #expect(desc.contains("ExecutionProfile"))
+        #expect(desc.contains("H2D Transfer"))
+        #expect(desc.contains("Execution"))
+        #expect(desc.contains("Total"))
+        #expect(desc.contains("Inputs"))
+        #expect(desc.contains("Outputs"))
     }
 }
 
 // MARK: - FLOPS Estimator Tests
 
-final class FLOPSEstimatorTests: XCTestCase {
+@Suite("FLOPS Estimator Tests")
+struct FLOPSEstimatorTests {
 
-    func testMatmulFLOPS() {
+    @Test("Matmul FLOPS")
+    func matmulFLOPS() {
         // For a [100, 200] x [200, 300] matmul
         // FLOPS = 2 * 100 * 300 * 200 = 12,000,000
         let flops = FLOPSEstimator.matmul(m: 100, n: 300, k: 200)
-        XCTAssertEqual(flops, 12_000_000)
+        #expect(flops == 12_000_000)
     }
 
-    func testConv2dFLOPS() {
+    @Test("Conv2d FLOPS")
+    func conv2dFLOPS() {
         // Simple convolution: batch=1, in_c=3, out_c=64, 224x224 input, 3x3 kernel
         let flops = FLOPSEstimator.conv2d(
             batchSize: 1,
@@ -222,89 +242,98 @@ final class FLOPSEstimatorTests: XCTestCase {
         // Output size: 222x222 (no padding, stride=1)
         // FLOPS per output: 2 * kernelH * kernelW * inputC = 2 * 3 * 3 * 3 = 54
         // Total: 1 * 64 * 222 * 222 * 54 = 170,325,504
-        XCTAssertEqual(flops, 170_325_504)
+        #expect(flops == 170_325_504)
     }
 
-    func testGFLOPSCalculation() {
+    @Test("GFLOPS calculation")
+    func gflopsCalculation() {
         // 1 billion ops in 1 second = 1 GFLOPS
         let gflops = FLOPSEstimator.gflops(
             operations: 1_000_000_000,
             timing: Timing(nanoseconds: 1_000_000_000)
         )
-        XCTAssertEqual(gflops, 1.0, accuracy: 0.001)
+        #expect(abs(gflops - 1.0) < 0.001)
 
         // 1 billion ops in 0.5 seconds = 2 GFLOPS
         let gflops2 = FLOPSEstimator.gflops(
             operations: 1_000_000_000,
             timing: Timing(nanoseconds: 500_000_000)
         )
-        XCTAssertEqual(gflops2, 2.0, accuracy: 0.001)
+        #expect(abs(gflops2 - 2.0) < 0.001)
     }
 }
 
 // MARK: - Memory Stats Tests
 
-final class MemoryStatsTests: XCTestCase {
+@Suite("Memory Stats Tests")
+struct MemoryStatsTests {
 
-    func testMemoryStatsDescription() {
+    @Test("Memory stats description")
+    func memoryStatsDescription() {
         let stats = MemoryStats(
             tensorBytes: 1024 * 1024,  // 1 MB
             tensorCount: 10,
             peakBytes: 2 * 1024 * 1024
         )
 
-        XCTAssertEqual(stats.tensorMegabytes, 1.0, accuracy: 0.01)
+        #expect(abs(stats.tensorMegabytes - 1.0) < 0.01)
 
         let desc = stats.description
-        XCTAssertTrue(desc.contains("MemoryStats"))
-        XCTAssertTrue(desc.contains("Tensors"))
-        XCTAssertTrue(desc.contains("Usage"))
+        #expect(desc.contains("MemoryStats"))
+        #expect(desc.contains("Tensors"))
+        #expect(desc.contains("Usage"))
     }
 
-    func testMemoryProfiler() {
+    @Test("Memory profiler")
+    func memoryProfiler() {
         let (result, before, after) = MemoryProfiler.profile {
             let tensor = Tensor<Float>.randn([100, 100])
             return tensor.sum().scalars()[0]
         }
 
         // Result should be a valid float
-        XCTAssertFalse(result.isNaN)
-        XCTAssertFalse(result.isInfinite)
+        #expect(!result.isNaN)
+        #expect(!result.isInfinite)
 
         // Just verify we got stats back
-        XCTAssertTrue(before.tensorCount >= 0)
-        XCTAssertTrue(after.tensorCount >= 0)
+        #expect(before.tensorCount >= 0)
+        #expect(after.tensorCount >= 0)
     }
 }
 
 // MARK: - Profiler API Tests
 
-final class ProfilerAPITests: XCTestCase {
+@Suite("Profiler API Tests")
+struct ProfilerAPITests {
 
-    func testProfilerAvailability() {
+    @Test("Profiler availability")
+    func profilerAvailability() {
         // These should not crash, even if profiling isn't available
         _ = Profiler.isProfilingAvailable
         _ = Profiler.isTracingAvailable
     }
 
-    func testProfilerScope() {
+    @Test("Profiler scope")
+    func profilerScope() {
         // Test that scope executes the block correctly
         let result = Profiler.scope("test_scope") {
             42
         }
-        XCTAssertEqual(result, 42)
+        #expect(result == 42)
     }
 
-    func testProfilerStep() {
+    @Test("Profiler step")
+    func profilerStep() {
         // Test that step executes the block correctly
         var counter = 0
         Profiler.step("train", 0) {
             counter += 1
         }
-        XCTAssertEqual(counter, 1)
+        #expect(counter == 1)
     }
 
-    func testProfilerInstant() {
+    @Test("Profiler instant")
+    func profilerInstant() {
         // Just verify this doesn't crash
         Profiler.instant("test_instant")
     }
@@ -312,41 +341,47 @@ final class ProfilerAPITests: XCTestCase {
 
 // MARK: - Tensor Extension Tests
 
-final class TensorProfilingExtensionTests: XCTestCase {
+@Suite("Tensor Profiling Extension Tests")
+struct TensorProfilingExtensionTests {
 
-    func testTimedScalars() {
+    @Test("Timed scalars")
+    func timedScalars() {
         let tensor = Tensor<Float>.ones([10, 10])
         let (values, timing) = tensor.timedScalars()
 
-        XCTAssertEqual(values.count, 100)
-        XCTAssertEqual(values[0], 1.0, accuracy: 1e-5)
-        XCTAssertTrue(timing.nanoseconds > 0)
+        #expect(values.count == 100)
+        #expect(abs(values[0] - 1.0) < 1e-5)
+        #expect(timing.nanoseconds > 0)
     }
 }
 
 // MARK: - Benchmark Stats Edge Cases
 
-final class BenchmarkStatsEdgeCasesTests: XCTestCase {
+@Suite("Benchmark Stats Edge Cases Tests")
+struct BenchmarkStatsEdgeCasesTests {
 
-    func testEmptyTimings() {
+    @Test("Empty timings")
+    func emptyTimings() {
         let stats = BenchmarkStats(timings: [])
 
-        XCTAssertEqual(stats.iterations, 0)
-        XCTAssertEqual(stats.mean.nanoseconds, 0)
-        XCTAssertEqual(stats.stdDev.nanoseconds, 0)
+        #expect(stats.iterations == 0)
+        #expect(stats.mean.nanoseconds == 0)
+        #expect(stats.stdDev.nanoseconds == 0)
     }
 
-    func testSingleTiming() {
+    @Test("Single timing")
+    func singleTiming() {
         let stats = BenchmarkStats(timings: [1000])
 
-        XCTAssertEqual(stats.iterations, 1)
-        XCTAssertEqual(stats.mean.nanoseconds, 1000)
-        XCTAssertEqual(stats.min.nanoseconds, 1000)
-        XCTAssertEqual(stats.max.nanoseconds, 1000)
-        XCTAssertEqual(stats.stdDev.nanoseconds, 0)  // Can't compute stddev with 1 sample
+        #expect(stats.iterations == 1)
+        #expect(stats.mean.nanoseconds == 1000)
+        #expect(stats.min.nanoseconds == 1000)
+        #expect(stats.max.nanoseconds == 1000)
+        #expect(stats.stdDev.nanoseconds == 0)  // Can't compute stddev with 1 sample
     }
 
-    func testLargeTimings() {
+    @Test("Large timings")
+    func largeTimings() {
         // Test with microsecond-scale timings (more realistic)
         let timings: [UInt64] = (0..<100).map { _ in
             UInt64.random(in: 1_000_000...10_000_000)  // 1-10ms
@@ -354,10 +389,10 @@ final class BenchmarkStatsEdgeCasesTests: XCTestCase {
 
         let stats = BenchmarkStats(timings: timings)
 
-        XCTAssertEqual(stats.iterations, 100)
-        XCTAssertTrue(stats.min.nanoseconds >= 1_000_000)
-        XCTAssertTrue(stats.max.nanoseconds <= 10_000_000)
-        XCTAssertTrue(stats.p95.nanoseconds >= stats.median.nanoseconds)
-        XCTAssertTrue(stats.p99.nanoseconds >= stats.p95.nanoseconds)
+        #expect(stats.iterations == 100)
+        #expect(stats.min.nanoseconds >= 1_000_000)
+        #expect(stats.max.nanoseconds <= 10_000_000)
+        #expect(stats.p95.nanoseconds >= stats.median.nanoseconds)
+        #expect(stats.p99.nanoseconds >= stats.p95.nanoseconds)
     }
 }

@@ -1,47 +1,51 @@
 // Magma - Numerical Stability Tests
 // Tests for edge cases: very large/small values, near-zero, NaN/Inf handling
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - Very Large Values Tests
 
-final class VeryLargeValuesTests: XCTestCase {
+@Suite("Very Large Values Tests")
+struct VeryLargeValuesTests {
 
-    /// Test operations with large float values
-    func testLargeValuesAddition() {
+    @Test("Large values addition")
+    func largeValuesAddition() {
         let large: Float = 1e30
         let a = Tensor<Float>([large, large], shape: [2])
         let b = Tensor<Float>([large, -large], shape: [2])
         let result = (a + b).scalars()
 
-        XCTAssertEqual(result[0], 2e30, accuracy: 1e25, "Large value addition failed")
-        XCTAssertEqual(result[1], 0, accuracy: 1e20, "Large value subtraction failed")
+        #expect(abs(result[0] - 2e30) < 1e25, "Large value addition failed")
+        #expect(abs(result[1] - 0) < 1e20, "Large value subtraction failed")
     }
 
-    func testLargeValuesMultiplication() {
+    @Test("Large values multiplication")
+    func largeValuesMultiplication() {
         // Test that multiplication of moderate values doesn't overflow
         let a = Tensor<Float>([1e15, 1e15], shape: [2])
         let b = Tensor<Float>([1e15, -1e15], shape: [2])
         let result = (a * b).scalars()
 
-        XCTAssertEqual(result[0], 1e30, accuracy: 1e25)
-        XCTAssertEqual(result[1], -1e30, accuracy: 1e25)
+        #expect(abs(result[0] - 1e30) < 1e25)
+        #expect(abs(result[1] - (-1e30)) < 1e25)
     }
 
-    func testLargeValuesMatmul() {
+    @Test("Large values matmul")
+    func largeValuesMatmul() {
         let large: Float = 1e10
         let a = Tensor<Float>([large, large, large, large], shape: [2, 2])
         let b = Tensor<Float>([1, 0, 0, 1], shape: [2, 2])
         let result = a.matmul(b).scalars()
 
         // Identity matrix multiplication should preserve values
-        XCTAssertEqual(result[0], large, accuracy: large * 1e-6)
-        XCTAssertEqual(result[3], large, accuracy: large * 1e-6)
+        #expect(abs(result[0] - large) < large * 1e-6)
+        #expect(abs(result[3] - large) < large * 1e-6)
     }
 
-    func testOverflowPrevention() {
+    @Test("Overflow prevention")
+    func overflowPrevention() {
         // Test that operations handle potential overflow gracefully
         let veryLarge: Float = Float.greatestFiniteMagnitude / 2
         let a = Tensor<Float>([veryLarge], shape: [1])
@@ -49,35 +53,39 @@ final class VeryLargeValuesTests: XCTestCase {
 
         // This should produce infinity, not crash
         let result = (a * b).scalars()[0]
-        XCTAssertTrue(result.isInfinite || result > Float.greatestFiniteMagnitude / 2,
-                      "Expected infinity or very large value")
+        #expect(result.isInfinite || result > Float.greatestFiniteMagnitude / 2,
+                "Expected infinity or very large value")
     }
 }
 
 // MARK: - Very Small Values Tests
 
-final class VerySmallValuesTests: XCTestCase {
+@Suite("Very Small Values Tests")
+struct VerySmallValuesTests {
 
-    func testSmallValuesAddition() {
+    @Test("Small values addition")
+    func smallValuesAddition() {
         let small: Float = 1e-30
         let a = Tensor<Float>([small, small], shape: [2])
         let b = Tensor<Float>([small, -small], shape: [2])
         let result = (a + b).scalars()
 
-        XCTAssertEqual(result[0], 2e-30, accuracy: 1e-35)
-        XCTAssertEqual(result[1], 0, accuracy: 1e-35)
+        #expect(abs(result[0] - 2e-30) < 1e-35)
+        #expect(abs(result[1] - 0) < 1e-35)
     }
 
-    func testSmallValuesMultiplication() {
+    @Test("Small values multiplication")
+    func smallValuesMultiplication() {
         let a = Tensor<Float>([1e-15, 1e-15], shape: [2])
         let b = Tensor<Float>([1e-15, -1e-15], shape: [2])
         let result = (a * b).scalars()
 
-        XCTAssertEqual(result[0], 1e-30, accuracy: 1e-35)
-        XCTAssertEqual(result[1], -1e-30, accuracy: 1e-35)
+        #expect(abs(result[0] - 1e-30) < 1e-35)
+        #expect(abs(result[1] - (-1e-30)) < 1e-35)
     }
 
-    func testDenormalizedNumbers() {
+    @Test("Denormalized numbers")
+    func denormalizedNumbers() {
         // Test with numbers smaller than normal float range
         let denorm: Float = Float.leastNormalMagnitude / 10
         let a = Tensor<Float>([denorm, denorm], shape: [2])
@@ -86,11 +94,12 @@ final class VerySmallValuesTests: XCTestCase {
 
         // Denormalized numbers may be flushed to zero on some hardware
         // Just ensure we don't crash and get a reasonable result
-        XCTAssertFalse(result[0].isNaN, "Denormalized multiplication produced NaN")
-        XCTAssertFalse(result[1].isNaN, "Denormalized multiplication produced NaN")
+        #expect(!result[0].isNaN, "Denormalized multiplication produced NaN")
+        #expect(!result[1].isNaN, "Denormalized multiplication produced NaN")
     }
 
-    func testUnderflowBehavior() {
+    @Test("Underflow behavior")
+    func underflowBehavior() {
         // Test that very small multiplications underflow to zero gracefully
         let verySmall: Float = Float.leastNormalMagnitude
         let a = Tensor<Float>([verySmall], shape: [1])
@@ -98,103 +107,115 @@ final class VerySmallValuesTests: XCTestCase {
         let result = (a * b).scalars()[0]
 
         // Result should either be zero (underflow) or denormalized
-        XCTAssertTrue(result == 0 || result.isSubnormal || result < Float.leastNormalMagnitude * 2,
-                      "Expected underflow to zero or denormalized value")
+        #expect(result == 0 || result.isSubnormal || result < Float.leastNormalMagnitude * 2,
+                "Expected underflow to zero or denormalized value")
     }
 }
 
 // MARK: - Near-Zero Division Tests
 
-final class NearZeroDivisionTests: XCTestCase {
+@Suite("Near-Zero Division Tests")
+struct NearZeroDivisionTests {
 
-    func testDivisionBySmallNumber() {
+    @Test("Division by small number")
+    func divisionBySmallNumber() {
         let a = Tensor<Float>([1.0, 1.0], shape: [2])
         let small = Tensor<Float>([1e-10, 1e-20], shape: [2])
         let result = (a / small).scalars()
 
-        XCTAssertEqual(result[0], 1e10, accuracy: 1e5)
-        XCTAssertEqual(result[1], 1e20, accuracy: 1e15)
+        #expect(abs(result[0] - 1e10) < 1e5)
+        #expect(abs(result[1] - 1e20) < 1e15)
     }
 
-    func testDivisionByZero() {
+    @Test("Division by zero")
+    func divisionByZero() {
         let a = Tensor<Float>([1.0, -1.0, 0.0], shape: [3])
         let zero = Tensor<Float>([0.0, 0.0, 0.0], shape: [3])
         let result = (a / zero).scalars()
 
-        XCTAssertTrue(result[0].isInfinite && result[0] > 0, "1/0 should be +Inf")
-        XCTAssertTrue(result[1].isInfinite && result[1] < 0, "-1/0 should be -Inf")
-        XCTAssertTrue(result[2].isNaN, "0/0 should be NaN")
+        #expect(result[0].isInfinite && result[0] > 0, "1/0 should be +Inf")
+        #expect(result[1].isInfinite && result[1] < 0, "-1/0 should be -Inf")
+        #expect(result[2].isNaN, "0/0 should be NaN")
     }
 
-    func testLogOfSmallNumber() {
+    @Test("Log of small number")
+    func logOfSmallNumber() {
         let small = Tensor<Float>([1e-30, Float.leastNormalMagnitude], shape: [2])
         let result = small.log().scalars()
 
         // log of small positive number should be large negative
-        XCTAssertTrue(result[0] < -60, "log(1e-30) should be < -60, got \(result[0])")
-        XCTAssertTrue(result[1].isFinite, "log(leastNormalMagnitude) should be finite")
+        #expect(result[0] < -60, "log(1e-30) should be < -60, got \(result[0])")
+        #expect(result[1].isFinite, "log(leastNormalMagnitude) should be finite")
     }
 
-    func testLogOfZero() {
+    @Test("Log of zero")
+    func logOfZero() {
         let zero = Tensor<Float>([0.0], shape: [1])
         let result = zero.log().scalars()[0]
 
-        XCTAssertTrue(result.isInfinite && result < 0, "log(0) should be -Inf")
+        #expect(result.isInfinite && result < 0, "log(0) should be -Inf")
     }
 
-    func testLogOfNegative() {
+    @Test("Log of negative")
+    func logOfNegative() {
         let negative = Tensor<Float>([-1.0], shape: [1])
         let result = negative.log().scalars()[0]
 
-        XCTAssertTrue(result.isNaN, "log(-1) should be NaN")
+        #expect(result.isNaN, "log(-1) should be NaN")
     }
 }
 
 // MARK: - NaN Propagation Tests
 
-final class NaNPropagationTests: XCTestCase {
+@Suite("NaN Propagation Tests")
+struct NaNPropagationTests {
 
-    func testNaNInAddition() {
+    @Test("NaN in addition")
+    func nanInAddition() {
         let nan = Float.nan
         let a = Tensor<Float>([nan, 1.0], shape: [2])
         let b = Tensor<Float>([1.0, nan], shape: [2])
         let result = (a + b).scalars()
 
-        XCTAssertTrue(result[0].isNaN, "NaN + 1 should be NaN")
-        XCTAssertTrue(result[1].isNaN, "1 + NaN should be NaN")
+        #expect(result[0].isNaN, "NaN + 1 should be NaN")
+        #expect(result[1].isNaN, "1 + NaN should be NaN")
     }
 
-    func testNaNInMultiplication() {
+    @Test("NaN in multiplication")
+    func nanInMultiplication() {
         let nan = Float.nan
         let a = Tensor<Float>([nan, 0.0], shape: [2])
         let b = Tensor<Float>([0.0, nan], shape: [2])
         let result = (a * b).scalars()
 
-        XCTAssertTrue(result[0].isNaN, "NaN * 0 should be NaN")
-        XCTAssertTrue(result[1].isNaN, "0 * NaN should be NaN")
+        #expect(result[0].isNaN, "NaN * 0 should be NaN")
+        #expect(result[1].isNaN, "0 * NaN should be NaN")
     }
 
-    func testNaNInMatmul() {
+    @Test("NaN in matmul")
+    func nanInMatmul() {
         let nan = Float.nan
         let a = Tensor<Float>([nan, 1, 2, 3], shape: [2, 2])
         let b = Tensor<Float>([1, 0, 0, 1], shape: [2, 2])
         let result = a.matmul(b).scalars()
 
-        XCTAssertTrue(result[0].isNaN, "Matmul with NaN should propagate NaN")
+        #expect(result[0].isNaN, "Matmul with NaN should propagate NaN")
     }
 
-    func testNaNInReductions() {
+    @Test("NaN in reductions")
+    func nanInReductions() {
         let nan = Float.nan
         let a = Tensor<Float>([1.0, nan, 2.0, 3.0], shape: [4])
 
         let sum = a.sum().scalars()[0]
         let mean = a.mean().scalars()[0]
 
-        XCTAssertTrue(sum.isNaN, "Sum with NaN should be NaN")
-        XCTAssertTrue(mean.isNaN, "Mean with NaN should be NaN")
+        #expect(sum.isNaN, "Sum with NaN should be NaN")
+        #expect(mean.isNaN, "Mean with NaN should be NaN")
     }
 
-    func testNaNInActivations() {
+    @Test("NaN in activations")
+    func nanInActivations() {
         let nan = Float.nan
         let a = Tensor<Float>([nan, 1.0], shape: [2])
 
@@ -202,17 +223,19 @@ final class NaNPropagationTests: XCTestCase {
         let sigmoid = a.sigmoid().scalars()
         let tanh = a.tanh().scalars()
 
-        XCTAssertTrue(relu[0].isNaN, "ReLU(NaN) should be NaN")
-        XCTAssertTrue(sigmoid[0].isNaN, "Sigmoid(NaN) should be NaN")
-        XCTAssertTrue(tanh[0].isNaN, "Tanh(NaN) should be NaN")
+        #expect(relu[0].isNaN, "ReLU(NaN) should be NaN")
+        #expect(sigmoid[0].isNaN, "Sigmoid(NaN) should be NaN")
+        #expect(tanh[0].isNaN, "Tanh(NaN) should be NaN")
     }
 }
 
 // MARK: - Infinity Handling Tests
 
-final class InfinityHandlingTests: XCTestCase {
+@Suite("Infinity Handling Tests")
+struct InfinityHandlingTests {
 
-    func testInfinityInArithmetic() {
+    @Test("Infinity in arithmetic")
+    func infinityInArithmetic() {
         let inf = Float.infinity
         let negInf = -Float.infinity
 
@@ -220,60 +243,65 @@ final class InfinityHandlingTests: XCTestCase {
         let b = Tensor<Float>([1.0, 1.0, negInf], shape: [3])
 
         let add = (a + b).scalars()
-        XCTAssertTrue(add[0].isInfinite && add[0] > 0, "Inf + 1 should be Inf")
-        XCTAssertTrue(add[1].isInfinite && add[1] < 0, "-Inf + 1 should be -Inf")
-        XCTAssertTrue(add[2].isNaN, "Inf + (-Inf) should be NaN")
+        #expect(add[0].isInfinite && add[0] > 0, "Inf + 1 should be Inf")
+        #expect(add[1].isInfinite && add[1] < 0, "-Inf + 1 should be -Inf")
+        #expect(add[2].isNaN, "Inf + (-Inf) should be NaN")
     }
 
-    func testInfinityInMultiplication() {
+    @Test("Infinity in multiplication")
+    func infinityInMultiplication() {
         let inf = Float.infinity
 
         let a = Tensor<Float>([inf, inf, 0], shape: [3])
         let b = Tensor<Float>([2.0, -2.0, inf], shape: [3])
 
         let mul = (a * b).scalars()
-        XCTAssertTrue(mul[0].isInfinite && mul[0] > 0, "Inf * 2 should be Inf")
-        XCTAssertTrue(mul[1].isInfinite && mul[1] < 0, "Inf * -2 should be -Inf")
-        XCTAssertTrue(mul[2].isNaN, "0 * Inf should be NaN")
+        #expect(mul[0].isInfinite && mul[0] > 0, "Inf * 2 should be Inf")
+        #expect(mul[1].isInfinite && mul[1] < 0, "Inf * -2 should be -Inf")
+        #expect(mul[2].isNaN, "0 * Inf should be NaN")
     }
 
-    func testInfinityInDivision() {
+    @Test("Infinity in division")
+    func infinityInDivision() {
         let inf = Float.infinity
 
         let a = Tensor<Float>([inf, 1.0, inf], shape: [3])
         let b = Tensor<Float>([2.0, inf, inf], shape: [3])
 
         let div = (a / b).scalars()
-        XCTAssertTrue(div[0].isInfinite, "Inf / 2 should be Inf")
-        XCTAssertEqual(div[1], 0.0, accuracy: 1e-10, "1 / Inf should be 0")
-        XCTAssertTrue(div[2].isNaN, "Inf / Inf should be NaN")
+        #expect(div[0].isInfinite, "Inf / 2 should be Inf")
+        #expect(abs(div[1] - 0.0) < 1e-10, "1 / Inf should be 0")
+        #expect(div[2].isNaN, "Inf / Inf should be NaN")
     }
 
-    func testInfinityInActivations() {
+    @Test("Infinity in activations")
+    func infinityInActivations() {
         let inf = Float.infinity
         let negInf = -Float.infinity
 
         let a = Tensor<Float>([inf, negInf], shape: [2])
 
         let relu = a.relu().scalars()
-        XCTAssertTrue(relu[0].isInfinite && relu[0] > 0, "ReLU(Inf) should be Inf")
-        XCTAssertEqual(relu[1], 0.0, accuracy: 1e-10, "ReLU(-Inf) should be 0")
+        #expect(relu[0].isInfinite && relu[0] > 0, "ReLU(Inf) should be Inf")
+        #expect(abs(relu[1] - 0.0) < 1e-10, "ReLU(-Inf) should be 0")
 
         let sigmoid = a.sigmoid().scalars()
-        XCTAssertEqual(sigmoid[0], 1.0, accuracy: 1e-6, "Sigmoid(Inf) should be 1")
-        XCTAssertEqual(sigmoid[1], 0.0, accuracy: 1e-6, "Sigmoid(-Inf) should be 0")
+        #expect(abs(sigmoid[0] - 1.0) < 1e-6, "Sigmoid(Inf) should be 1")
+        #expect(abs(sigmoid[1] - 0.0) < 1e-6, "Sigmoid(-Inf) should be 0")
 
         let tanhResult = a.tanh().scalars()
-        XCTAssertEqual(tanhResult[0], 1.0, accuracy: 1e-6, "Tanh(Inf) should be 1")
-        XCTAssertEqual(tanhResult[1], -1.0, accuracy: 1e-6, "Tanh(-Inf) should be -1")
+        #expect(abs(tanhResult[0] - 1.0) < 1e-6, "Tanh(Inf) should be 1")
+        #expect(abs(tanhResult[1] - (-1.0)) < 1e-6, "Tanh(-Inf) should be -1")
     }
 }
 
 // MARK: - Softmax Numerical Stability Tests
 
-final class SoftmaxStabilityTests: XCTestCase {
+@Suite("Softmax Stability Tests")
+struct SoftmaxStabilityTests {
 
-    func testSoftmaxWithLargeValues() {
+    @Test("Softmax with large values")
+    func softmaxWithLargeValues() {
         // Softmax should be stable even with large input values
         // Due to the max subtraction trick: softmax(x) = softmax(x - max(x))
         let largeValues: [Float] = [100, 200, 300]
@@ -282,117 +310,117 @@ final class SoftmaxStabilityTests: XCTestCase {
 
         // Sum should be 1
         let sum = result.reduce(0, +)
-        XCTAssertEqual(sum, 1.0, accuracy: 1e-5, "Softmax should sum to 1")
+        #expect(abs(sum - 1.0) < 1e-5, "Softmax should sum to 1")
 
         // All values should be valid probabilities
         for (i, p) in result.enumerated() {
-            XCTAssertFalse(p.isNaN, "Softmax output[\(i)] should not be NaN")
-            XCTAssertFalse(p.isInfinite, "Softmax output[\(i)] should not be Inf")
-            XCTAssertTrue(p >= 0 && p <= 1, "Softmax output[\(i)] should be in [0,1], got \(p)")
+            #expect(!p.isNaN, "Softmax output[\(i)] should not be NaN")
+            #expect(!p.isInfinite, "Softmax output[\(i)] should not be Inf")
+            #expect(p >= 0 && p <= 1, "Softmax output[\(i)] should be in [0,1], got \(p)")
         }
-
-        // Note: Ordering check disabled - the softmax implementation
-        // may use different axis conventions. The key property is that
-        // outputs sum to 1 and are valid probabilities.
-        // XCTAssertTrue(result[2] > result[1] && result[1] > result[0],
-        //               "Softmax should preserve ordering")
     }
 
-    func testSoftmaxWithVeryLargeValues() {
+    @Test("Softmax with very large values")
+    func softmaxWithVeryLargeValues() {
         // Test with values that would overflow exp() without stabilization
         let veryLarge: [Float] = [700, 800, 900]  // exp(700) would overflow
         let x = Tensor<Float>(veryLarge, shape: [3])
         let result = x.softmax(dim: 0).scalars()
 
         let sum = result.reduce(0, +)
-        XCTAssertEqual(sum, 1.0, accuracy: 1e-4, "Softmax should sum to 1 even with large inputs")
+        #expect(abs(sum - 1.0) < 1e-4, "Softmax should sum to 1 even with large inputs")
 
         for p in result {
-            XCTAssertFalse(p.isNaN, "Softmax should not produce NaN with large inputs")
-            XCTAssertFalse(p.isInfinite, "Softmax should not produce Inf with large inputs")
+            #expect(!p.isNaN, "Softmax should not produce NaN with large inputs")
+            #expect(!p.isInfinite, "Softmax should not produce Inf with large inputs")
         }
     }
 
-    func testSoftmaxWithNegativeValues() {
+    @Test("Softmax with negative values")
+    func softmaxWithNegativeValues() {
         let negative: [Float] = [-100, -200, -300]
         let x = Tensor<Float>(negative, shape: [3])
         let result = x.softmax(dim: 0).scalars()
 
         let sum = result.reduce(0, +)
-        XCTAssertEqual(sum, 1.0, accuracy: 1e-5, "Softmax should sum to 1 with negative inputs")
-
-        // Note: Ordering check disabled - see above
-        // XCTAssertTrue(result[0] > result[1] && result[1] > result[2],
-        //               "Softmax should preserve ordering for negative values")
+        #expect(abs(sum - 1.0) < 1e-5, "Softmax should sum to 1 with negative inputs")
     }
 
-    func testSoftmaxWithIdenticalValues() {
+    @Test("Softmax with identical values")
+    func softmaxWithIdenticalValues() {
         let identical: [Float] = [1, 1, 1, 1]
         let x = Tensor<Float>(identical, shape: [4])
         let result = x.softmax(dim: 0).scalars()
 
         // All outputs should be equal (0.25)
         for p in result {
-            XCTAssertEqual(p, 0.25, accuracy: 1e-5, "Softmax of identical values should be uniform")
+            #expect(abs(p - 0.25) < 1e-5, "Softmax of identical values should be uniform")
         }
     }
 }
 
 // MARK: - Exp and Log Stability Tests
 
-final class ExpLogStabilityTests: XCTestCase {
+@Suite("Exp Log Stability Tests")
+struct ExpLogStabilityTests {
 
-    func testExpOverflow() {
+    @Test("Exp overflow")
+    func expOverflow() {
         // exp(x) overflows to Inf for x > ~88 for float32
         let x = Tensor<Float>([80, 88, 100], shape: [3])
         let result = x.exp().scalars()
 
-        XCTAssertFalse(result[0].isInfinite, "exp(80) should not overflow")
+        #expect(!result[0].isInfinite, "exp(80) should not overflow")
         // exp(88) is close to Float.max
-        XCTAssertTrue(result[2].isInfinite, "exp(100) should overflow to Inf")
+        #expect(result[2].isInfinite, "exp(100) should overflow to Inf")
     }
 
-    func testExpUnderflow() {
+    @Test("Exp underflow")
+    func expUnderflow() {
         // exp(x) underflows to 0 for x < ~-88 for float32
         let x = Tensor<Float>([-80, -100, -150], shape: [3])
         let result = x.exp().scalars()
 
-        XCTAssertTrue(result[0] > 0, "exp(-80) should not underflow")
+        #expect(result[0] > 0, "exp(-80) should not underflow")
         // exp(-100) and below should be essentially 0
-        XCTAssertTrue(result[1] < 1e-30 || result[1] == 0, "exp(-100) should underflow")
-        XCTAssertTrue(result[2] == 0 || result[2] < 1e-30, "exp(-150) should underflow to 0")
+        #expect(result[1] < 1e-30 || result[1] == 0, "exp(-100) should underflow")
+        #expect(result[2] == 0 || result[2] < 1e-30, "exp(-150) should underflow to 0")
     }
 
-    func testLogExpRoundtrip() {
+    @Test("Log exp roundtrip")
+    func logExpRoundtrip() {
         // log(exp(x)) should equal x for reasonable values
         let x = Tensor<Float>([0, 1, -1, 10, -10], shape: [5])
         let roundtrip = x.exp().log().scalars()
         let original = x.scalars()
 
         for (i, (orig, rt)) in zip(original, roundtrip).enumerated() {
-            XCTAssertEqual(rt, orig, accuracy: 1e-5,
-                           "log(exp(\(orig))) should be \(orig), got \(rt) at index \(i)")
+            #expect(abs(rt - orig) < 1e-5,
+                    "log(exp(\(orig))) should be \(orig), got \(rt) at index \(i)")
         }
     }
 
-    func testExpLogRoundtrip() {
+    @Test("Exp log roundtrip")
+    func expLogRoundtrip() {
         // exp(log(x)) should equal x for positive values
         let x = Tensor<Float>([0.01, 0.1, 1, 10, 100], shape: [5])
         let roundtrip = x.log().exp().scalars()
         let original = x.scalars()
 
         for (i, (orig, rt)) in zip(original, roundtrip).enumerated() {
-            XCTAssertEqual(rt, orig, accuracy: orig * 1e-5,
-                           "exp(log(\(orig))) should be \(orig), got \(rt) at index \(i)")
+            #expect(abs(rt - orig) < orig * 1e-5,
+                    "exp(log(\(orig))) should be \(orig), got \(rt) at index \(i)")
         }
     }
 }
 
 // MARK: - Gradient Stability Tests
 
-final class GradientStabilityTests: XCTestCase {
+@Suite("Gradient Stability Tests")
+struct GradientStabilityTests {
 
-    func testGradientWithLargeValues() {
+    @Test("Gradient with large values")
+    func gradientWithLargeValues() {
         let large = Tensor<Float>([100, 1000], shape: [2])
 
         let (_, grad) = valueWithGradient(at: large) { x in
@@ -400,11 +428,12 @@ final class GradientStabilityTests: XCTestCase {
         }
 
         let gradValues = grad.scalars()
-        XCTAssertEqual(gradValues[0], 1.0, accuracy: 1e-5, "Gradient of sum should be 1")
-        XCTAssertEqual(gradValues[1], 1.0, accuracy: 1e-5, "Gradient of sum should be 1")
+        #expect(abs(gradValues[0] - 1.0) < 1e-5, "Gradient of sum should be 1")
+        #expect(abs(gradValues[1] - 1.0) < 1e-5, "Gradient of sum should be 1")
     }
 
-    func testGradientWithSmallValues() {
+    @Test("Gradient with small values")
+    func gradientWithSmallValues() {
         let small = Tensor<Float>([1e-10, 1e-20], shape: [2])
 
         let (_, grad) = valueWithGradient(at: small) { x in
@@ -412,11 +441,12 @@ final class GradientStabilityTests: XCTestCase {
         }
 
         let gradValues = grad.scalars()
-        XCTAssertEqual(gradValues[0], 1.0, accuracy: 1e-5, "Gradient should not depend on input scale")
-        XCTAssertEqual(gradValues[1], 1.0, accuracy: 1e-5, "Gradient should not depend on input scale")
+        #expect(abs(gradValues[0] - 1.0) < 1e-5, "Gradient should not depend on input scale")
+        #expect(abs(gradValues[1] - 1.0) < 1e-5, "Gradient should not depend on input scale")
     }
 
-    func testSigmoidGradientStability() {
+    @Test("Sigmoid gradient stability")
+    func sigmoidGradientStability() {
         // Sigmoid gradient is sigmoid(x) * (1 - sigmoid(x))
         // Should be stable and near 0 for extreme values
 
@@ -429,21 +459,22 @@ final class GradientStabilityTests: XCTestCase {
         let gradValues = grad.scalars()
 
         // For x=-100: sigmoid(-100)≈0, grad≈0
-        XCTAssertTrue(abs(gradValues[0]) < 1e-5, "Sigmoid gradient at -100 should be ~0")
+        #expect(abs(gradValues[0]) < 1e-5, "Sigmoid gradient at -100 should be ~0")
 
         // For x=0: sigmoid(0)=0.5, grad=0.25
-        XCTAssertEqual(gradValues[1], 0.25, accuracy: 1e-5, "Sigmoid gradient at 0 should be 0.25")
+        #expect(abs(gradValues[1] - 0.25) < 1e-5, "Sigmoid gradient at 0 should be 0.25")
 
         // For x=100: sigmoid(100)≈1, grad≈0
-        XCTAssertTrue(abs(gradValues[2]) < 1e-5, "Sigmoid gradient at 100 should be ~0")
+        #expect(abs(gradValues[2]) < 1e-5, "Sigmoid gradient at 100 should be ~0")
 
         // None should be NaN
         for g in gradValues {
-            XCTAssertFalse(g.isNaN, "Sigmoid gradient should never be NaN")
+            #expect(!g.isNaN, "Sigmoid gradient should never be NaN")
         }
     }
 
-    func testTanhGradientStability() {
+    @Test("Tanh gradient stability")
+    func tanhGradientStability() {
         // Tanh gradient is 1 - tanh(x)^2
         // Should be stable and near 0 for extreme values
 
@@ -456,98 +487,109 @@ final class GradientStabilityTests: XCTestCase {
         let gradValues = grad.scalars()
 
         // For extreme values: tanh(±100)≈±1, grad≈0
-        XCTAssertTrue(abs(gradValues[0]) < 1e-5, "Tanh gradient at -100 should be ~0")
-        XCTAssertTrue(abs(gradValues[2]) < 1e-5, "Tanh gradient at 100 should be ~0")
+        #expect(abs(gradValues[0]) < 1e-5, "Tanh gradient at -100 should be ~0")
+        #expect(abs(gradValues[2]) < 1e-5, "Tanh gradient at 100 should be ~0")
 
         // For x=0: tanh(0)=0, grad=1
-        XCTAssertEqual(gradValues[1], 1.0, accuracy: 1e-5, "Tanh gradient at 0 should be 1")
+        #expect(abs(gradValues[1] - 1.0) < 1e-5, "Tanh gradient at 0 should be 1")
 
         // None should be NaN
         for g in gradValues {
-            XCTAssertFalse(g.isNaN, "Tanh gradient should never be NaN")
+            #expect(!g.isNaN, "Tanh gradient should never be NaN")
         }
     }
 }
 
 // MARK: - Broadcasting Edge Cases
 
-final class BroadcastingEdgeCaseTests: XCTestCase {
+@Suite("Broadcasting Edge Case Tests")
+struct BroadcastingEdgeCaseTests {
 
-    func testBroadcastWithZeroDimension() {
+    @Test("Broadcast with zero dimension")
+    func broadcastWithZeroDimension() {
         // Scalar broadcast
         let scalar = Tensor<Float>([5.0], shape: [])
         let matrix = Tensor<Float>([1, 2, 3, 4], shape: [2, 2])
 
         let result = (scalar.broadcast(to: [2, 2]) + matrix).scalars()
-        XCTAssertEqual(result[0], 6.0, accuracy: 1e-5)
-        XCTAssertEqual(result[3], 9.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 6.0) < 1e-5)
+        #expect(abs(result[3] - 9.0) < 1e-5)
     }
 
-    func testBroadcastWithLargeDimensions() {
+    @Test("Broadcast with large dimensions")
+    func broadcastWithLargeDimensions() {
         let small = Tensor<Float>([1, 2, 3], shape: [1, 3])
         let large = Tensor<Float>.ones([100, 3])
 
         let result = (small.broadcast(to: [100, 3]) * large).scalars()
-        XCTAssertEqual(result.count, 300)
+        #expect(result.count == 300)
 
         // First row should be [1, 2, 3]
-        XCTAssertEqual(result[0], 1.0, accuracy: 1e-5)
-        XCTAssertEqual(result[1], 2.0, accuracy: 1e-5)
-        XCTAssertEqual(result[2], 3.0, accuracy: 1e-5)
+        #expect(abs(result[0] - 1.0) < 1e-5)
+        #expect(abs(result[1] - 2.0) < 1e-5)
+        #expect(abs(result[2] - 3.0) < 1e-5)
     }
 }
 
 // MARK: - Reduction Edge Cases
 
-final class ReductionEdgeCaseTests: XCTestCase {
+@Suite("Reduction Edge Case Tests")
+struct ReductionEdgeCaseTests {
 
-    func testSumEmptyTensor() {
+    @Test("Sum empty tensor")
+    func sumEmptyTensor() {
         // Sum of empty tensor should be 0 (though we may not support empty tensors yet)
         let single = Tensor<Float>([0], shape: [1])
         let result = single.sum().scalars()[0]
-        XCTAssertEqual(result, 0.0, accuracy: 1e-10)
+        #expect(abs(result - 0.0) < 1e-10)
     }
 
-    func testMeanSingleElement() {
+    @Test("Mean single element")
+    func meanSingleElement() {
         let single = Tensor<Float>([42.0], shape: [1])
         let result = single.mean().scalars()[0]
-        XCTAssertEqual(result, 42.0, accuracy: 1e-5)
+        #expect(abs(result - 42.0) < 1e-5)
     }
 
-    func testSumWithMixedSigns() {
+    @Test("Sum with mixed signs")
+    func sumWithMixedSigns() {
         let mixed = Tensor<Float>([1e30, -1e30, 1.0], shape: [3])
         let result = mixed.sum().scalars()[0]
 
         // This tests catastrophic cancellation
         // The result may not be exactly 1.0 due to floating point precision
         // but it should be close
-        XCTAssertTrue(abs(result - 1.0) < 1e20 || result == 1.0,
-                      "Sum with cancellation: expected ~1, got \(result)")
+        #expect(abs(result - 1.0) < 1e20 || result == 1.0,
+                "Sum with cancellation: expected ~1, got \(result)")
     }
 
-    func testMeanWithLargeCount() {
+    @Test("Mean with large count")
+    func meanWithLargeCount() {
         let data: [Float] = Array(repeating: 1.0, count: 10000)
         let tensor = Tensor<Float>(data, shape: [10000])
         let result = tensor.mean().scalars()[0]
-        XCTAssertEqual(result, 1.0, accuracy: 1e-5, "Mean of all 1s should be 1")
+        #expect(abs(result - 1.0) < 1e-5, "Mean of all 1s should be 1")
     }
 }
 
 // MARK: - Matrix Operation Edge Cases
 
-final class MatrixEdgeCaseTests: XCTestCase {
+@Suite("Matrix Edge Case Tests")
+struct MatrixEdgeCaseTests {
 
-    func testMatmulWithZeros() {
+    @Test("Matmul with zeros")
+    func matmulWithZeros() {
         let zeros = Tensor<Float>.zeros([3, 3])
         let ones = Tensor<Float>.ones([3, 3])
         let result = zeros.matmul(ones).scalars()
 
         for val in result {
-            XCTAssertEqual(val, 0.0, accuracy: 1e-10, "Zero matrix times anything should be zero")
+            #expect(abs(val - 0.0) < 1e-10, "Zero matrix times anything should be zero")
         }
     }
 
-    func testMatmulWithIdentity() {
+    @Test("Matmul with identity")
+    func matmulWithIdentity() {
         let data: [Float] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
         let a = Tensor<Float>(data, shape: [3, 3])
         let identity = Tensor<Float>([1, 0, 0, 0, 1, 0, 0, 0, 1], shape: [3, 3])
@@ -555,42 +597,46 @@ final class MatrixEdgeCaseTests: XCTestCase {
         let result = a.matmul(identity).scalars()
 
         for (orig, res) in zip(data, result) {
-            XCTAssertEqual(res, orig, accuracy: 1e-5, "A * I should equal A")
+            #expect(abs(res - orig) < 1e-5, "A * I should equal A")
         }
     }
 
-    func testTransposeTranspose() {
+    @Test("Transpose transpose")
+    func transposeTranspose() {
         let data: [Float] = [1, 2, 3, 4, 5, 6]
         let a = Tensor<Float>(data, shape: [2, 3])
         let result = a.transpose().transpose().scalars()
 
         for (orig, res) in zip(data, result) {
-            XCTAssertEqual(res, orig, accuracy: 1e-10, "A^T^T should equal A")
+            #expect(abs(res - orig) < 1e-10, "A^T^T should equal A")
         }
     }
 }
 
 // MARK: - Type Conversion Edge Cases
 
-final class TypeConversionEdgeCaseTests: XCTestCase {
+@Suite("Type Conversion Edge Case Tests")
+struct TypeConversionEdgeCaseTests {
 
-    func testFloatPrecision() {
+    @Test("Float precision")
+    func floatPrecision() {
         // Test that we maintain reasonable float32 precision
         let precise: Float = 1.0000001
         let tensor = Tensor<Float>([precise], shape: [1])
         let result = tensor.scalars()[0]
 
-        XCTAssertEqual(result, precise, accuracy: 1e-7,
-                       "Float32 should maintain 7 digits of precision")
+        #expect(abs(result - precise) < 1e-7,
+                "Float32 should maintain 7 digits of precision")
     }
 
-    func testLargeIntegerConversion() {
+    @Test("Large integer conversion")
+    func largeIntegerConversion() {
         // Float32 can exactly represent integers up to 2^24
         let exact: Float = 16777216  // 2^24
         let tensor = Tensor<Float>([exact], shape: [1])
         let result = tensor.scalars()[0]
 
-        XCTAssertEqual(result, exact, accuracy: 0,
-                       "Float32 should exactly represent integers up to 2^24")
+        #expect(result == exact,
+                "Float32 should exactly represent integers up to 2^24")
     }
 }

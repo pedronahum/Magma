@@ -1,25 +1,28 @@
 // Magma - Ported Optimizers Tests
 // Tests for optimizers ported from S4TF (RMSProp, AdaGrad, AdaDelta)
 
-import XCTest
+import Testing
 @testable import Magma
 @testable import LazyTensor
 
 // MARK: - RMSProp Optimizer Tests
 
-final class RMSPropOptimizerTests: XCTestCase {
+@Suite("RMSProp Optimizer Tests")
+struct RMSPropOptimizerTests {
 
-    func testRMSPropCreation() {
+    @Test("RMSProp creation")
+    func rmspropCreation() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         let optimizer = optim.RMSProp(parameters: [param])
 
-        XCTAssertEqual(optimizer.learningRate, 0.01)  // Default lr
-        XCTAssertEqual(optimizer.rho, 0.99)  // Default rho
-        XCTAssertEqual(optimizer.momentum, 0.0)
-        XCTAssertFalse(optimizer.centered)
+        #expect(optimizer.learningRate == 0.01)  // Default lr
+        #expect(optimizer.rho == 0.99)  // Default rho
+        #expect(optimizer.momentum == 0.0)
+        #expect(!optimizer.centered)
     }
 
-    func testRMSPropBasic() {
+    @Test("RMSProp basic")
+    func rmspropBasic() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01)
 
@@ -27,10 +30,11 @@ final class RMSPropOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropMultipleSteps() {
+    @Test("RMSProp multiple steps")
+    func rmspropMultipleSteps() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01)
 
@@ -40,10 +44,11 @@ final class RMSPropOptimizerTests: XCTestCase {
             optimizer.step([grad])
         }
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropWithMomentum() {
+    @Test("RMSProp with momentum")
+    func rmspropWithMomentum() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01, momentum: 0.9)
 
@@ -52,10 +57,11 @@ final class RMSPropOptimizerTests: XCTestCase {
         optimizer.step([grad])
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropCentered() {
+    @Test("RMSProp centered")
+    func rmspropCentered() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01, centered: true)
 
@@ -63,10 +69,11 @@ final class RMSPropOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropWeightDecay() {
+    @Test("RMSProp weight decay")
+    func rmspropWeightDecay() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01, weightDecay: 0.01)
 
@@ -74,10 +81,11 @@ final class RMSPropOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropZeroGrad() {
+    @Test("RMSProp zero grad")
+    func rmspropZeroGrad() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01)
 
@@ -87,10 +95,11 @@ final class RMSPropOptimizerTests: XCTestCase {
         optimizer.zeroGrad()
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testRMSPropMultipleParameters() {
+    @Test("RMSProp multiple parameters")
+    func rmspropMultipleParameters() {
         let param1 = Parameter(Tensor<Float>.ones([2, 3]), name: "w1")
         let param2 = Parameter(Tensor<Float>.ones([3, 4]), name: "w2")
         var optimizer = optim.RMSProp(parameters: [param1, param2], lr: 0.01)
@@ -100,36 +109,40 @@ final class RMSPropOptimizerTests: XCTestCase {
 
         optimizer.step([grad1, grad2])
 
-        XCTAssertEqual(param1.value.shape, [2, 3])
-        XCTAssertEqual(param2.value.shape, [3, 4])
+        #expect(param1.value.shape == [2, 3])
+        #expect(param2.value.shape == [3, 4])
     }
 
-    func testRMSPropCustomRho() {
+    @Test("RMSProp custom rho")
+    func rmspropCustomRho() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.RMSProp(parameters: [param], lr: 0.01, rho: 0.95)
 
-        XCTAssertEqual(optimizer.rho, 0.95)
+        #expect(optimizer.rho == 0.95)
 
         let grad = Tensor<Float>.ones([2, 3])
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 }
 
 // MARK: - AdaGrad Optimizer Tests
 
-final class AdaGradOptimizerTests: XCTestCase {
+@Suite("AdaGrad Optimizer Tests")
+struct AdaGradOptimizerTests {
 
-    func testAdaGradCreation() {
+    @Test("AdaGrad creation")
+    func adagradCreation() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         let optimizer = optim.AdaGrad(parameters: [param])
 
-        XCTAssertEqual(optimizer.learningRate, 0.01)  // Default lr
-        XCTAssertEqual(optimizer.initialAccumulatorValue, 0.0)
+        #expect(optimizer.learningRate == 0.01)  // Default lr
+        #expect(optimizer.initialAccumulatorValue == 0.0)
     }
 
-    func testAdaGradBasic() {
+    @Test("AdaGrad basic")
+    func adagradBasic() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaGrad(parameters: [param], lr: 0.01)
 
@@ -137,10 +150,11 @@ final class AdaGradOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaGradMultipleSteps() {
+    @Test("AdaGrad multiple steps")
+    func adagradMultipleSteps() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaGrad(parameters: [param], lr: 0.01)
 
@@ -151,10 +165,11 @@ final class AdaGradOptimizerTests: XCTestCase {
             optimizer.step([grad])
         }
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaGradWeightDecay() {
+    @Test("AdaGrad weight decay")
+    func adagradWeightDecay() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaGrad(parameters: [param], lr: 0.01, weightDecay: 0.01)
 
@@ -162,22 +177,24 @@ final class AdaGradOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaGradInitialAccumulator() {
+    @Test("AdaGrad initial accumulator")
+    func adagradInitialAccumulator() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaGrad(parameters: [param], lr: 0.01, initialAccumulatorValue: 0.1)
 
-        XCTAssertEqual(optimizer.initialAccumulatorValue, 0.1)
+        #expect(optimizer.initialAccumulatorValue == 0.1)
 
         let grad = Tensor<Float>.ones([2, 3])
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaGradZeroGrad() {
+    @Test("AdaGrad zero grad")
+    func adagradZeroGrad() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaGrad(parameters: [param], lr: 0.01)
 
@@ -187,10 +204,11 @@ final class AdaGradOptimizerTests: XCTestCase {
         optimizer.zeroGrad()  // Reset accumulator
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaGradMultipleParameters() {
+    @Test("AdaGrad multiple parameters")
+    func adagradMultipleParameters() {
         let param1 = Parameter(Tensor<Float>.ones([2, 3]), name: "w1")
         let param2 = Parameter(Tensor<Float>.ones([3, 4]), name: "w2")
         var optimizer = optim.AdaGrad(parameters: [param1, param2], lr: 0.01)
@@ -200,24 +218,27 @@ final class AdaGradOptimizerTests: XCTestCase {
 
         optimizer.step([grad1, grad2])
 
-        XCTAssertEqual(param1.value.shape, [2, 3])
-        XCTAssertEqual(param2.value.shape, [3, 4])
+        #expect(param1.value.shape == [2, 3])
+        #expect(param2.value.shape == [3, 4])
     }
 }
 
 // MARK: - AdaDelta Optimizer Tests
 
-final class AdaDeltaOptimizerTests: XCTestCase {
+@Suite("AdaDelta Optimizer Tests")
+struct AdaDeltaOptimizerTests {
 
-    func testAdaDeltaCreation() {
+    @Test("AdaDelta creation")
+    func adadeltaCreation() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         let optimizer = optim.AdaDelta(parameters: [param])
 
-        XCTAssertEqual(optimizer.learningRate, 1.0)  // Default lr for AdaDelta
-        XCTAssertEqual(optimizer.rho, 0.9)
+        #expect(optimizer.learningRate == 1.0)  // Default lr for AdaDelta
+        #expect(optimizer.rho == 0.9)
     }
 
-    func testAdaDeltaBasic() {
+    @Test("AdaDelta basic")
+    func adadeltaBasic() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaDelta(parameters: [param])
 
@@ -225,10 +246,11 @@ final class AdaDeltaOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaDeltaMultipleSteps() {
+    @Test("AdaDelta multiple steps")
+    func adadeltaMultipleSteps() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaDelta(parameters: [param])
 
@@ -238,10 +260,11 @@ final class AdaDeltaOptimizerTests: XCTestCase {
             optimizer.step([grad])
         }
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaDeltaWeightDecay() {
+    @Test("AdaDelta weight decay")
+    func adadeltaWeightDecay() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaDelta(parameters: [param], weightDecay: 0.01)
 
@@ -249,22 +272,24 @@ final class AdaDeltaOptimizerTests: XCTestCase {
 
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaDeltaCustomRho() {
+    @Test("AdaDelta custom rho")
+    func adadeltaCustomRho() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaDelta(parameters: [param], rho: 0.95)
 
-        XCTAssertEqual(optimizer.rho, 0.95)
+        #expect(optimizer.rho == 0.95)
 
         let grad = Tensor<Float>.ones([2, 3])
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaDeltaZeroGrad() {
+    @Test("AdaDelta zero grad")
+    func adadeltaZeroGrad() {
         let param = Parameter(Tensor<Float>.ones([2, 3]), name: "test")
         var optimizer = optim.AdaDelta(parameters: [param])
 
@@ -274,10 +299,11 @@ final class AdaDeltaOptimizerTests: XCTestCase {
         optimizer.zeroGrad()
         optimizer.step([grad])
 
-        XCTAssertEqual(param.value.shape, [2, 3])
+        #expect(param.value.shape == [2, 3])
     }
 
-    func testAdaDeltaMultipleParameters() {
+    @Test("AdaDelta multiple parameters")
+    func adadeltaMultipleParameters() {
         let param1 = Parameter(Tensor<Float>.ones([2, 3]), name: "w1")
         let param2 = Parameter(Tensor<Float>.ones([3, 4]), name: "w2")
         var optimizer = optim.AdaDelta(parameters: [param1, param2])
@@ -287,11 +313,12 @@ final class AdaDeltaOptimizerTests: XCTestCase {
 
         optimizer.step([grad1, grad2])
 
-        XCTAssertEqual(param1.value.shape, [2, 3])
-        XCTAssertEqual(param2.value.shape, [3, 4])
+        #expect(param1.value.shape == [2, 3])
+        #expect(param2.value.shape == [3, 4])
     }
 
-    func testAdaDeltaWithModel() {
+    @Test("AdaDelta with model")
+    func adadeltaWithModel() {
         // Test with a real model
         let fc = nn.Linear(inputSize: 10, outputSize: 5)
         var optimizer = optim.AdaDelta(parameters: fc.parameters())
@@ -302,16 +329,18 @@ final class AdaDeltaOptimizerTests: XCTestCase {
 
         optimizer.step(grads)
 
-        XCTAssertEqual(fc.weight.shape, [5, 10])
-        XCTAssertEqual(fc.bias.shape, [5])
+        #expect(fc.weight.shape == [5, 10])
+        #expect(fc.bias.shape == [5])
     }
 }
 
 // MARK: - Optimizer Integration Tests
 
-final class PortedOptimizerIntegrationTests: XCTestCase {
+@Suite("Ported Optimizer Integration Tests")
+struct PortedOptimizerIntegrationTests {
 
-    func testRMSPropWithSequentialModel() {
+    @Test("RMSProp with sequential model")
+    func rmspropWithSequentialModel() {
         let model = nn.sequential {
             nn.Linear(inputSize: 784, outputSize: 256)
             nn.ReLU()
@@ -322,7 +351,7 @@ final class PortedOptimizerIntegrationTests: XCTestCase {
 
         let input = Tensor<Float>.ones([32, 784])
         let output = model(input)
-        XCTAssertEqual(output.shape, [32, 10])
+        #expect(output.shape == [32, 10])
 
         // Create gradients and step
         let grads = model.parameters().map { Tensor<Float>.ones($0.shape) }
@@ -330,10 +359,11 @@ final class PortedOptimizerIntegrationTests: XCTestCase {
 
         // Model should still work after optimization step
         let output2 = model(input)
-        XCTAssertEqual(output2.shape, [32, 10])
+        #expect(output2.shape == [32, 10])
     }
 
-    func testAdaGradWithSequentialModel() {
+    @Test("AdaGrad with sequential model")
+    func adagradWithSequentialModel() {
         let model = nn.sequential {
             nn.Linear(inputSize: 100, outputSize: 50)
             nn.ReLU()
@@ -344,16 +374,17 @@ final class PortedOptimizerIntegrationTests: XCTestCase {
 
         let input = Tensor<Float>.ones([16, 100])
         let output = model(input)
-        XCTAssertEqual(output.shape, [16, 10])
+        #expect(output.shape == [16, 10])
 
         let grads = model.parameters().map { Tensor<Float>.ones($0.shape) }
         optimizer.step(grads)
 
         let output2 = model(input)
-        XCTAssertEqual(output2.shape, [16, 10])
+        #expect(output2.shape == [16, 10])
     }
 
-    func testOptimizerSkipsNonGradParams() {
+    @Test("Optimizer skips non-grad params")
+    func optimizerSkipsNonGradParams() {
         let trainable = Parameter(Tensor<Float>.ones([2, 3]), requiresGrad: true, name: "trainable")
         let frozen = Parameter(Tensor<Float>.ones([3, 4]), requiresGrad: false, name: "frozen")
 
@@ -369,7 +400,7 @@ final class PortedOptimizerIntegrationTests: XCTestCase {
         adadelta.step([grad1, grad2])
 
         // All optimizers should work without error
-        XCTAssertEqual(trainable.value.shape, [2, 3])
-        XCTAssertEqual(frozen.value.shape, [3, 4])
+        #expect(trainable.value.shape == [2, 3])
+        #expect(frozen.value.shape == [3, 4])
     }
 }
