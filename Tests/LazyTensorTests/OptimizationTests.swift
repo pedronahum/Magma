@@ -30,7 +30,8 @@ struct PassManagerTests {
         #expect(manager.isEnabled("cse"))
         #expect(manager.isEnabled("constant-folding"))
         #expect(manager.isEnabled("algebraic-simplification"))
-        #expect(manager.isEnabled("operation-fusion"))
+        // operation-fusion is disabled by default (fusion moved to MetalHLO)
+        #expect(!manager.isEnabled("operation-fusion"))
     }
 
     @Test("PassManager enable/disable works")
@@ -874,74 +875,6 @@ struct OperationFusionPassTests {
     }
 }
 
-// MARK: - Specific Fusion Pattern Tests
-
-@Suite("MatMulBiasActivation Pattern Tests")
-struct MatMulBiasActivationPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = MatMulBiasActivationPattern()
-        #expect(pattern.name == "matmul-bias-activation")
-        #expect(pattern.priority == 60)
-    }
-}
-
-@Suite("SoftmaxPattern Tests")
-struct SoftmaxPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = SoftmaxPattern()
-        #expect(pattern.name == "softmax")
-        #expect(pattern.priority == 50)
-    }
-}
-
-@Suite("LayerNormPattern Tests")
-struct LayerNormPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = LayerNormPattern()
-        #expect(pattern.name == "layer-norm")
-        #expect(pattern.priority == 80)
-    }
-}
-
-@Suite("RMSNormPattern Tests")
-struct RMSNormPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = RMSNormPattern()
-        #expect(pattern.name == "rms-norm")
-        #expect(pattern.priority == 75)
-    }
-}
-
-@Suite("ScaledDotProductAttentionPattern Tests")
-struct ScaledDotProductAttentionPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = ScaledDotProductAttentionPattern()
-        #expect(pattern.name == "scaled-dot-product-attention")
-        #expect(pattern.priority == 100)  // Highest priority
-    }
-}
-
-@Suite("GeluPattern Tests")
-struct GeluPatternTests {
-
-    @Test("Pattern has correct name and priority")
-    func patternMetadata() {
-        let pattern = GeluPattern()
-        #expect(pattern.name == "gelu")
-        #expect(pattern.priority == 40)
-    }
-}
-
 // MARK: - Graph Transformation Tests
 
 @Suite("IRGraph Transformation Tests")
@@ -963,10 +896,10 @@ struct IRGraphTransformationTests {
         graph.nodes = [aHandle, bHandle]
         graph.addOutput(bHandle)
 
-        // Create fused replacement
+        // Create replacement operation (using gelu as example)
         let fusedId = TensorRegistry.shared.nextTensorId()
         let fusedHandle = LazyTensorHandle(id: fusedId, shape: [2], dtype: .float32, device: .default)
-        fusedHandle.irNode = .operation(op: .fusedGelu, inputs: [aHandle], attributes: [:])
+        fusedHandle.irNode = .operation(op: .gelu, inputs: [aHandle], attributes: [:])
 
         let newGraph = graph.replacing([bHandle], with: [fusedHandle])
 

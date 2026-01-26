@@ -402,11 +402,6 @@ public final class StableHLOEmitter {
              .conv1d, .conv2d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm,
              .rngUniform, .rngNormal:
             fatalError("Operation \(op) not yet supported in while loop body")
-
-        // Fused operations not supported in while loop bodies
-        case .fusedScaledDotProductAttention, .fusedLayerNorm, .fusedRMSNorm,
-             .fusedMatMulBiasActivation, .fusedRoPE, .fusedSoftmax, .fusedGelu:
-            fatalError("Fused operation \(op) not supported in while loop body")
         }
     }
 
@@ -591,11 +586,6 @@ public final class StableHLOEmitter {
 
         case .conv1d, .conv2d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm:
             fatalError("Operation \(op) not yet implemented in while loop body")
-
-        // Fused operations not supported in while loop bodies
-        case .fusedScaledDotProductAttention, .fusedLayerNorm, .fusedRMSNorm,
-             .fusedMatMulBiasActivation, .fusedRoPE, .fusedSoftmax, .fusedGelu:
-            fatalError("Fused operation \(op) not supported in while loop body")
         }
     }
 
@@ -835,184 +825,7 @@ public final class StableHLOEmitter {
         // Not yet implemented
         case .conv1d, .conv2d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm:
             fatalError("Operation \(op) not yet implemented in StableHLOEmitter")
-
-        // Fused operations - emit as custom_call
-        case .fusedScaledDotProductAttention:
-            return emitFusedAttention(inputValues, output: output, attributes: attributes)
-
-        case .fusedLayerNorm:
-            return emitFusedLayerNorm(inputValues, output: output, attributes: attributes)
-
-        case .fusedRMSNorm:
-            return emitFusedRMSNorm(inputValues, output: output, attributes: attributes)
-
-        case .fusedMatMulBiasActivation:
-            return emitFusedMatMulBiasActivation(inputValues, output: output, attributes: attributes)
-
-        case .fusedRoPE:
-            return emitFusedRoPE(inputValues, output: output, attributes: attributes)
-
-        case .fusedSoftmax:
-            return emitFusedSoftmax(inputValues, output: output, attributes: attributes)
-
-        case .fusedGelu:
-            return emitFusedGelu(inputValues, output: output, attributes: attributes)
         }
-    }
-
-    // MARK: - Fused Operation Emission
-
-    /// Emit fused scaled dot-product attention as custom_call
-    private func emitFusedAttention(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let scale = (attributes["scale"] as? Float) ?? 1.0
-        let isCausal = (attributes["isCausal"] as? Bool) ?? false
-        let hasMask = (attributes["hasMask"] as? Bool) ?? false
-
-        let config = """
-        {"scale": \(scale), "is_causal": \(isCausal), "has_mask": \(hasMask)}
-        """
-
-        return builder.customCall(
-            target: "fused_scaled_dot_product_attention",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused layer normalization as custom_call
-    private func emitFusedLayerNorm(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let eps = (attributes["eps"] as? Float) ?? 1e-5
-        let axes = (attributes["axes"] as? [Int]) ?? [-1]
-
-        let config = """
-        {"eps": \(eps), "axes": \(axes)}
-        """
-
-        return builder.customCall(
-            target: "fused_layer_norm",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused RMS normalization as custom_call
-    private func emitFusedRMSNorm(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let eps = (attributes["eps"] as? Float) ?? 1e-5
-        let axes = (attributes["axes"] as? [Int]) ?? [-1]
-
-        let config = """
-        {"eps": \(eps), "axes": \(axes)}
-        """
-
-        return builder.customCall(
-            target: "fused_rms_norm",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused matmul + bias + activation as custom_call
-    private func emitFusedMatMulBiasActivation(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let activation = (attributes["activation"] as? String) ?? "none"
-        let transA = (attributes["transA"] as? Bool) ?? false
-        let transB = (attributes["transB"] as? Bool) ?? false
-
-        let config = """
-        {"activation": "\(activation)", "trans_a": \(transA), "trans_b": \(transB)}
-        """
-
-        return builder.customCall(
-            target: "fused_matmul_bias_activation",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused RoPE as custom_call
-    private func emitFusedRoPE(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let dim = (attributes["dim"] as? Int) ?? (output.shape.last ?? 64)
-
-        let config = """
-        {"dim": \(dim)}
-        """
-
-        return builder.customCall(
-            target: "fused_rope",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused softmax as custom_call
-    private func emitFusedSoftmax(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let axis = (attributes["axis"] as? Int) ?? -1
-
-        let config = """
-        {"axis": \(axis)}
-        """
-
-        return builder.customCall(
-            target: "fused_softmax",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
-    }
-
-    /// Emit fused GELU as custom_call
-    private func emitFusedGelu(
-        _ inputs: [Value],
-        output: LazyTensorHandle,
-        attributes: [String: Any]
-    ) -> Value {
-        let approximate = (attributes["approximate"] as? Bool) ?? false
-
-        let config = """
-        {"approximate": \(approximate)}
-        """
-
-        return builder.customCall(
-            target: "fused_gelu",
-            inputs: inputs,
-            outputShape: output.shape,
-            outputDtype: output.dtype,
-            backendConfig: config
-        )
     }
 
     /// Topologically sort the graph nodes

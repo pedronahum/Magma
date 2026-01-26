@@ -132,29 +132,6 @@ public enum OpKind: String, Sendable {
     // Random Number Generation
     case rngUniform, rngNormal
 
-    // Fused Operations (for optimization)
-    // These are detected by fusion passes and emitted as custom_call ops
-
-    /// Fused scaled dot-product attention: softmax(Q @ K^T / scale) @ V
-    case fusedScaledDotProductAttention
-
-    /// Fused layer normalization: (x - mean) / sqrt(var + eps) * gamma + beta
-    case fusedLayerNorm
-
-    /// Fused RMS normalization: x / sqrt(mean(x^2) + eps) * weight
-    case fusedRMSNorm
-
-    /// Fused matrix multiply with bias and activation: activation(x @ w + b)
-    case fusedMatMulBiasActivation
-
-    /// Fused rotary position embedding (RoPE)
-    case fusedRoPE
-
-    /// Fused softmax (numerically stable)
-    case fusedSoftmax
-
-    /// Fused GELU activation (exact or approximate)
-    case fusedGelu
 }
 
 // MARK: - IR Graph

@@ -143,12 +143,6 @@ public final class ConstantFoldingPass: OptimizationPass {
             return false  // Control flow not foldable
         case .rngUniform, .rngNormal:
             return false  // Random - not deterministic
-
-        // Fused operations should not be constant folded
-        // (they will be handled by custom Metal kernels)
-        case .fusedScaledDotProductAttention, .fusedLayerNorm, .fusedRMSNorm,
-             .fusedMatMulBiasActivation, .fusedRoPE, .fusedSoftmax, .fusedGelu:
-            return false
         }
     }
 
