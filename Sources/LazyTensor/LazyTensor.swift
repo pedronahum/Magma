@@ -131,6 +131,30 @@ public enum OpKind: String, Sendable {
 
     // Random Number Generation
     case rngUniform, rngNormal
+
+    // Fused Operations (for optimization)
+    // These are detected by fusion passes and emitted as custom_call ops
+
+    /// Fused scaled dot-product attention: softmax(Q @ K^T / scale) @ V
+    case fusedScaledDotProductAttention
+
+    /// Fused layer normalization: (x - mean) / sqrt(var + eps) * gamma + beta
+    case fusedLayerNorm
+
+    /// Fused RMS normalization: x / sqrt(mean(x^2) + eps) * weight
+    case fusedRMSNorm
+
+    /// Fused matrix multiply with bias and activation: activation(x @ w + b)
+    case fusedMatMulBiasActivation
+
+    /// Fused rotary position embedding (RoPE)
+    case fusedRoPE
+
+    /// Fused softmax (numerically stable)
+    case fusedSoftmax
+
+    /// Fused GELU activation (exact or approximate)
+    case fusedGelu
 }
 
 // MARK: - IR Graph
@@ -745,8 +769,27 @@ private func MetalLazyTensorBarrier(on device: Device) {
         return
     }
 
+    // 3.5. Run optimization passes
+    let optimizedGraph: IRGraph
+    if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
+        let passManager = PassManager.shared
+        optimizedGraph = passManager.run(on: graph)
+
+        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+            let originalCount = graph.nodes.count
+            let optimizedCount = optimizedGraph.nodes.count
+            if originalCount != optimizedCount {
+                print("Magma [Metal]: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
+            }
+        }
+    } else {
+        optimizedGraph = graph
+    }
+
+    // Use optimized graph from here on
+
     // 4. Analyze for constant promotion
-    let promotionResult = graph.analyzeForConstantPromotion()
+    let promotionResult = optimizedGraph.analyzeForConstantPromotion()
     let structuralHash = promotionResult.structuralHash
 
     // 5. Check Metal compilation cache using structural hash
@@ -759,7 +802,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
         cache.missCount += 1
 
         // 6. Emit StableHLO MLIR with constant promotion
-        let emitter = StableHLOEmitter(graph: graph)
+        let emitter = StableHLOEmitter(graph: optimizedGraph)
         let mlir = emitter.emit(
             name: "metal_graph_\(structuralHash.prefix(8))",
             promotedConstants: promotionResult.promotedConstants
@@ -809,7 +852,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
 
     // First: Check for any data nodes - these would come from pre-existing PJRT buffers
     // which is not typical for Metal-first execution, but we should handle it
-    for node in graph.nodes {
+    for node in optimizedGraph.nodes {
         if case .data(let pjrtBuffer) = node.irNode {
             // Transfer PJRT buffer data to Metal
             do {
@@ -900,8 +943,17 @@ private func MetalLazyTensorBarrier(on device: Device) {
 public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws -> [PJRTBuffer] {
     graph.buildTopologicalOrder()
 
-    let emitter = StableHLOEmitter(graph: graph)
-    let graphHash = graph.computeHash()
+    // Run optimization passes
+    let optimizedGraph: IRGraph
+    if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
+        let passManager = PassManager.shared
+        optimizedGraph = passManager.run(on: graph)
+    } else {
+        optimizedGraph = graph
+    }
+
+    let emitter = StableHLOEmitter(graph: optimizedGraph)
+    let graphHash = optimizedGraph.computeHash()
     let mlir = emitter.emit(name: "graph_\(graphHash.prefix(8))")
 
     // Check cache

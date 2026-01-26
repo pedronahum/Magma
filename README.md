@@ -58,6 +58,7 @@ for (images, labels) in dataLoader {
 - **Metal backend**: Native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO)
 - **Swift-native autodiff**: First-class `@differentiable` support, not a bolted-on tape
 - **Lazy execution**: x10-style tracing with explicit barriers for optimal compilation
+- **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, operation fusion
 - **Pure Swift StableHLO**: IR generation with no C dependencies
 
 ## Architecture
@@ -66,7 +67,8 @@ for (images, labels) in dataLoader {
 ┌─────────────────────────────────────────────────────────────┐
 │  Magma          PyTorch-compatible API (nn, optim, etc.)    │
 ├─────────────────────────────────────────────────────────────┤
-│  LazyTensor     x10-style tracing, barriers, caching        │
+│  LazyTensor     x10-style tracing, optimization, caching    │
+│                 DCE, CSE, constant folding, op fusion       │
 ├─────────────────────────────────────────────────────────────┤
 │  StableHLO      Pure Swift MLIR generation                  │
 ├─────────────────────────────────────────────────────────────┤

@@ -4,10 +4,12 @@
 .LSOverride
 
 # Swift Package Manager
-/.build/
+.build/
+**/.build/
 /Packages
-Package.resolved
+**/Package.resolved
 .swiftpm/
+**/.swiftpm/
 xcuserdata/
 DerivedData/
 
@@ -64,3 +66,6 @@ docs/
 # Test output
 .test-results/
 coverage/
+
+# Benchmark results (optional - remove if you want to track these)
+# benchmark-results/

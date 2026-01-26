@@ -903,6 +903,22 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 
 ### Week 16-17: Performance
 
+#### Graph Optimization Passes ✅
+- [x] `PassManager` - Infrastructure for running optimization passes
+- [x] `DeadCodeEliminationPass` - Remove unused operations
+- [x] `CommonSubexpressionEliminationPass` - Eliminate redundant computations
+- [x] `ConstantFoldingPass` - Evaluate constant expressions at compile time
+- [x] `AlgebraicSimplificationPass` - Simplify patterns (x+0=x, x*1=x, -(-x)=x, etc.)
+- [x] `OperationFusionPass` - Pattern matching for fused operations
+
+#### Fusion Patterns ✅
+- [x] `ScaledDotProductAttentionPattern` - Fuse Q·K^T/√d · V attention
+- [x] `LayerNormPattern` - Fuse layer normalization operations
+- [x] `RMSNormPattern` - Fuse RMS normalization operations
+- [x] `MatMulBiasActivationPattern` - Fuse matmul + bias + activation
+- [x] `SoftmaxPattern` - Fuse exp-sum-div softmax pattern
+- [x] `GeluPattern` - Fuse GELU activation pattern
+
 #### Optimization
 - [ ] Profile compilation times
 - [ ] Profile execution times
@@ -1033,6 +1049,8 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | **Profiling** | Timing, Benchmarking, FLOPS estimation, Memory profiling, XLA tracing |
 | **Error Handling** | TensorError types, TensorDebug utilities, TensorAssert helpers |
 | **Testing Utils** | Gradient checking, Numerical stability tests |
+| **Graph Optimization** | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification, OperationFusion |
+| **Fusion Patterns** | ScaledDotProductAttention, LayerNorm, RMSNorm, MatMulBiasActivation, Softmax, Gelu |
 
 ### Key Files
 
@@ -1048,6 +1066,7 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | `Sources/Torch/Profiling.swift` | Timing, benchmarking, FLOPS estimation |
 | `Sources/Torch/TensorError.swift` | Error types and debugging utilities |
 | `Sources/LazyTensor/` | Lazy execution engine |
+| `Sources/LazyTensor/Optimization/` | Graph optimization passes (PassManager, DCE, CSE, fusion) |
 | `Sources/StableHLO/` | MLIR code generation |
 | `Sources/XLARuntime/` | XLA/PJRT integration, TPU detection |
 | `Sources/Torch/Distributed/` | Distributed training (planned): DDP, FSDP, sharding |
@@ -1089,14 +1108,15 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | M14: Mixed Precision | ✅ Complete | bfloat16 support, toReducedPrecision/toFullPrecision, autocast |
 | M15: Error Handling | ✅ Complete | TensorError types, TensorDebug utilities, TensorAssert helpers |
 | M16: Benchmarks | ✅ Complete | Examples/Benchmarks with matmul GFLOPS measurement (peak ~71 GFLOPS) |
-| M17: Sharding Foundation | Not Started | DeviceMesh, TensorSharding types, StableHLO sharding support |
-| M18: SPMD API | Not Started | `markSharding()`, `PartitionSpec`, collective operations |
-| M19: Auto-Sharding | Not Started | Shardy propagation via sdy_opt, `autoShard()` API |
-| M20: DDP | Not Started | DistributedDataParallel wrapper for multi-device training |
-| M21: FSDP | Not Started | FullyShardedDataParallel with ZeRO-style sharding |
-| M22: Tensor Parallelism | Not Started | Column/Row parallel layers for large models |
-| M23: Multi-Host | Not Started | Cross-host training, distributed checkpointing |
-| M24: v0.1.0 | 🚧 In Progress | Public release - blocking issues resolved |
+| M17: Graph Optimization | ✅ Complete | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification, Fusion patterns |
+| M18: Sharding Foundation | Not Started | DeviceMesh, TensorSharding types, StableHLO sharding support |
+| M19: SPMD API | Not Started | `markSharding()`, `PartitionSpec`, collective operations |
+| M20: Auto-Sharding | Not Started | Shardy propagation via sdy_opt, `autoShard()` API |
+| M21: DDP | Not Started | DistributedDataParallel wrapper for multi-device training |
+| M22: FSDP | Not Started | FullyShardedDataParallel with ZeRO-style sharding |
+| M23: Tensor Parallelism | Not Started | Column/Row parallel layers for large models |
+| M24: Multi-Host | Not Started | Cross-host training, distributed checkpointing |
+| M25: v0.1.0 | 🚧 In Progress | Public release - blocking issues resolved |
 
 ---
 

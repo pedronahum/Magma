@@ -1,6 +1,8 @@
 // Magma - StableHLO
 // Pure Swift MLIR/StableHLO builder
 
+import Foundation
+
 /// Builds StableHLO MLIR modules as text
 ///
 /// This is a pure Swift implementation with no C dependencies.
@@ -921,6 +923,84 @@ public final class MLIRBuilder: @unchecked Sendable {
         let op = "    \(result.name) = stablehlo.rng \(mean.displayName), \(stddev.displayName), shape = [\(shapeStr)], distribution = NORMAL : (\(mean.type.mlirType), \(stddev.type.mlirType)) -> \(resultType.mlirType)"
         operations.append(op)
         return result
+    }
+
+    // MARK: - Custom Calls
+
+    /// Create a custom_call operation for fused kernels
+    ///
+    /// Custom calls allow us to emit fused operations that will be handled
+    /// by the backend (MetalHLO) with specialized implementations.
+    ///
+    /// - Parameters:
+    ///   - target: The custom call target name (e.g., "fused_attention")
+    ///   - inputs: Input values to the custom call
+    ///   - outputShape: Shape of the output tensor
+    ///   - outputDtype: Data type of the output tensor
+    ///   - backendConfig: JSON configuration string for the backend
+    /// - Returns: The result value
+    public func customCall(
+        target: String,
+        inputs: [Value],
+        outputShape: [Int],
+        outputDtype: DType,
+        backendConfig: String = ""
+    ) -> Value {
+        let resultType = TensorType(shape: outputShape, dtype: outputDtype)
+        let result = nextValue(type: resultType)
+
+        let inputsStr = inputs.map { $0.displayName }.joined(separator: ", ")
+        let inputTypesStr = inputs.map { $0.type.mlirType }.joined(separator: ", ")
+
+        // Escape the backend config for MLIR attribute
+        let escapedConfig = backendConfig
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        var op = "    \(result.name) = stablehlo.custom_call @\(target)(\(inputsStr))"
+
+        if !backendConfig.isEmpty {
+            op += " {\n"
+            op += "      backend_config = \"\(escapedConfig)\"\n"
+            op += "    }"
+        }
+
+        op += " : (\(inputTypesStr)) -> \(resultType.mlirType)"
+
+        operations.append(op)
+        return result
+    }
+
+    /// Create a custom_call with multiple outputs
+    public func customCallMultiOutput(
+        target: String,
+        inputs: [Value],
+        outputTypes: [TensorType],
+        backendConfig: String = ""
+    ) -> [Value] {
+        let results = outputTypes.map { nextValue(type: $0) }
+        let resultsStr = results.map { $0.name }.joined(separator: ", ")
+
+        let inputsStr = inputs.map { $0.displayName }.joined(separator: ", ")
+        let inputTypesStr = inputs.map { $0.type.mlirType }.joined(separator: ", ")
+        let outputTypesStr = outputTypes.map { $0.mlirType }.joined(separator: ", ")
+
+        let escapedConfig = backendConfig
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        var op = "    \(resultsStr) = stablehlo.custom_call @\(target)(\(inputsStr))"
+
+        if !backendConfig.isEmpty {
+            op += " {\n"
+            op += "      backend_config = \"\(escapedConfig)\"\n"
+            op += "    }"
+        }
+
+        op += " : (\(inputTypesStr)) -> (\(outputTypesStr))"
+
+        operations.append(op)
+        return results
     }
 
     // MARK: - Build Module
