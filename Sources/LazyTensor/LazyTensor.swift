@@ -815,7 +815,8 @@ private func MetalLazyTensorBarrier(on device: Device) {
             do {
                 let client = try getMetalHLOClient()
                 let hostData = try pjrtBuffer.toFloatArray()
-                let metalBuffer = try client.createBuffer(
+                // Use optimized non-throwing createBuffer for Float arrays
+                let metalBuffer = client.createBuffer(
                     hostData,
                     shape: node.shape
                 )
@@ -832,7 +833,8 @@ private func MetalLazyTensorBarrier(on device: Device) {
         do {
             let client = try getMetalHLOClient()
             for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
-                let buffer = try client.createBuffer(
+                // Use optimized non-throwing createBuffer for Float arrays
+                let buffer = client.createBuffer(
                     promoted.values,
                     shape: promoted.shape
                 )

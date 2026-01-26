@@ -12,10 +12,20 @@ import Magma
 import LazyTensor
 import XLARuntime
 
-#if os(macOS)
+#if os(macOS) && canImport(MetalHLO)
+import MetalHLO
+
+// Check for diagnostics mode
+let runDiagnostics = CommandLine.arguments.contains("--diagnostics") || CommandLine.arguments.contains("-d")
+
+if runDiagnostics {
+    runMetalDiagnostics()
+    exit(0)
+}
 
 print("Magma Metal GPU Example")
 print("=======================\n")
+print("Tip: Run with --diagnostics for detailed performance analysis\n")
 
 // Check available backends
 print("Available backends: \(Backend.availableBackends.map { $0.rawValue })")
@@ -89,20 +99,28 @@ print("Warmup iterations: \(warmupIterations)")
 print("Benchmark iterations: \(benchmarkIterations)")
 print()
 
-// Metal benchmark
+// Metal benchmark - use pre-created data to avoid MLIR embedding overhead
 print("Metal GPU:")
 var metalTotalTime: Double = 0
 
-for i in 0..<(warmupIterations + benchmarkIterations) {
-    let x = Tensor<Float>.randn([size, size], on: metalDevice)
-    let y = Tensor<Float>.randn([size, size], on: metalDevice)
+// Pre-create random data ONCE (avoid embedding huge constants in MLIR each iteration)
+// This is how proper ML benchmarks work - input data is prepared ahead of time
+let metalX = Tensor<Float>.randn([size, size], on: metalDevice)
+let metalY = Tensor<Float>.randn([size, size], on: metalDevice)
 
+// Materialize once so subsequent operations reuse the data
+metalX.markForMaterialization()
+metalY.markForMaterialization()
+LazyTensorBarrier(on: metalDevice)
+
+for i in 0..<(warmupIterations + benchmarkIterations) {
     let start = CFAbsoluteTimeGetCurrent()
 
-    let z = x.matmul(y)
+    // Use pre-materialized tensors
+    let z = metalX.matmul(metalY)
     LazyTensorBarrier(on: metalDevice)
 
-    // Force materialization
+    // Force read
     let _ = z.scalars().first
 
     let elapsed = CFAbsoluteTimeGetCurrent() - start
@@ -133,13 +151,17 @@ let cpuDevice = Device(backend: .cpu, index: 0)
 if Backend.cpu.isAvailable {
     var cpuTotalTime: Double = 0
 
-    for i in 0..<(warmupIterations + benchmarkIterations) {
-        let x = Tensor<Float>.randn([size, size], on: cpuDevice)
-        let y = Tensor<Float>.randn([size, size], on: cpuDevice)
+    // Pre-create and materialize tensors for fair comparison
+    let cpuX = Tensor<Float>.randn([size, size], on: cpuDevice)
+    let cpuY = Tensor<Float>.randn([size, size], on: cpuDevice)
+    cpuX.markForMaterialization()
+    cpuY.markForMaterialization()
+    LazyTensorBarrier(on: cpuDevice)
 
+    for i in 0..<(warmupIterations + benchmarkIterations) {
         let start = CFAbsoluteTimeGetCurrent()
 
-        let z = x.matmul(y)
+        let z = cpuX.matmul(cpuY)
         LazyTensorBarrier(on: cpuDevice)
 
         // Force materialization
@@ -212,7 +234,7 @@ print("Done! Metal GPU acceleration is working correctly.")
 
 #else
 
-print("This example requires macOS with Metal support.")
+print("This example requires macOS with Metal and MetalHLO support.")
 print("Metal GPU acceleration is only available on Apple platforms.")
 
-#endif
+#endif  // os(macOS) && canImport(MetalHLO)

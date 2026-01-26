@@ -71,13 +71,32 @@ public final class MetalHLOClient: @unchecked Sendable {
         return MetalHLOBuffer(buffer: buffer, shape: shape, elementType: elementType)
     }
 
-    /// Create a buffer from Float data
+    /// Create a buffer from Float data (optimized fast path)
     public func createBuffer(
         _ data: [Float],
         shape: [Int]
-    ) throws -> MetalHLOBuffer {
-        let buffer = try client.createBuffer(data, shape: shape, elementType: .float32)
+    ) -> MetalHLOBuffer {
+        // Use the optimized non-throwing version that bypasses type conversion
+        let buffer = client.createBuffer(data, shape: shape)
         return MetalHLOBuffer(buffer: buffer, shape: shape, elementType: .float32)
+    }
+
+    /// Create a buffer from Int32 data (optimized fast path)
+    public func createBuffer(
+        _ data: [Int32],
+        shape: [Int]
+    ) -> MetalHLOBuffer {
+        let buffer = client.createBuffer(data, shape: shape)
+        return MetalHLOBuffer(buffer: buffer, shape: shape, elementType: .int32)
+    }
+
+    /// Create a buffer from Int64 data (optimized fast path)
+    public func createBuffer(
+        _ data: [Int64],
+        shape: [Int]
+    ) -> MetalHLOBuffer {
+        let buffer = client.createBuffer(data, shape: shape)
+        return MetalHLOBuffer(buffer: buffer, shape: shape, elementType: .int64)
     }
 
     /// Compile StableHLO MLIR to an executable
