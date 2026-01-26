@@ -327,7 +327,8 @@ public final class StableHLOEmitter {
         case .batchedMatmul:
             return targetBuilder.batchedDot(inputs[0], inputs[1])
         case .transpose:
-            return targetBuilder.transpose(inputs[0])
+            let permutation = attributes["permutation"] as? [Int]
+            return targetBuilder.transpose(inputs[0], permutation: permutation)
         case .reshape:
             let newShape = attributes["shape"] as! [Int]
             return targetBuilder.reshape(inputs[0], to: newShape)
@@ -354,7 +355,8 @@ public final class StableHLOEmitter {
         case .reduceMean:
             // Mean = sum / count
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.rank)
-            let sum = targetBuilder.reduceSum(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            let sum = targetBuilder.reduceSum(inputs[0], axes: axes, keepDims: keepDims)
             let count = axes.reduce(1) { $0 * inputs[0].type.shape[$1] }
             let countValue = targetBuilder.constant(Double(count), type: sum.type)
             return targetBuilder.divide(sum, countValue)
@@ -470,7 +472,8 @@ public final class StableHLOEmitter {
         case .batchedMatmul:
             return builder.batchedDot(inputs[0], inputs[1])
         case .transpose:
-            return builder.transpose(inputs[0])
+            let permutation = attributes["permutation"] as? [Int]
+            return builder.transpose(inputs[0], permutation: permutation)
         case .reshape:
             let newShape = attributes["shape"] as! [Int]
             return builder.reshape(inputs[0], to: newShape)
@@ -490,7 +493,8 @@ public final class StableHLOEmitter {
             return builder.reduceMin(inputs[0], axes: axes)
         case .reduceMean:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.shape.count)
-            let sum = builder.reduceSum(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            let sum = builder.reduceSum(inputs[0], axes: axes, keepDims: keepDims)
             let count = axes.reduce(1) { $0 * inputs[0].type.shape[$1] }
             let countVal = builder.constant(Double(count), type: sum.type)
             return builder.divide(sum, countVal)
@@ -682,7 +686,8 @@ public final class StableHLOEmitter {
             // Batched matrix multiplication using dot_general
             return builder.batchedDot(inputValues[0], inputValues[1])
         case .transpose:
-            return builder.transpose(inputValues[0])
+            let permutation = attributes["permutation"] as? [Int]
+            return builder.transpose(inputValues[0], permutation: permutation)
         case .reshape:
             let newShape = attributes["shape"] as? [Int] ?? output.shape
             return builder.reshape(inputValues[0], to: newShape)
@@ -703,7 +708,8 @@ public final class StableHLOEmitter {
         case .reduceMean:
             // Mean = sum / count
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].shape.count)
-            let sum = builder.reduceSum(inputValues[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            let sum = builder.reduceSum(inputValues[0], axes: axes, keepDims: keepDims)
             let count = axes.reduce(1) { $0 * inputs[0].shape[$1] }
             let countVal = builder.constant(Double(count), type: sum.type)
             return builder.divide(sum, countVal)

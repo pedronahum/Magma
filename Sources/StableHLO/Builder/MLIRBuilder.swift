@@ -449,12 +449,12 @@ public final class MLIRBuilder: @unchecked Sendable {
         let initValueStr: String
         if input.type.dtype.isFloatingPoint {
             if initValue.isInfinite {
-                // Use hex representation for infinity values
-                // float32: -inf = 0xFF800000, +inf = 0x7F800000
+                // Use very large finite values that the parser can handle
+                // FLT_MAX ≈ 3.4028235e+38
                 if initValue < 0 {
-                    initValueStr = "0xFF800000"
+                    initValueStr = "-3.4028235e+38"
                 } else {
-                    initValueStr = "0x7F800000"
+                    initValueStr = "3.4028235e+38"
                 }
             } else {
                 initValueStr = "\(initValue)"
@@ -467,13 +467,9 @@ public final class MLIRBuilder: @unchecked Sendable {
 
         let axesStr = axes.map(String.init).joined(separator: ", ")
 
-        let reduceOp = """
-            \(reducedResult.name) = stablehlo.reduce(\(input.displayName) init: \(initVal.name)) across dimensions = [\(axesStr)] : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(reducedType.mlirType)
-             reducer(%arg_a: \(scalarType.mlirType), %arg_b: \(scalarType.mlirType)) {
-              %r = stablehlo.\(op) %arg_a, %arg_b : \(scalarType.mlirType)
-              stablehlo.return %r : \(scalarType.mlirType)
-            }
-        """
+        // Emit in simplified format that MetalHLO parser expects:
+        // %result = stablehlo.reduce %input, %init applies stablehlo.op across dimensions = [...] : (type, type) -> type
+        let reduceOp = "    \(reducedResult.name) = stablehlo.reduce \(input.displayName), \(initVal.name) applies stablehlo.\(op) across dimensions = [\(axesStr)] : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(reducedType.mlirType)"
         operations.append(reduceOp)
 
         // If keepDims is true, reshape to add back the removed dimensions as size 1

@@ -313,6 +313,93 @@ struct MetalHLOTests {
         let cached = MetalCompilationCache.shared.get(hash: hash)
         #expect(cached != nil, "Should retrieve cached executable")
     }
+
+    // MARK: - Transpose Tests
+
+    @Test("Execute 4D transpose for attention pattern")
+    func execute4DTranspose() throws {
+        let client = try MetalHLOClient.create()
+
+        // Test transpose swapping last two dimensions: [2, 2, 3, 4] -> [2, 2, 4, 3]
+        // This is the pattern used in attention: K^T = K.transpose(dim1: 2, dim2: 3)
+        let mlir = """
+        module @exec_transpose {
+          func.func @main(%arg0: tensor<2x2x3x4xf32>) -> (tensor<2x2x4x3xf32>) {
+            %0 = stablehlo.transpose %arg0, dims = [0, 1, 3, 2] : (tensor<2x2x3x4xf32>) -> tensor<2x2x4x3xf32>
+            return %0 : tensor<2x2x4x3xf32>
+          }
+        }
+        """
+
+        let executable = try client.compile(mlir)
+
+        // Input shape: [2, 2, 3, 4] = 48 elements
+        // Create test data where we can verify the transpose is correct
+        // Using indices as values to make verification easier
+        var input = [Float](repeating: 0, count: 48)
+        for i in 0..<48 { input[i] = Float(i) }
+
+        let buffer = try client.createBuffer(input, shape: [2, 2, 3, 4])
+        let outputs = try executable.execute([buffer])
+
+        let result = try outputs[0].toFloatArray()
+
+        // Verify output shape implicitly through count (2*2*4*3 = 48)
+        #expect(result.count == 48, "Output should have 48 elements")
+
+        // Verify transpose correctness by checking specific values
+        // Input[b, h, i, j] at linear index = b*24 + h*12 + i*4 + j
+        // Output[b, h, j, i] at linear index = b*24 + h*12 + j*3 + i
+        // So output[0,0,0,0] = input[0,0,0,0] = 0
+        // output[0,0,1,0] = input[0,0,0,1] = 1
+        // output[0,0,0,1] = input[0,0,1,0] = 4
+        #expect(abs(result[0] - 0.0) < 1e-6, "result[0,0,0,0] should be input[0,0,0,0]=0")
+        #expect(abs(result[1] - 4.0) < 1e-6, "result[0,0,0,1] should be input[0,0,1,0]=4")
+        #expect(abs(result[2] - 8.0) < 1e-6, "result[0,0,0,2] should be input[0,0,2,0]=8")
+        #expect(abs(result[3] - 1.0) < 1e-6, "result[0,0,1,0] should be input[0,0,0,1]=1")
+
+        print("4D transpose test passed!")
+    }
+
+    @Test("Execute batched matmul with transposed K")
+    func executeBatchedMatmulWithTranspose() throws {
+        let client = try MetalHLOClient.create()
+
+        // Test the attention pattern: Q @ K^T
+        // Q: [1, 2, 4, 3] (batch=1, heads=2, seq=4, headDim=3)
+        // K: [1, 2, 4, 3] (same shape)
+        // K^T: [1, 2, 3, 4] (transpose last two dims)
+        // Result: [1, 2, 4, 4]
+        let mlir = """
+        module @attention_matmul {
+          func.func @main(%q: tensor<1x2x4x3xf32>, %k: tensor<1x2x4x3xf32>) -> (tensor<1x2x4x4xf32>) {
+            %kT = stablehlo.transpose %k, dims = [0, 1, 3, 2] : (tensor<1x2x4x3xf32>) -> tensor<1x2x3x4xf32>
+            %result = stablehlo.dot_general %q, %kT, #stablehlo.dot<lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [3], rhs_contracting_dimensions = [2]> : (tensor<1x2x4x3xf32>, tensor<1x2x3x4xf32>) -> tensor<1x2x4x4xf32>
+            return %result : tensor<1x2x4x4xf32>
+          }
+        }
+        """
+
+        let executable = try client.compile(mlir)
+
+        // Q = all 1s for simplicity, K = all 1s
+        let q = [Float](repeating: 1.0, count: 1*2*4*3)
+        let k = [Float](repeating: 1.0, count: 1*2*4*3)
+
+        let bufferQ = try client.createBuffer(q, shape: [1, 2, 4, 3])
+        let bufferK = try client.createBuffer(k, shape: [1, 2, 4, 3])
+
+        let outputs = try executable.execute([bufferQ, bufferK])
+        let result = try outputs[0].toFloatArray()
+
+        // Q @ K^T with all 1s should give 3.0 for each element (sum of 3 ones)
+        #expect(result.count == 1*2*4*4, "Output should have 32 elements")
+        for i in 0..<result.count {
+            #expect(abs(result[i] - 3.0) < 1e-5, "All values should be 3.0, got \(result[i]) at index \(i)")
+        }
+
+        print("Batched matmul with transpose test passed!")
+    }
 }
 
 #else
