@@ -49,6 +49,7 @@ public final class OperationFusionPass: OptimizationPass {
         patterns.append(MatMulBiasActivationPattern())
         patterns.append(SoftmaxPattern())
         patterns.append(GeluPattern())
+        patterns.append(RoPEPattern())
 
         // Sort by priority (descending)
         patterns.sort { $0.priority > $1.priority }
@@ -832,6 +833,154 @@ public final class GeluPattern: FusionPattern {
             op: .fusedGelu,
             inputs: [x],
             attributes: ["approximate": approximate]
+        )
+
+        return graph.replacing(match.operations, with: [fusedHandle])
+    }
+}
+
+// MARK: - Rotary Position Embedding (RoPE) Pattern
+
+/// Detects and fuses Rotary Position Embedding
+///
+/// RoPE applies rotation to pairs of elements in the head dimension:
+/// For each position i with frequency theta:
+///   (x[2i], x[2i+1]) -> (x[2i]*cos - x[2i+1]*sin, x[2i]*sin + x[2i+1]*cos)
+///
+/// Pattern variants:
+/// 1. With precomputed cos/sin: x_even * cos - x_odd * sin, x_even * sin + x_odd * cos
+/// 2. Complex rotation: view as complex, multiply by e^(i*theta), view as real
+public final class RoPEPattern: FusionPattern {
+
+    public let name = "rope"
+    public let priority = 45  // Higher than GELU since RoPE is more specific
+
+    public init() {}
+
+    public func match(in graph: IRGraph) -> FusionMatch? {
+        let opMap = PatternMatchingHelpers.buildOperationMap(graph)
+
+        // RoPE pattern involves:
+        // 1. Splitting x into even/odd or first/second halves
+        // 2. Computing x_even * cos - x_odd * sin (real part)
+        // 3. Computing x_even * sin + x_odd * cos (imag part)
+        // 4. Concatenating back together
+
+        // Look for characteristic subtraction (real part) followed by concatenation
+        for node in graph.nodes {
+            guard let (_, opKind, inputs, _) = opMap[node.id] else { continue }
+
+            // Look for concatenate operation - final step of RoPE
+            guard opKind == .concatenate else { continue }
+            guard inputs.count == 2 else { continue }
+
+            // The two inputs should be the real and imaginary rotation results
+            guard let (_, subOp, subInputs, _) = opMap[inputs[0].id],
+                  let (_, addOp, addInputs, _) = opMap[inputs[1].id] else { continue }
+
+            // Real part: x_even * cos - x_odd * sin
+            guard subOp == .subtract else { continue }
+            // Imaginary part: x_even * sin + x_odd * cos
+            guard addOp == .add else { continue }
+
+            // Verify both are products
+            guard subInputs.count == 2, addInputs.count == 2 else { continue }
+
+            // Check if subtracting two multiplies
+            guard let (_, mulOp1, mul1Inputs, _) = opMap[subInputs[0].id],
+                  let (_, mulOp2, mul2Inputs, _) = opMap[subInputs[1].id],
+                  mulOp1 == .multiply, mulOp2 == .multiply else { continue }
+
+            // Check if adding two multiplies
+            guard let (_, mulOp3, mul3Inputs, _) = opMap[addInputs[0].id],
+                  let (_, mulOp4, mul4Inputs, _) = opMap[addInputs[1].id],
+                  mulOp3 == .multiply, mulOp4 == .multiply else { continue }
+
+            // Try to extract x, cos, sin from the pattern
+            // x_even * cos is one of the mul results
+            // x_odd * sin is another
+
+            // Find common inputs (should find x_even/x_odd and cos/sin)
+            let allMulInputs = [mul1Inputs, mul2Inputs, mul3Inputs, mul4Inputs]
+
+            // Heuristic: look for slice operations as inputs (splitting x)
+            var xInput: LazyTensorHandle?
+            var freqInput: LazyTensorHandle?
+
+            for mulInputs in allMulInputs {
+                for input in mulInputs {
+                    if let (_, sliceOp, sliceInputs, _) = opMap[input.id], sliceOp == .slice {
+                        // Found a slice - the input to slice is likely x
+                        xInput = sliceInputs[0]
+                    }
+                }
+            }
+
+            // If we found x, look for frequency inputs (should be cos/sin of position embeddings)
+            if xInput != nil {
+                // For now, collect all non-slice inputs as potential frequency sources
+                for mulInputs in allMulInputs {
+                    for input in mulInputs {
+                        if let (_, op, _, _) = opMap[input.id] {
+                            if op == .cosine || op == .sine {
+                                // Found frequency computation
+                                if let (_, _, cosInputs, _) = opMap[input.id] {
+                                    freqInput = cosInputs[0]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we matched the pattern, create a match
+            if let x = xInput {
+                var ops: [LazyTensorHandle] = [node]  // concatenate is the output
+                var indices: [Int] = []
+
+                // Collect all intermediate operations and their indices
+                for (i, graphNode) in graph.nodes.enumerated() {
+                    if graphNode.id == node.id {
+                        indices.append(i)
+                    }
+                }
+
+                return FusionMatch(
+                    operations: ops,
+                    indices: indices,
+                    metadata: [
+                        "input": x,
+                        "freqs": freqInput as Any
+                    ]
+                )
+            }
+        }
+
+        return nil
+    }
+
+    public func apply(_ match: FusionMatch, to graph: IRGraph) -> IRGraph {
+        let x = match.metadata["input"] as! LazyTensorHandle
+        let freqs = match.metadata["freqs"] as? LazyTensorHandle
+
+        let outputHandle = match.output!
+
+        let fusedHandle = LazyTensorHandle(
+            id: outputHandle.id,
+            shape: outputHandle.shape,
+            dtype: outputHandle.dtype,
+            device: outputHandle.device
+        )
+
+        var inputs: [LazyTensorHandle] = [x]
+        if let f = freqs {
+            inputs.append(f)
+        }
+
+        fusedHandle.irNode = .operation(
+            op: .fusedRoPE,
+            inputs: inputs,
+            attributes: [:]
         )
 
         return graph.replacing(match.operations, with: [fusedHandle])
