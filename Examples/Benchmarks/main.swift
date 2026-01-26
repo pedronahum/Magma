@@ -12,6 +12,17 @@
 import Magma
 import Foundation
 
+// MARK: - String Extension for Left Padding
+
+extension String {
+    /// Pads the string on the left to reach the specified length
+    func leftPadding(toLength length: Int, withPad pad: String) -> String {
+        let paddingLength = length - self.count
+        guard paddingLength > 0 else { return self }
+        return String(repeating: pad, count: paddingLength) + self
+    }
+}
+
 // MARK: - Configuration
 
 struct BenchmarkConfig {
@@ -54,8 +65,10 @@ struct BenchmarkResult {
     let throughputGBps: Double?
 
     func print() {
-        var line = String(format: "%-35s %15s %10.3f ms %10.3f ms %10.3f ms",
-                         name, shape, meanMs, minMs, maxMs)
+        // Use padding functions instead of %s format specifiers (which expect C strings)
+        let nameCol = name.padding(toLength: 35, withPad: " ", startingAt: 0)
+        let shapeCol = shape.leftPadding(toLength: 15, withPad: " ")
+        var line = "\(nameCol) \(shapeCol) \(String(format: "%10.3f", meanMs)) ms \(String(format: "%10.3f", minMs)) ms \(String(format: "%10.3f", maxMs)) ms"
         if let gf = gflops, gf > 0 {
             line += String(format: " %10.2f GFLOPS", gf)
         }
@@ -136,8 +149,15 @@ class BenchmarkSuite {
         print("  Benchmark iterations: \(config.iterations)")
         print("  Mixed precision: \(config.useMixedPrecision)")
         print(String(repeating: "-", count: 100))
-        print(String(format: "%-35s %15s %10s %10s %10s %12s %12s",
-                    "Benchmark", "Shape", "Mean", "Min", "Max", "GFLOPS", "Throughput"))
+        // Use Swift string methods instead of %s format specifiers (which expect C strings)
+        let header = "Benchmark".padding(toLength: 35, withPad: " ", startingAt: 0) + " " +
+                     "Shape".leftPadding(toLength: 15, withPad: " ") + " " +
+                     "Mean".leftPadding(toLength: 10, withPad: " ") + " " +
+                     "Min".leftPadding(toLength: 10, withPad: " ") + " " +
+                     "Max".leftPadding(toLength: 10, withPad: " ") + " " +
+                     "GFLOPS".leftPadding(toLength: 12, withPad: " ") + " " +
+                     "Throughput".leftPadding(toLength: 12, withPad: " ")
+        print(header)
         print(String(repeating: "-", count: 100))
     }
 
