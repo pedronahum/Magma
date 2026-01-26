@@ -15,17 +15,23 @@ import XLARuntime
 #if os(macOS) && canImport(MetalHLO)
 import MetalHLO
 
-// Check for diagnostics mode
+// Check for command line modes
 let runDiagnostics = CommandLine.arguments.contains("--diagnostics") || CommandLine.arguments.contains("-d")
+let runSweep = CommandLine.arguments.contains("--sweep") || CommandLine.arguments.contains("-s")
 
 if runDiagnostics {
     runMetalDiagnostics()
     exit(0)
 }
 
+if runSweep {
+    runSizeSweep()
+    exit(0)
+}
+
 print("Magma Metal GPU Example")
 print("=======================\n")
-print("Tip: Run with --diagnostics for detailed performance analysis\n")
+print("Tip: Run with --diagnostics or --sweep for detailed benchmarks\n")
 
 // Check available backends
 print("Available backends: \(Backend.availableBackends.map { $0.rawValue })")
