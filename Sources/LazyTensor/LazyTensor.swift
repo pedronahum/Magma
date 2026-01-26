@@ -634,8 +634,25 @@ public func LazyTensorBarrier(on device: Device = .default) {
         return
     }
 
-    // 4. Analyze for constant promotion
-    let promotionResult = graph.analyzeForConstantPromotion()
+    // 3.5. Run optimization passes
+    let optimizedGraph: IRGraph
+    if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
+        let passManager = PassManager.shared
+        optimizedGraph = passManager.run(on: graph)
+
+        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+            let originalCount = graph.nodes.count
+            let optimizedCount = optimizedGraph.nodes.count
+            if originalCount != optimizedCount {
+                print("Magma: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
+            }
+        }
+    } else {
+        optimizedGraph = graph
+    }
+
+    // 4. Analyze for constant promotion (use optimized graph)
+    let promotionResult = optimizedGraph.analyzeForConstantPromotion()
     let structuralHash = promotionResult.structuralHash
 
     // 5. Check compilation cache using structural hash
@@ -650,8 +667,8 @@ public func LazyTensorBarrier(on device: Device = .default) {
     } else {
         cache.missCount += 1
 
-        // 6. Emit StableHLO MLIR with constant promotion
-        let emitter = StableHLOEmitter(graph: graph)
+        // 6. Emit StableHLO MLIR with constant promotion (use optimized graph)
+        let emitter = StableHLOEmitter(graph: optimizedGraph)
         let mlir = emitter.emit(
             name: "lazy_graph_\(structuralHash.prefix(8))",
             promotedConstants: promotionResult.promotedConstants
@@ -681,10 +698,10 @@ public func LazyTensorBarrier(on device: Device = .default) {
         }
     }
 
-    // 8. Collect input buffers
+    // 8. Collect input buffers (use optimized graph)
     // First: data nodes (pre-materialized large tensors)
     var inputBuffers: [PJRTBuffer] = []
-    for node in graph.nodes {
+    for node in optimizedGraph.nodes {
         if case .data(let buffer) = node.irNode {
             inputBuffers.append(buffer)
         }
