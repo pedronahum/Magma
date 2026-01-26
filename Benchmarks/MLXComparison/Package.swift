@@ -19,6 +19,7 @@ let package = Package(
             name: "MLXComparison",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "Magma", package: "Magma"),
             ],
             path: "Sources"

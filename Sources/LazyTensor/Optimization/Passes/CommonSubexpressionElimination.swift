@@ -33,10 +33,14 @@ struct ExpressionKey: Hashable {
                 hasher.combine(floatVal)
             } else if let intArray = value as? [Int] {
                 for i in intArray { hasher.combine(i) }
+            } else if let floatArray = value as? [Float] {
+                // Hash all Float values to ensure constants with different values
+                // are not incorrectly deduplicated
+                for f in floatArray { hasher.combine(f) }
             } else if let stringVal = value as? String {
                 hasher.combine(stringVal)
             }
-            // Other types are ignored for hashing purposes
+            // Note: Other types are ignored for hashing purposes
         }
         self.attributesHash = hasher.finalize()
     }
@@ -111,10 +115,23 @@ public final class CommonSubexpressionEliminationPass: OptimizationPass {
 
             case .constant(let values, let shape):
                 // Constants with same values can be deduplicated
+                // Sample more values and include count to ensure uniqueness
+                let sampleSize = min(values.count, 32)
+                let sampleStride = max(1, values.count / sampleSize)
+                var sampledValues: [Float] = []
+                var idx = 0
+                while idx < values.count && sampledValues.count < sampleSize {
+                    sampledValues.append(values[idx])
+                    idx += sampleStride
+                }
                 let key = ExpressionKey(
                     opKind: .add, // Placeholder - constants don't have a real OpKind
                     inputs: [],
-                    attributes: ["const_values": values.prefix(8).map { $0 }, "const_shape": shape]
+                    attributes: [
+                        "const_values": sampledValues,
+                        "const_shape": shape,
+                        "const_count": values.count
+                    ]
                 )
 
                 if let existing = expressionToTensor[key] {

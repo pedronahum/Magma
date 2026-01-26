@@ -1,6 +1,7 @@
 // LayerNormMetalTest.swift
 // Test LayerNorm specifically on Metal backend
 
+import Foundation
 import Testing
 @testable import XLARuntime
 @testable import LazyTensor
@@ -142,6 +143,103 @@ struct LayerNormMetalTests {
         print("nn.LayerNorm 3D output shape: \(y.shape)")
         #expect(y.shape == [8, 16, 64])
         let _ = y.scalars().first
+    }
+
+    @Test("Attention pattern Q @ K^T on Metal (small)")
+    func attentionPatternMetalSmall() throws {
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        // Small attention pattern: [batch, heads, seq, headDim]
+        let batch = 2
+        let heads = 2
+        let seqLen = 4
+        let headDim = 3
+
+        let q = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+        let k = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+
+        q.markForMaterialization()
+        k.markForMaterialization()
+        LazyTensorBarrier(on: metalDevice)
+
+        // K^T: swap last two dims [batch, heads, headDim, seqLen]
+        let kT = k.transposeLastTwo()
+        print("Q shape: \(q.shape)")
+        print("K shape: \(k.shape)")
+        print("K^T shape: \(kT.shape)")
+        #expect(kT.shape == [batch, heads, headDim, seqLen])
+
+        // Q @ K^T -> [batch, heads, seqLen, seqLen]
+        let scores = q.batchedMatmul(kT)
+        LazyTensorBarrier(on: metalDevice)
+
+        print("Scores shape: \(scores.shape)")
+        #expect(scores.shape == [batch, heads, seqLen, seqLen])
+        let _ = scores.scalars().first
+    }
+
+    @Test("Attention pattern Q @ K^T on Metal (benchmark size)")
+    func attentionPatternMetalLarge() throws {
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        // Benchmark-size attention pattern: [batch, heads, seq, headDim]
+        let batch = 4
+        let heads = 8
+        let seqLen = 128
+        let headDim = 64
+
+        let q = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+        let k = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+
+        q.markForMaterialization()
+        k.markForMaterialization()
+        LazyTensorBarrier(on: metalDevice)
+
+        // K^T: swap last two dims [batch, heads, headDim, seqLen]
+        let kT = k.transposeLastTwo()
+        print("Q shape: \(q.shape)")
+        print("K shape: \(k.shape)")
+        print("K^T shape: \(kT.shape)")
+        #expect(kT.shape == [batch, heads, headDim, seqLen])
+
+        // Q @ K^T -> [batch, heads, seqLen, seqLen]
+        let scores = q.batchedMatmul(kT)
+        LazyTensorBarrier(on: metalDevice)
+
+        print("Scores shape: \(scores.shape)")
+        #expect(scores.shape == [batch, heads, seqLen, seqLen])
+        let _ = scores.scalars().first
+    }
+
+    @Test("Full attention pattern on Metal (small)")
+    func fullAttentionPatternMetalSmall() throws {
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        let batch = 2
+        let heads = 2
+        let seqLen = 4
+        let headDim = 8
+        let scale = 1.0 / sqrt(Float(headDim))
+
+        let q = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+        let k = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+        let v = Tensor<Float>.randn([batch, heads, seqLen, headDim], on: metalDevice)
+
+        q.markForMaterialization()
+        k.markForMaterialization()
+        v.markForMaterialization()
+        LazyTensorBarrier(on: metalDevice)
+
+        // Full attention: (Q @ K^T / sqrt(d)) @ V with softmax
+        let kT = k.transpose(-1, -2)
+        let scores = q.batchedMatmul(kT) * Tensor<Float>.full([], scale, on: metalDevice)
+        let attnWeights = scores.softmax(dim: -1)
+        let output = attnWeights.batchedMatmul(v)
+        LazyTensorBarrier(on: metalDevice)
+
+        print("Output shape: \(output.shape)")
+        #expect(output.shape == [batch, heads, seqLen, headDim])
+        let _ = output.scalars().first
     }
 }
 

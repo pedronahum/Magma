@@ -145,11 +145,20 @@ public final class ScaledDotProductAttentionPattern: FusionPattern {
                   qkOp == .matmul || qkOp == .batchedMatmul else { continue }
 
             let q = qkInputs[0]
-            let k = qkInputs[1]
+            var kT = qkInputs[1]  // This is K^T (already transposed)
+
+            // Trace back through transpose to get original K
+            // The fusion handler expects K and does its own transpose
+            var originalK = kT
+            if let (_, transposeOp, transposeInputs, _) = opMap[kT.id],
+               transposeOp == .transpose {
+                originalK = transposeInputs[0]  // Get the original K before transpose
+            }
+            let k = originalK
 
             // Validate shapes are compatible for attention
             // Q: [batch, heads, seq, head_dim]
-            // K: [batch, heads, seq, head_dim] (will be transposed)
+            // K: [batch, heads, seq, head_dim] (will be transposed by handler)
             // V: [batch, heads, seq, head_dim]
             guard validateAttentionShapes(q: q, k: k, v: v) else { continue }
 
