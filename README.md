@@ -85,10 +85,10 @@ for (images, labels) in dataLoader {
 |---------|--------|-------|
 | **CPU** | ✅ Supported | Full functionality via PJRT CPU plugin |
 | **TPU** | ✅ Supported | On Google Cloud TPU VMs with `libtpu.so` |
-| **Metal** | 🔬 Experimental | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) - performance under review |
+| **Metal** | ✅ Supported | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) - ~66 GFLOPS on M1 |
 | **GPU** | 🚧 Planned | CUDA support planned for future release |
 
-> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0. Metal backend is functional but performance optimization is ongoing.
+> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0. Metal backend achieves ~66 GFLOPS for 512x512 matmul after warmup (~4ms/iteration).
 
 ## Heritage
 
