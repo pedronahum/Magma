@@ -99,9 +99,28 @@ public final class MetalHLOClient: @unchecked Sendable {
         return MetalHLOBuffer(buffer: buffer, shape: shape, elementType: .int64)
     }
 
-    /// Compile StableHLO MLIR to an executable
+    /// Compile StableHLO MLIR to an executable (uses O2 optimization by default)
     public func compile(_ mlir: String) throws -> MetalHLOExecutable {
         let executable = try client.compile(mlir)
+        return MetalHLOExecutable(executable: executable, client: self)
+    }
+
+    /// Compile StableHLO MLIR with specific optimization level
+    ///
+    /// - Parameters:
+    ///   - mlir: The StableHLO MLIR module text.
+    ///   - optimizationLevel: Optimization level (.O0, .O1, .O2, .O3).
+    ///     Use .O3 for maximum performance (aggressive fusion).
+    /// - Returns: A compiled executable ready for execution.
+    public func compile(_ mlir: String, optimizationLevel: MetalHLO.OptimizationLevel) throws -> MetalHLOExecutable {
+        let config = MetalHLO.CompilationConfig(optimizationLevel: optimizationLevel)
+        let executable = try client.compile(mlir, config: config)
+        return MetalHLOExecutable(executable: executable, client: self)
+    }
+
+    /// Compile StableHLO MLIR with full configuration
+    public func compile(_ mlir: String, config: MetalHLO.CompilationConfig) throws -> MetalHLOExecutable {
+        let executable = try client.compile(mlir, config: config)
         return MetalHLOExecutable(executable: executable, client: self)
     }
 }

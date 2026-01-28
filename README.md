@@ -87,10 +87,14 @@ for (images, labels) in dataLoader {
 |---------|--------|-------|
 | **CPU** | ✅ Supported | Full functionality via PJRT CPU plugin |
 | **TPU** | ✅ Supported | On Google Cloud TPU VMs with `libtpu.so` |
-| **Metal** | ✅ Supported | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) - ~66 GFLOPS on M1 |
+| **Metal** | ✅ Supported | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) |
 | **GPU** | 🚧 Planned | CUDA support planned for future release |
 
-> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0. Metal backend achieves ~66 GFLOPS for 512x512 matmul after warmup (~4ms/iteration).
+> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0.
+
+### Metal Backend Benchmarking
+
+🔬 **Performance benchmarking is underway** comparing Magma's Metal backend against [MLX](https://github.com/ml-explore/mlx). The benchmark suite covers core operations (matmul, softmax, GELU, LayerNorm) and transformer patterns (FFN, attention). Results and optimizations will be published as development progresses.
 
 ## Heritage
 

@@ -407,8 +407,9 @@ public final class CompilationCache: @unchecked Sendable {
     private let lock = NSLock()
 
     /// Maximum number of elements for a constant to be promotable
-    /// Small scalars and vectors benefit most from promotion
-    public static let promotionThreshold: Int = 16
+    /// All constants should be promoted to enable passing data as input buffers
+    /// instead of embedding large arrays in MLIR text (which causes parsing issues)
+    public static let promotionThreshold: Int = Int.max
 
     private init() {}
 
@@ -810,10 +811,10 @@ private func MetalLazyTensorBarrier(on device: Device) {
             print("Magma [Metal]: Was promoted: \(promotionResult.wasPromoted)")
         }
 
-        // 7. Compile via MetalHLO
+        // 7. Compile via MetalHLO with O3 optimization
         do {
             let client = try getMetalHLOClient()
-            executable = try client.compile(mlir)
+            executable = try client.compile(mlir, optimizationLevel: .O3)
 
             if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
                 print("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
@@ -865,11 +866,16 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
     }
 
+    let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
+
     // Second: promoted constants (need to create buffers for their values)
     if promotionResult.wasPromoted {
         do {
             let client = try getMetalHLOClient()
             for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
+                if debugEnabled {
+                    print("Magma [Metal]: Promoted constant \(promoted.inputIndex) - shape: \(promoted.shape), values count: \(promoted.values.count), first 5: \(Array(promoted.values.prefix(5)))")
+                }
                 // Use optimized non-throwing createBuffer for Float arrays
                 let buffer = client.createBuffer(
                     promoted.values,
@@ -882,8 +888,6 @@ private func MetalLazyTensorBarrier(on device: Device) {
             return
         }
     }
-
-    let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
 
     if debugEnabled {
         print("Magma [Metal]: Input buffers count: \(inputBuffers.count)")

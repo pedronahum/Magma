@@ -90,25 +90,10 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             floatData = data.map { Float("\($0)")! }
         }
 
-        // For large tensors, pre-materialize to a buffer to avoid embedding in MLIR
-        // Threshold: 10,000 elements (about 40KB for float32)
-        let threshold = 10_000
-        if data.count > threshold {
-            // Create buffer immediately for large data
-            do {
-                let client = try getGlobalClient(backend: device.backend)
-                let buffer = try client.createBuffer(floatData, shape: shape, elementType: .float32, device: nil)
-                handle.materializedBuffer = buffer
-                handle.irNode = .data(buffer)
-            } catch {
-                // Fall back to constant if buffer creation fails
-                print("Magma: Warning - failed to create buffer for large tensor, using constant: \(error)")
-                handle.irNode = .constant(values: floatData, shape: shape)
-            }
-        } else {
-            // Small tensors can be embedded as constants
-            handle.irNode = .constant(values: floatData, shape: shape)
-        }
+        // Store as constant - the constant promotion system will convert these
+        // to function inputs at execution time, passing data via input buffers
+        // instead of embedding in MLIR text
+        handle.irNode = .constant(values: floatData, shape: shape)
 
         TensorRegistry.shared.registerPending(handle)
         self.handle = handle

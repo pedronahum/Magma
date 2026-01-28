@@ -973,8 +973,13 @@ extension IRGraph {
         var promotedConstants: [PromotedConstant] = []
         var promotedInputIndex = 0
 
+        // IMPORTANT: Only analyze nodes that are reachable from outputs.
+        // After constant folding, some nodes become dead (e.g., original constant inputs
+        // when their operations are folded). We must not promote dead nodes.
+        let reachableNodes = computeReachableNodes()
+
         // First, count existing data inputs to offset promoted constant indices
-        let dataInputCount = nodes.filter {
+        let dataInputCount = reachableNodes.filter {
             if case .data = $0.irNode { return true }
             return false
         }.count
@@ -986,11 +991,11 @@ extension IRGraph {
         // not identity equivalence. Two graphs with the same structure but
         // different tensor IDs should hash the same.
         var nodeIdToIndex: [UInt64: Int] = [:]
-        for (index, node) in nodes.enumerated() {
+        for (index, node) in reachableNodes.enumerated() {
             nodeIdToIndex[node.id] = index
         }
 
-        for node in nodes {
+        for node in reachableNodes {
             guard let irNode = node.irNode else { continue }
 
             switch irNode {
@@ -1050,6 +1055,45 @@ extension IRGraph {
             structuralHash: structuralHash,
             promotedConstants: promotedConstants
         )
+    }
+
+    /// Compute the set of nodes reachable from outputs by walking backwards through dependencies.
+    /// This excludes dead nodes that may remain in the graph after optimization.
+    private func computeReachableNodes() -> [LazyTensorHandle] {
+        var result: [LazyTensorHandle] = []
+        var visited = Set<UInt64>()
+
+        func visit(_ handle: LazyTensorHandle) {
+            if visited.contains(handle.id) {
+                return
+            }
+            visited.insert(handle.id)
+
+            // Visit dependencies first
+            if let node = handle.irNode {
+                switch node {
+                case .operation(_, let inputs, _):
+                    for input in inputs {
+                        visit(input)
+                    }
+                case .whileLoopTraced(_, let initialValues, _, _, _):
+                    for input in initialValues {
+                        visit(input)
+                    }
+                case .constant, .data:
+                    break
+                }
+            }
+
+            result.append(handle)
+        }
+
+        // Start from outputs
+        for output in outputs {
+            visit(output)
+        }
+
+        return result
     }
 
     // MARK: - Graph Validation

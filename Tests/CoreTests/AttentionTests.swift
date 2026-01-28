@@ -2,9 +2,15 @@
 // Tests for MultiheadAttention and related components
 
 import Testing
+import Foundation
 import _Differentiation
 @testable import Magma
 @testable import LazyTensor
+@testable import XLARuntime
+
+#if canImport(MLX)
+import MLX
+#endif
 
 // MARK: - Tensor Operation Tests
 
@@ -263,6 +269,265 @@ struct MultiheadAttentionTests {
 
         #expect(output.shape == [batch, 10, 512])
         #expect(weights.shape == [batch, 8, 10, 20])
+    }
+}
+
+// MARK: - Debug Attention Step-by-Step
+
+@Suite("Attention Debug Tests")
+struct AttentionDebugTests {
+
+    @Test("Debug attention step by step with values")
+    func debugAttentionStepByStep() throws {
+        // Use Metal device explicitly
+        guard Backend.metal.isAvailable else {
+            print("Metal not available, skipping test")
+            return
+        }
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        // Small test case for debugging
+        let batch = 1, heads = 1, seqLen = 4, headDim = 4
+        let scale: Float = 1.0 / Foundation.sqrt(Float(headDim))
+
+        // Create simple test data with known values
+        let qData: [Float] = Array(repeating: 0.1, count: batch * heads * seqLen * headDim)
+        let kData: [Float] = Array(repeating: 0.2, count: batch * heads * seqLen * headDim)
+        let vData: [Float] = Array(repeating: 0.3, count: batch * heads * seqLen * headDim)
+
+        let q = Tensor<Float>(qData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let k = Tensor<Float>(kData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let v = Tensor<Float>(vData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+
+        print("\n=== Debug Attention Step by Step ===")
+        print("Input shapes: Q=\(q.shape), K=\(k.shape), V=\(v.shape)")
+        print("Scale: \(scale)")
+
+        // Step 1: Transpose K
+        let kT = k.transpose(-1, -2)
+        print("\nStep 1: K transpose -> shape: \(kT.shape)")
+        let kTScalars = kT.scalars()
+        print("  K^T values (first 4): \(Array(kTScalars.prefix(4)))")
+        print("  K^T has NaN: \(kTScalars.contains { $0.isNaN })")
+        print("  K^T has Inf: \(kTScalars.contains { $0.isInfinite })")
+        #expect(!kTScalars.contains { $0.isNaN }, "K^T should not have NaN")
+        #expect(!kTScalars.contains { $0.isInfinite }, "K^T should not have Inf")
+
+        // Step 2: Q @ K^T
+        let scores = q.batchedMatmul(kT)
+        print("\nStep 2: Q @ K^T -> shape: \(scores.shape)")
+        let scoresScalars = scores.scalars()
+        print("  scores values (first 4): \(Array(scoresScalars.prefix(4)))")
+        print("  scores has NaN: \(scoresScalars.contains { $0.isNaN })")
+        print("  scores has Inf: \(scoresScalars.contains { $0.isInfinite })")
+        #expect(!scoresScalars.contains { $0.isNaN }, "scores should not have NaN")
+        #expect(!scoresScalars.contains { $0.isInfinite }, "scores should not have Inf")
+
+        // Step 3: Scale
+        let scaleTensor = Tensor<Float>.full([], scale, on: metalDevice)
+        let scaledScores = scores * scaleTensor
+        print("\nStep 3: Scale by \(scale) -> shape: \(scaledScores.shape)")
+        let scaledScoresScalars = scaledScores.scalars()
+        print("  scaled scores values (first 4): \(Array(scaledScoresScalars.prefix(4)))")
+        print("  scaled scores has NaN: \(scaledScoresScalars.contains { $0.isNaN })")
+        print("  scaled scores has Inf: \(scaledScoresScalars.contains { $0.isInfinite })")
+        #expect(!scaledScoresScalars.contains { $0.isNaN }, "scaled scores should not have NaN")
+        #expect(!scaledScoresScalars.contains { $0.isInfinite }, "scaled scores should not have Inf")
+
+        // Step 4: Softmax
+        let attnWeights = scaledScores.softmax(dim: -1)
+        print("\nStep 4: Softmax -> shape: \(attnWeights.shape)")
+        let attnWeightsScalars = attnWeights.scalars()
+        print("  attn weights values (first 4): \(Array(attnWeightsScalars.prefix(4)))")
+        print("  attn weights has NaN: \(attnWeightsScalars.contains { $0.isNaN })")
+        print("  attn weights has Inf: \(attnWeightsScalars.contains { $0.isInfinite })")
+        #expect(!attnWeightsScalars.contains { $0.isNaN }, "attn weights should not have NaN")
+        #expect(!attnWeightsScalars.contains { $0.isInfinite }, "attn weights should not have Inf")
+
+        // Step 5: attn @ V
+        let output = attnWeights.batchedMatmul(v)
+        print("\nStep 5: attn @ V -> shape: \(output.shape)")
+        let outputScalars = output.scalars()
+        print("  output values (first 4): \(Array(outputScalars.prefix(4)))")
+        print("  output has NaN: \(outputScalars.contains { $0.isNaN })")
+        print("  output has Inf: \(outputScalars.contains { $0.isInfinite })")
+        #expect(!outputScalars.contains { $0.isNaN }, "output should not have NaN")
+        #expect(!outputScalars.contains { $0.isInfinite }, "output should not have Inf")
+
+        // Expected: each output element should be 0.3 (since uniform softmax times uniform V)
+        let expectedOutput: Float = 0.3
+        for (i, val) in outputScalars.enumerated() {
+            if abs(val - expectedOutput) > 0.01 {
+                print("  WARNING: output[\(i)] = \(val), expected ~\(expectedOutput)")
+            }
+        }
+        print("\n=== Debug Complete ===\n")
+    }
+
+    @Test("Debug attention with larger tensors")
+    func debugAttentionLarger() throws {
+        // Use Metal device explicitly
+        guard Backend.metal.isAvailable else {
+            print("Metal not available, skipping test")
+            return
+        }
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        // Match benchmark size: [batch=4, heads=8, seq=128, dim=64]
+        let batch = 4, heads = 8, seqLen = 128, headDim = 64
+        let scale: Float = 1.0 / Foundation.sqrt(Float(headDim))
+
+        // Create random test data with known seed
+        var rng = SystemRandomNumberGenerator()
+        let totalQ = batch * heads * seqLen * headDim
+        let qData = (0..<totalQ).map { _ in Float.random(in: -1...1, using: &rng) }
+        let kData = (0..<totalQ).map { _ in Float.random(in: -1...1, using: &rng) }
+        let vData = (0..<totalQ).map { _ in Float.random(in: -1...1, using: &rng) }
+
+        let q = Tensor<Float>(qData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let k = Tensor<Float>(kData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let v = Tensor<Float>(vData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+
+        print("\n=== Debug Larger Attention ===")
+        print("Input shapes: Q=\(q.shape), K=\(k.shape), V=\(v.shape)")
+        print("Scale: \(scale)")
+
+        // Step 1: Transpose K
+        print("\nStep 1: K transpose")
+        let kT = k.transpose(-1, -2)
+        print("  K^T shape: \(kT.shape)")
+        let kTScalars = kT.scalars()
+        print("  K^T first 4 values: \(Array(kTScalars.prefix(4)))")
+        print("  K^T has NaN: \(kTScalars.contains { $0.isNaN })")
+        print("  K^T has Inf: \(kTScalars.contains { $0.isInfinite })")
+        #expect(!kTScalars.contains { $0.isNaN }, "K^T should not have NaN")
+
+        // Step 2: Q @ K^T
+        print("\nStep 2: Q @ K^T (batched matmul)")
+        let scores = q.batchedMatmul(kT)
+        print("  scores shape: \(scores.shape)")
+        let scoresScalars = scores.scalars()
+        print("  scores first 4 values: \(Array(scoresScalars.prefix(4)))")
+        print("  scores has NaN: \(scoresScalars.contains { $0.isNaN })")
+        print("  scores has Inf: \(scoresScalars.contains { $0.isInfinite })")
+        #expect(!scoresScalars.contains { $0.isNaN }, "scores should not have NaN")
+
+        // Step 3: Scale
+        print("\nStep 3: Scale by \(scale)")
+        let scaleTensor = Tensor<Float>.full([], scale, on: metalDevice)
+        let scaledScores = scores * scaleTensor
+        print("  scaled scores shape: \(scaledScores.shape)")
+        let scaledScalars = scaledScores.scalars()
+        print("  scaled scores first 4 values: \(Array(scaledScalars.prefix(4)))")
+        print("  scaled scores has NaN: \(scaledScalars.contains { $0.isNaN })")
+        #expect(!scaledScalars.contains { $0.isNaN }, "scaled scores should not have NaN")
+
+        // Step 4: Softmax
+        print("\nStep 4: Softmax on dim=-1")
+        let attnWeights = scaledScores.softmax(dim: -1)
+        print("  attn weights shape: \(attnWeights.shape)")
+        let attnScalars = attnWeights.scalars()
+        print("  attn weights first 4 values: \(Array(attnScalars.prefix(4)))")
+        print("  attn weights has NaN: \(attnScalars.contains { $0.isNaN })")
+        print("  attn weights has Inf: \(attnScalars.contains { $0.isInfinite })")
+        #expect(!attnScalars.contains { $0.isNaN }, "attn weights should not have NaN")
+
+        // Step 5: attn @ V
+        print("\nStep 5: attn @ V (batched matmul)")
+        let output = attnWeights.batchedMatmul(v)
+        print("  output shape: \(output.shape)")
+        let outputScalars = output.scalars()
+        print("  output first 4 values: \(Array(outputScalars.prefix(4)))")
+        print("  output has NaN: \(outputScalars.contains { $0.isNaN })")
+        print("  output has Inf: \(outputScalars.contains { $0.isInfinite })")
+        #expect(!outputScalars.contains { $0.isNaN }, "output should not have NaN")
+        #expect(!outputScalars.contains { $0.isInfinite }, "output should not have Inf")
+
+        print("\n=== Debug Complete ===\n")
+    }
+
+    @Test("Debug attention replicating benchmark pattern")
+    func debugAttentionBenchmarkPattern() throws {
+        // Use Metal device explicitly
+        guard Backend.metal.isAvailable else {
+            print("Metal not available, skipping test")
+            return
+        }
+        let metalDevice = Device(backend: .metal, index: 0)
+
+        // Match first benchmark size: [batch=4, heads=8, seq=128, dim=64]
+        let batch = 4, heads = 8, seqLen = 128, headDim = 64
+        let scale: Float = 1.0 / Foundation.sqrt(Float(headDim))
+
+        // Create input tensors (like mlxToMagma does)
+        var rng = SystemRandomNumberGenerator()
+        let total = batch * heads * seqLen * headDim
+        let qData = (0..<total).map { _ in Float.random(in: -1...1, using: &rng) }
+        let kData = (0..<total).map { _ in Float.random(in: -1...1, using: &rng) }
+        let vData = (0..<total).map { _ in Float.random(in: -1...1, using: &rng) }
+
+        let magmaQ = Tensor<Float>(qData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let magmaK = Tensor<Float>(kData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+        let magmaV = Tensor<Float>(vData, shape: [batch, heads, seqLen, headDim], on: metalDevice)
+
+        // Materialize like the benchmark does
+        magmaQ.markForMaterialization()
+        magmaK.markForMaterialization()
+        magmaV.markForMaterialization()
+        LazyTensorBarrier(on: metalDevice)
+
+        print("\n=== Benchmark Pattern Test ===")
+        print("Input shapes: Q=\(magmaQ.shape), K=\(magmaK.shape), V=\(magmaV.shape)")
+
+        // Warmup (like benchmark)
+        for i in 0..<3 {
+            let kT = magmaK.transpose(-1, -2)
+            let scores = magmaQ.batchedMatmul(kT) * Tensor<Float>.full([], scale, on: metalDevice)
+            let attnWeights = scores.softmax(dim: -1)
+            let z = attnWeights.batchedMatmul(magmaV)
+            LazyTensorBarrier(on: metalDevice)
+            let first = z.scalars().first
+            print("Warmup \(i): first value = \(first ?? Float.nan)")
+        }
+
+        // Run like benchmark
+        var magmaResult: Tensor<Float>!
+        for i in 0..<3 {
+            let kT = magmaK.transpose(-1, -2)
+            let scores = magmaQ.batchedMatmul(kT) * Tensor<Float>.full([], scale, on: metalDevice)
+            let attnWeights = scores.softmax(dim: -1)
+            magmaResult = attnWeights.batchedMatmul(magmaV)
+            LazyTensorBarrier(on: metalDevice)
+            let first = magmaResult.scalars().first
+            print("Run \(i): first value = \(first ?? Float.nan)")
+        }
+
+        // Final check
+        let finalScalars = magmaResult.scalars()
+        print("Final scalars count: \(finalScalars.count)")
+        print("Final first 4 values: \(Array(finalScalars.prefix(4)))")
+        print("Final has NaN: \(finalScalars.contains { $0.isNaN })")
+        print("Final has Inf: \(finalScalars.contains { $0.isInfinite })")
+
+        #expect(!finalScalars.contains { $0.isNaN }, "Final result should not have NaN")
+        #expect(!finalScalars.contains { $0.isInfinite }, "Final result should not have Inf")
+
+        // Also verify intermediate values are consistent
+        let kT = magmaK.transpose(-1, -2)
+        let scores = magmaQ.batchedMatmul(kT) * Tensor<Float>.full([], scale, on: metalDevice)
+        let attnWeights = scores.softmax(dim: -1)
+        let freshResult = attnWeights.batchedMatmul(magmaV)
+        LazyTensorBarrier(on: metalDevice)
+
+        let freshScalars = freshResult.scalars()
+        print("Fresh result first 4: \(Array(freshScalars.prefix(4)))")
+
+        // Check if the two results match
+        let diff = zip(finalScalars, freshScalars).map { abs($0 - $1) }.max() ?? 0
+        print("Max diff between runs: \(diff)")
+        #expect(diff < 1e-5, "Results should be consistent across runs")
+
+        print("\n=== Test Complete ===\n")
     }
 }
 
