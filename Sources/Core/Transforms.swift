@@ -387,7 +387,7 @@ extension transforms {
             let top = (inputHeight - targetHeight) / 2
             let left = (inputWidth - targetWidth) / 2
 
-            return crop(input, top: top, left: left, height: targetHeight, width: targetWidth)
+            return cropImage(input, top: top, left: left, height: targetHeight, width: targetWidth)
         }
     }
 
@@ -454,7 +454,7 @@ extension transforms {
             let top = Int.random(in: 0...maxTop)
             let left = Int.random(in: 0...maxLeft)
 
-            return crop(tensor, top: top, left: left, height: targetHeight, width: targetWidth)
+            return cropImage(tensor, top: top, left: left, height: targetHeight, width: targetWidth)
         }
     }
 
@@ -672,7 +672,7 @@ public enum functional {
         height: Int,
         width: Int
     ) -> Tensor<Float> {
-        crop(input, top: top, left: left, height: height, width: width)
+        cropImage(input, top: top, left: left, height: height, width: width)
     }
 
     /// Normalize a tensor.
@@ -717,19 +717,15 @@ internal func horizontalFlip(_ input: Tensor<Float>) -> Tensor<Float> {
 
     let widthAxis = rank - 2  // W is second-to-last in NHWC
 
-    // Use slice with step=-1 to reverse (not supported yet), so we use gather instead
+    // Use gather with 1D reversed indices to flip along width axis
     let width = input.shape[widthAxis]
     var indices = [Float]()
     for i in stride(from: width - 1, through: 0, by: -1) {
         indices.append(Float(i))
     }
 
-    // Create index tensor and gather
-    var indexShape = [Int](repeating: 1, count: rank)
-    indexShape[widthAxis] = width
-    let indexTensor = Tensor<Float>(indices, shape: indexShape, on: input.device)
-        .broadcast(to: input.shape)
-
+    // 1D index tensor for slice selection
+    let indexTensor = Tensor<Float>(indices, shape: [width], on: input.device)
     return input.gather(indices: indexTensor, axis: widthAxis)
 }
 
@@ -741,22 +737,20 @@ internal func verticalFlip(_ input: Tensor<Float>) -> Tensor<Float> {
 
     let heightAxis = rank - 3  // H is third-to-last in NHWC (or second-to-last in HWC)
 
+    // Use gather with 1D reversed indices to flip along height axis
     let height = input.shape[heightAxis]
     var indices = [Float]()
     for i in stride(from: height - 1, through: 0, by: -1) {
         indices.append(Float(i))
     }
 
-    var indexShape = [Int](repeating: 1, count: rank)
-    indexShape[heightAxis] = height
-    let indexTensor = Tensor<Float>(indices, shape: indexShape, on: input.device)
-        .broadcast(to: input.shape)
-
+    // 1D index tensor for slice selection
+    let indexTensor = Tensor<Float>(indices, shape: [height], on: input.device)
     return input.gather(indices: indexTensor, axis: heightAxis)
 }
 
 /// Crop a tensor at specified location.
-internal func crop(
+internal func cropImage(
     _ input: Tensor<Float>,
     top: Int,
     left: Int,

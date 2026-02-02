@@ -726,6 +726,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
 // MARK: - Metal Lazy Tensor Barrier
 
 #if os(macOS) && canImport(MetalHLO)
+import MetalHLO
 
 /// Metal-specific lazy tensor barrier
 ///
@@ -1003,10 +1004,20 @@ public final class WhileLoopTracer: @unchecked Sendable {
     /// Starting tensor ID for this trace (to identify traced nodes)
     private var startingId: UInt64 = 0
 
-    /// Shared tracer instance
-    public static let shared = WhileLoopTracer()
+    /// Thread-local tracer key
+    private static let threadLocalKey = "WhileLoopTracer_ThreadLocal"
 
-    private init() {}
+    /// Thread-local tracer instance (each thread gets its own tracer)
+    public static var shared: WhileLoopTracer {
+        if let existing = Thread.current.threadDictionary[threadLocalKey] as? WhileLoopTracer {
+            return existing
+        }
+        let tracer = WhileLoopTracer()
+        Thread.current.threadDictionary[threadLocalKey] = tracer
+        return tracer
+    }
+
+    fileprivate init() {}
 
     /// Begin tracing a while loop body
     ///

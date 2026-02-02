@@ -203,8 +203,8 @@ struct ConstantPromotionTests {
 
     @Test("Promotion threshold")
     func promotionThreshold() {
-        // Verify the threshold is reasonable (16 elements)
-        #expect(CompilationCache.promotionThreshold == 16)
+        // All constants are now promoted to avoid MLIR parsing issues with large arrays
+        #expect(CompilationCache.promotionThreshold == Int.max)
     }
 
     @Test("Small constant is promoted")
@@ -244,24 +244,24 @@ struct ConstantPromotionTests {
 
         let result = graph.analyzeForConstantPromotion()
 
-        // Small constants should be promoted
-        #expect(result.wasPromoted, "Small constants should be promoted")
+        // All constants should be promoted
+        #expect(result.wasPromoted, "All constants should be promoted")
 
-        // The scalar constant [1] should be promoted, larger [2,3] should not
+        // Both the scalar [1] and the [2,3] constant should be promoted
         let scalarPromoted = result.promotedConstants.first { $0.shape == [1] }
         #expect(scalarPromoted != nil, "Scalar constant should be promoted")
     }
 
-    @Test("Large constant not promoted")
-    func largeConstantNotPromoted() {
-        // Create a graph with a large constant that should NOT be promoted
+    @Test("Large constant is also promoted")
+    func largeConstantIsAlsoPromoted() {
+        // All constants are now promoted to avoid MLIR parsing issues with large arrays
         let graph = IRGraph()
 
-        // Large constant (> 16 elements)
+        // Large constant (100 elements)
         let largeConstId = TensorRegistry.shared.nextTensorId()
         let largeConstHandle = LazyTensorHandle(
             id: largeConstId,
-            shape: [10, 10], // 100 elements - too large for promotion
+            shape: [10, 10], // 100 elements
             dtype: .float32,
             device: .default
         )
@@ -272,9 +272,9 @@ struct ConstantPromotionTests {
 
         let result = graph.analyzeForConstantPromotion()
 
-        // Large constants should NOT be promoted
+        // All constants should be promoted (including large ones)
         let largePromoted = result.promotedConstants.first { $0.shape == [10, 10] }
-        #expect(largePromoted == nil, "Large constants should not be promoted")
+        #expect(largePromoted != nil, "All constants should be promoted")
     }
 
     @Test("Structural hash differs only by structure")
