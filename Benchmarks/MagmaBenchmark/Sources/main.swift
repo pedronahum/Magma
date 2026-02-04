@@ -1,13 +1,5 @@
 // MagmaBenchmark - Comprehensive Operation Benchmark Suite
 // Compares Magma tensor operations overhead against direct MetalHLO execution
-//
-// KNOWN ISSUES (MetalHLO bugs requiring investigation):
-// 1. Operations hang when tensors have >10000 elements
-// 2. Axis-specific reductions hang (sum(dims:), softmax)
-// 3. 3D transpose with transpose(1,2) hangs
-// 4. Broadcast operations with reshape hang
-//
-// Working operations: matmul, 2D transpose, global reductions, binary/unary arithmetic, GELU, MLP
 
 import Foundation
 import Magma
@@ -99,8 +91,6 @@ print("╔═══════════════════════�
 print("║         Magma Comprehensive Benchmark Suite                ║")
 print("╚════════════════════════════════════════════════════════════╝")
 print()
-print("NOTE: Sizes limited to ≤100x100 due to MetalHLO >10K element bug")
-print()
 
 guard Backend.metal.isAvailable else {
     print("ERROR: Metal backend not available")
@@ -128,15 +118,15 @@ print("════════════════════════�
 print("MATRIX OPERATIONS")
 print("═══════════════════════════════════════════════════════════════")
 
-// GEMM benchmarks - limited to <10000 elements (99x99 max)
+// GEMM benchmarks - including larger sizes
 let gemmConfigs: [(name: String, m: Int, n: Int, k: Int)] = [
     ("GEMM-32", 32, 32, 32),
-    ("GEMM-48", 48, 48, 48),
     ("GEMM-64", 64, 64, 64),
-    ("GEMM-80", 80, 80, 80),
-    ("GEMM-96", 96, 96, 96),
-    ("GEMM-Tall", 96, 32, 64),
-    ("GEMM-Wide", 32, 96, 64),
+    ("GEMM-128", 128, 128, 128),
+    ("GEMM-256", 256, 256, 256),
+    ("GEMM-512", 512, 512, 512),
+    ("GEMM-Tall", 512, 64, 256),
+    ("GEMM-Wide", 64, 512, 256),
 ]
 
 for cfg in gemmConfigs {
@@ -165,10 +155,10 @@ for cfg in gemmConfigs {
 // Transpose
 print()
 print("--- Transpose ---")
-let transposeConfigs: [(name: String, shape: [Int])] = [
-    ("Transpose-64x64", [64, 64]),
-    ("Transpose-96x48", [96, 48]),
-    // NOTE: 3D transpose with transpose(1,2) hangs - needs investigation
+let transposeConfigs: [(name: String, shape: [Int], axes: (Int, Int)?)] = [
+    ("Transpose-64x64", [64, 64], nil),
+    ("Transpose-256x128", [256, 128], nil),
+    ("Transpose-3D", [8, 64, 64], (1, 2)),
 ]
 
 for cfg in transposeConfigs {
@@ -184,7 +174,12 @@ for cfg in transposeConfigs {
         config: config,
         device: metal
     ) {
-        let t = a.transpose()
+        let t: Tensor<Float>
+        if let axes = cfg.axes {
+            t = a.transpose(axes.0, axes.1)
+        } else {
+            t = a.transpose()
+        }
         t.markForMaterialization()
         LazyTensorBarrier(on: metal)
     }
@@ -202,12 +197,11 @@ print("════════════════════════�
 
 let reductionConfigs: [(name: String, shape: [Int], op: String, axes: [Int]?)] = [
     ("GlobalSum-64x64", [64, 64], "sum", nil),
-    ("GlobalSum-96x96", [96, 96], "sum", nil),
-    // NOTE: Axis-specific reductions hang - needs investigation
-    // ("RowSum-64x64", [64, 64], "sum", [1]),
-    // ("ColSum-64x64", [64, 64], "sum", [0]),
-    ("GlobalMean-96x96", [96, 96], "mean", nil),
-    ("GlobalMax-80x80", [80, 80], "max", nil),
+    ("GlobalSum-256x256", [256, 256], "sum", nil),
+    ("RowSum-128x128", [128, 128], "sum", [1]),
+    ("ColSum-128x128", [128, 128], "sum", [0]),
+    ("GlobalMean-256x256", [256, 256], "mean", nil),
+    ("GlobalMax-256x256", [256, 256], "max", nil),
 ]
 
 for cfg in reductionConfigs {
@@ -256,10 +250,10 @@ print("════════════════════════�
 // Binary operations
 let binaryConfigs: [(name: String, shape: [Int], op: String)] = [
     ("Add-64x64", [64, 64], "add"),
-    ("Add-96x96", [96, 96], "add"),
+    ("Add-256x256", [256, 256], "add"),
     ("Mul-64x64", [64, 64], "multiply"),
-    ("Mul-96x96", [96, 96], "multiply"),
-    ("Div-64x64", [64, 64], "divide"),
+    ("Mul-256x256", [256, 256], "multiply"),
+    ("Div-128x128", [128, 128], "divide"),
 ]
 
 for cfg in binaryConfigs {
@@ -296,14 +290,13 @@ print()
 print("--- Unary Operations ---")
 
 let unaryConfigs: [(name: String, shape: [Int], op: String)] = [
-    ("Exp-64x64", [64, 64], "exp"),
-    ("Log-64x64", [64, 64], "log"),
-    ("Tanh-64x64", [64, 64], "tanh"),
-    ("Sigmoid-96x96", [96, 96], "sigmoid"),
-    ("ReLU-96x96", [96, 96], "relu"),
-    ("GELU-64x64", [64, 64], "gelu"),
-    // NOTE: Softmax uses axis-specific reduction internally - hangs
-    // ("Softmax-64x64", [64, 64], "softmax"),
+    ("Exp-128x128", [128, 128], "exp"),
+    ("Log-128x128", [128, 128], "log"),
+    ("Tanh-128x128", [128, 128], "tanh"),
+    ("Sigmoid-256x256", [256, 256], "sigmoid"),
+    ("ReLU-256x256", [256, 256], "relu"),
+    ("GELU-128x128", [128, 128], "gelu"),
+    ("Softmax-128x128", [128, 128], "softmax"),
 ]
 
 for cfg in unaryConfigs {
@@ -329,7 +322,7 @@ for cfg in unaryConfigs {
         case "sigmoid": r = a.sigmoid()
         case "relu": r = a.relu()
         case "gelu": r = a.gelu()
-        // case "softmax": r = a.softmax(dim: -1)  // Uses axis reduction - hangs
+        case "softmax": r = a.softmax(dim: -1)
         default: r = a.exp()
         }
         r.markForMaterialization()
@@ -339,59 +332,57 @@ for cfg in unaryConfigs {
     print(result.summary)
 }
 
-// NOTE: Broadcast operations with reshape hang - needs investigation
 // Broadcast operations
-// print()
-// print("--- Broadcast Operations ---")
-//
-// do {
-//     let a = Tensor<Float>.ones([64, 64], on: metal)
-//     let b = Tensor<Float>.ones([64], on: metal)
-//     a.markForMaterialization()
-//     b.markForMaterialization()
-//     LazyTensorBarrier(on: metal)
-//
-//     let result = runBenchmark(
-//         name: "AddBroadcast-Row",
-//         category: "arithmetic",
-//         operation: "add_broadcast",
-//         shape: "64x64 + 64",
-//         config: config,
-//         device: metal
-//     ) {
-//         let bRow = b.reshape([1, 64])
-//         let r = a + bRow
-//         r.markForMaterialization()
-//         LazyTensorBarrier(on: metal)
-//     }
-//     results.append(result)
-//     print(result.summary)
-// }
-//
-// do {
-//     // [4, 32, 64] = 8192 elements < 10000
-//     let a = Tensor<Float>.ones([4, 32, 64], on: metal)
-//     let b = Tensor<Float>.ones([64], on: metal)
-//     a.markForMaterialization()
-//     b.markForMaterialization()
-//     LazyTensorBarrier(on: metal)
-//
-//     let result = runBenchmark(
-//         name: "MulBroadcast-3D",
-//         category: "arithmetic",
-//         operation: "multiply_broadcast",
-//         shape: "4x32x64 * 64",
-//         config: config,
-//         device: metal
-//     ) {
-//         let bBroadcast = b.reshape([1, 1, 64])
-//         let r = a * bBroadcast
-//         r.markForMaterialization()
-//         LazyTensorBarrier(on: metal)
-//     }
-//     results.append(result)
-//     print(result.summary)
-// }
+print()
+print("--- Broadcast Operations ---")
+
+do {
+    let a = Tensor<Float>.ones([128, 128], on: metal)
+    let b = Tensor<Float>.ones([128], on: metal)
+    a.markForMaterialization()
+    b.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let result = runBenchmark(
+        name: "AddBroadcast-Row",
+        category: "arithmetic",
+        operation: "add_broadcast",
+        shape: "128x128 + 128",
+        config: config,
+        device: metal
+    ) {
+        let bRow = b.reshape([1, 128])
+        let r = a + bRow
+        r.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+    results.append(result)
+    print(result.summary)
+}
+
+do {
+    let a = Tensor<Float>.ones([8, 64, 128], on: metal)
+    let b = Tensor<Float>.ones([128], on: metal)
+    a.markForMaterialization()
+    b.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let result = runBenchmark(
+        name: "MulBroadcast-3D",
+        category: "arithmetic",
+        operation: "multiply_broadcast",
+        shape: "8x64x128 * 128",
+        config: config,
+        device: metal
+    ) {
+        let bBroadcast = b.reshape([1, 1, 128])
+        let r = a * bBroadcast
+        r.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+    results.append(result)
+    print(result.summary)
+}
 
 print()
 
@@ -401,21 +392,21 @@ print("════════════════════════�
 print("COMPOUND OPERATIONS")
 print("═══════════════════════════════════════════════════════════════")
 
-// MLP-like forward pass (small)
+// MLP-like forward pass
 do {
-    let x = Tensor<Float>.ones([8, 64], on: metal)
-    let w1 = Tensor<Float>.full([64, 96], 0.01, on: metal)
-    let w2 = Tensor<Float>.full([96, 32], 0.01, on: metal)
+    let x = Tensor<Float>.ones([32, 256], on: metal)
+    let w1 = Tensor<Float>.full([256, 512], 0.01, on: metal)
+    let w2 = Tensor<Float>.full([512, 128], 0.01, on: metal)
     x.markForMaterialization()
     w1.markForMaterialization()
     w2.markForMaterialization()
     LazyTensorBarrier(on: metal)
 
     let result = runBenchmark(
-        name: "MLP-8x64->96->32",
+        name: "MLP-32x256->512->128",
         category: "compound",
         operation: "mlp_forward",
-        shape: "8x64->96->32",
+        shape: "32x256->512->128",
         config: config,
         device: metal
     ) {
@@ -428,41 +419,40 @@ do {
     print(result.summary)
 }
 
-// NOTE: Attention benchmark disabled - softmax uses axis-specific reduction which hangs
-// Simple attention-like computation (small scale)
-// do {
-//     // [batch=2, heads=4, seq=16, hidden=32] - total elements per tensor = 4096
-//     let q = Tensor<Float>.ones([2, 4, 16, 32], on: metal)
-//     let k = Tensor<Float>.ones([2, 4, 16, 32], on: metal)
-//     let v = Tensor<Float>.ones([2, 4, 16, 32], on: metal)
-//     q.markForMaterialization()
-//     k.markForMaterialization()
-//     v.markForMaterialization()
-//     LazyTensorBarrier(on: metal)
-//
-//     let scale = Tensor<Float>.full([1], 1.0 / Foundation.sqrt(32.0), on: metal)
-//     scale.markForMaterialization()
-//     LazyTensorBarrier(on: metal)
-//
-//     let result = runBenchmark(
-//         name: "Attention-2x4x16x32",
-//         category: "compound",
-//         operation: "attention",
-//         shape: "[2,4,16,32]",
-//         config: config,
-//         device: metal
-//     ) {
-//         let kT = k.transposeLastTwo()
-//         let scores = q.batchedMatmul(kT)
-//         let scaledScores = scores * scale.broadcast(to: scores.shape)
-//         let attnWeights = scaledScores.softmax(dim: -1)
-//         let output = attnWeights.batchedMatmul(v)
-//         output.markForMaterialization()
-//         LazyTensorBarrier(on: metal)
-//     }
-//     results.append(result)
-//     print(result.summary)
-// }
+// Attention computation
+do {
+    // [batch=2, heads=8, seq=64, hidden=64]
+    let q = Tensor<Float>.ones([2, 8, 64, 64], on: metal)
+    let k = Tensor<Float>.ones([2, 8, 64, 64], on: metal)
+    let v = Tensor<Float>.ones([2, 8, 64, 64], on: metal)
+    q.markForMaterialization()
+    k.markForMaterialization()
+    v.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let scale = Tensor<Float>.full([1], 1.0 / Foundation.sqrt(64.0), on: metal)
+    scale.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let result = runBenchmark(
+        name: "Attention-2x8x64x64",
+        category: "compound",
+        operation: "attention",
+        shape: "[2,8,64,64]",
+        config: config,
+        device: metal
+    ) {
+        let kT = k.transposeLastTwo()
+        let scores = q.batchedMatmul(kT)
+        let scaledScores = scores * scale.broadcast(to: scores.shape)
+        let attnWeights = scaledScores.softmax(dim: -1)
+        let output = attnWeights.batchedMatmul(v)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+    results.append(result)
+    print(result.summary)
+}
 
 print()
 
