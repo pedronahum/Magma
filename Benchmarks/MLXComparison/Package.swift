@@ -1,26 +1,20 @@
 // swift-tools-version:5.9
-// MLX vs Magma Metal Comparison Benchmark
-
 import PackageDescription
 
 let package = Package(
-    name: "MLXComparison",
-    platforms: [
-        .macOS(.v14),
-    ],
+    name: "MagmaMLXBenchmark",
+    platforms: [.macOS(.v14)],
     dependencies: [
-        // MLX Swift
-        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
-        // Magma (local)
         .package(path: "../.."),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
     ],
     targets: [
         .executableTarget(
-            name: "MLXComparison",
+            name: "MagmaMLXBenchmark",
             dependencies: [
+                .product(name: "Magma", package: "Magma"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "Magma", package: "Magma"),
             ],
             path: "Sources"
         ),
