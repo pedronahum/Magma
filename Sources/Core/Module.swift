@@ -190,16 +190,47 @@ extension nn {
         }
 
         /// Forward pass: y = x @ weight.T + bias
+        ///
+        /// Supports inputs of any rank >= 2. For inputs with rank > 2, the linear
+        /// transformation is applied to the last dimension while preserving all
+        /// leading dimensions.
+        ///
+        /// - Parameter input: Tensor of shape [..., inputSize]
+        /// - Returns: Tensor of shape [..., outputSize]
         public func forward(_ input: Tensor<Float>) -> Tensor<Float> {
-            // input: [batch, inputSize]
-            // weight: [outputSize, inputSize]
-            // output: [batch, outputSize]
+            let inputRank = input.shape.count
+            precondition(inputRank >= 2, "Linear layer requires input of rank >= 2, got rank \(inputRank)")
+
+            let inputSize = input.shape[inputRank - 1]
             let wT = weight.value.transpose()  // [inputSize, outputSize]
-            var result = input.matmul(wT)
-            if useBias {
-                result = result + bias.value.broadcast(to: result.shape)
+
+            if inputRank == 2 {
+                // Standard 2D case: [batch, inputSize] -> [batch, outputSize]
+                var result = input.matmul(wT)
+                if useBias {
+                    result = result + bias.value.broadcast(to: result.shape)
+                }
+                return result
+            } else {
+                // Higher rank case: flatten leading dims, apply linear, reshape back
+                // e.g., [B, T, C] -> [B*T, C] -> [B*T, outC] -> [B, T, outC]
+                let leadingDims = Array(input.shape.dropLast())
+                let batchSize = leadingDims.reduce(1, *)
+
+                // Flatten to 2D: [..., inputSize] -> [batch, inputSize]
+                let flat = input.reshape([batchSize, inputSize])
+
+                // Apply linear transformation
+                var result = flat.matmul(wT)
+                if useBias {
+                    result = result + bias.value.broadcast(to: result.shape)
+                }
+
+                // Reshape back: [batch, outputSize] -> [..., outputSize]
+                let outputSize = weight.value.shape[0]
+                let outputShape = leadingDims + [outputSize]
+                return result.reshape(outputShape)
             }
-            return result
         }
 
         public func parameters() -> [Parameter] {

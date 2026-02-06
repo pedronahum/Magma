@@ -681,12 +681,15 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         let normalizedAxis = axis < 0 ? rank + axis : axis
         precondition(normalizedAxis >= 0 && normalizedAxis < rank, "axis out of range")
 
-        // Compute result shape: replace the gather axis dimension with indices shape
+        // Compute result shape: for slice selection, replace axis dim with indices count
+        // For ND indices, insert indices shape at axis position (like index_select with multi-dim output)
         var resultShape = self.shape
-        if indices.shape.count == 1 {
+        if indices.rank == 1 {
+            // 1D indices: simple slice selection
             resultShape[normalizedAxis] = indices.shape[0]
         } else {
-            // Multi-dimensional indices: remove axis dim and insert indices shape
+            // Multi-dimensional indices: result has indices shape inserted at axis
+            // This is slice selection where each index selects a slice, shaped by indices
             resultShape.remove(at: normalizedAxis)
             resultShape.insert(contentsOf: indices.shape, at: normalizedAxis)
         }
@@ -714,10 +717,16 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     public func vjpGather(indices: Tensor<Float>, axis: Int = 0) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
         let result = self.gather(indices: indices, axis: axis)
         let originalShape = self.shape
-        return (result, { v in
-            // Scatter gradient back to original positions
-            Tensor<Scalar>.zeros(originalShape, on: self.device)
-                .scatter(indices: indices, updates: v, axis: axis)
+        return (result, { [selfDevice = self.device] v in
+            // Use oneHot + matmul instead of scatter to avoid region-based MLIR ops.
+            // This also correctly accumulates gradients for duplicate indices.
+            let n = originalShape[axis]
+            let oneHot = Tensor<Float>.oneHot(indices, numClasses: n, on: selfDevice)
+            // oneHot: [numIndices, n], v: [numIndices, D]
+            // grad = oneHot^T @ v = [n, D]
+            let vFloat = Tensor<Float>(handle: v.handle)
+            let grad = oneHot.transpose().matmul(vFloat)
+            return Tensor<Scalar>(handle: grad.handle)
         })
     }
 
@@ -744,11 +753,27 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         let normalizedAxis = axis < 0 ? rank + axis : axis
         precondition(normalizedAxis >= 0 && normalizedAxis < rank, "axis out of range")
 
-        // Validate updates shape: should match self shape with axis dim replaced by indices count
-        var expectedUpdatesShape = self.shape
-        expectedUpdatesShape[normalizedAxis] = indices.elementCount
-        precondition(updates.shape == expectedUpdatesShape || updates.elementCount == indices.elementCount * (shape.filter { $0 != shape[normalizedAxis] }.reduce(1, *)),
-                     "updates shape \(updates.shape) incompatible with scatter into \(shape) at axis \(normalizedAxis) with \(indices.elementCount) indices")
+        // Validate updates shape based on scatter mode:
+        // Mode 1 (slice scatter): indices is 1D, updates has shape [..., indices.count, ...]
+        // Mode 2 (element scatter): updates has same shape as indices
+        // Mode 3 (multi-dim gather inverse): updates has shape with axis replaced by indices.shape
+        var expectedSliceScatterShape = self.shape
+        if indices.rank == 1 {
+            expectedSliceScatterShape[normalizedAxis] = indices.shape[0]
+        } else {
+            expectedSliceScatterShape[normalizedAxis] = indices.elementCount
+        }
+
+        // Mode 3: For multi-dim indices, updates may have indices.shape inserted at axis
+        var expectedMultiDimScatterShape = self.shape
+        expectedMultiDimScatterShape.remove(at: normalizedAxis)
+        expectedMultiDimScatterShape.insert(contentsOf: indices.shape, at: normalizedAxis)
+
+        let validSliceScatter = updates.shape == expectedSliceScatterShape
+        let validElementScatter = updates.shape == indices.shape
+        let validMultiDimScatter = updates.shape == expectedMultiDimScatterShape
+        precondition(validSliceScatter || validElementScatter || validMultiDimScatter,
+                     "updates shape \(updates.shape) incompatible with scatter into \(shape) at axis \(normalizedAxis)")
 
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
@@ -772,11 +797,29 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     @derivative(of: scatter, wrt: (self, updates))
     public func vjpScatter(indices: Tensor<Float>, updates: Tensor, axis: Int = 0) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
         let result = self.scatter(indices: indices, updates: updates, axis: axis)
+        let isElementScatter = updates.shape == indices.shape
+        let updatesShape = updates.shape
+        let device = self.device
         return (result, { v in
             // Gradient for input: just pass through the gradient (updates overwrite)
             let inputGrad = v
             // Gradient for updates: gather from the output gradient at scatter positions
-            let updatesGrad = v.gather(indices: indices, axis: axis)
+            let updatesGrad: Tensor<Scalar>
+            if isElementScatter {
+                // Element scatter mode: gather individual elements from gradient
+                // For now, use slice gather and then reshape if shapes differ
+                let gathered = v.gather(indices: indices, axis: axis)
+                if gathered.shape == updatesShape {
+                    updatesGrad = gathered
+                } else {
+                    // Shapes don't match due to gather semantics - use zeros as conservative approx
+                    // TODO: Implement proper gatherElements for element-wise gathering
+                    updatesGrad = Tensor<Scalar>.zeros(updatesShape, on: device)
+                }
+            } else {
+                // Slice scatter mode: use regular gather
+                updatesGrad = v.gather(indices: indices, axis: axis)
+            }
             return (inputGrad, updatesGrad)
         })
     }
@@ -1429,5 +1472,298 @@ public enum MNISTError: Error, CustomStringConvertible {
         case .invalidFormat(let msg):
             return "Invalid file format: \(msg)"
         }
+    }
+}
+
+// MARK: - Memory-Mapped Token Dataset
+
+/// A memory-mapped dataset for large token files (GPT-2 style training).
+///
+/// Efficiently loads pre-tokenized data stored as binary UInt16 token IDs.
+/// Uses memory mapping for random access without loading the entire file.
+///
+/// Data format: Raw binary file of UInt16 little-endian token IDs.
+/// Create with Python: `np.array(tokens, dtype=np.uint16).tofile('train.bin')`
+///
+/// Example:
+/// ```swift
+/// let dataset = try MemoryMappedTokenDataset(
+///     path: "train.bin",
+///     sequenceLength: 1024
+/// )
+///
+/// for batch in dataset.batches(batchSize: 8, device: metal) {
+///     let (inputs, targets) = batch
+///     // inputs:  [8, 1024] - token IDs
+///     // targets: [8, 1024] - shifted by 1
+/// }
+/// ```
+public class MemoryMappedTokenDataset {
+    /// File handle for the memory-mapped file
+    private let fileHandle: FileHandle
+
+    /// Memory-mapped data pointer
+    private let data: UnsafeRawPointer
+
+    /// Total number of tokens in the file
+    public let tokenCount: Int
+
+    /// Sequence length for each sample
+    public let sequenceLength: Int
+
+    /// Number of complete sequences available
+    public var count: Int {
+        // We need sequenceLength + 1 tokens per sample (input + 1 for target shift)
+        max(0, tokenCount - sequenceLength)
+    }
+
+    /// Creates a memory-mapped token dataset.
+    ///
+    /// - Parameters:
+    ///   - path: Path to the binary token file.
+    ///   - sequenceLength: Length of each sequence (context window).
+    public init(path: String, sequenceLength: Int) throws {
+        self.sequenceLength = sequenceLength
+
+        // Open file
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw TokenDatasetError.fileNotFound(path)
+        }
+        self.fileHandle = handle
+
+        // Get file size
+        let fileSize = handle.seekToEndOfFile()
+        handle.seek(toFileOffset: 0)
+
+        // Token count = file size / 2 (UInt16 = 2 bytes)
+        self.tokenCount = Int(fileSize) / 2
+
+        guard tokenCount > sequenceLength else {
+            throw TokenDatasetError.fileTooSmall(
+                expected: sequenceLength + 1,
+                got: tokenCount
+            )
+        }
+
+        // Memory map the file
+        let fd = handle.fileDescriptor
+        let ptr = mmap(nil, Int(fileSize), PROT_READ, MAP_PRIVATE, fd, 0)
+
+        guard ptr != MAP_FAILED else {
+            throw TokenDatasetError.mmapFailed
+        }
+
+        self.data = UnsafeRawPointer(ptr!)
+    }
+
+    deinit {
+        // Unmap memory
+        let fileSize = tokenCount * 2
+        munmap(UnsafeMutableRawPointer(mutating: data), fileSize)
+        try? fileHandle.close()
+    }
+
+    /// Get tokens at a specific index range.
+    ///
+    /// - Parameters:
+    ///   - start: Starting token index.
+    ///   - length: Number of tokens to read.
+    /// - Returns: Array of token IDs.
+    public func getTokens(start: Int, length: Int) -> [Int32] {
+        precondition(start >= 0 && start + length <= tokenCount,
+                    "Token range out of bounds")
+
+        let ptr = data.assumingMemoryBound(to: UInt16.self)
+        var tokens: [Int32] = []
+        tokens.reserveCapacity(length)
+
+        for i in 0..<length {
+            tokens.append(Int32(ptr[start + i]))
+        }
+
+        return tokens
+    }
+
+    /// Get a single sample (input, target) pair.
+    ///
+    /// - Parameter index: Sample index (0 to count-1).
+    /// - Returns: Tuple of (input tokens, target tokens) each of length sequenceLength.
+    public func getSample(at index: Int) -> (input: [Int32], target: [Int32]) {
+        precondition(index >= 0 && index < count, "Index out of bounds")
+
+        // Input: tokens[index : index + seqLen]
+        // Target: tokens[index + 1 : index + seqLen + 1]
+        let allTokens = getTokens(start: index, length: sequenceLength + 1)
+
+        let input = Array(allTokens.prefix(sequenceLength))
+        let target = Array(allTokens.suffix(sequenceLength))
+
+        return (input, target)
+    }
+
+    /// Generate batches of data.
+    ///
+    /// - Parameters:
+    ///   - batchSize: Number of sequences per batch.
+    ///   - device: Device to create tensors on.
+    ///   - shuffle: Whether to shuffle sample order.
+    /// - Returns: Iterator yielding (input, target) tensor pairs.
+    public func batches(
+        batchSize: Int,
+        device: Device = .default,
+        shuffle: Bool = true
+    ) -> TokenBatchIterator {
+        TokenBatchIterator(
+            dataset: self,
+            batchSize: batchSize,
+            device: device,
+            shuffle: shuffle
+        )
+    }
+
+    /// Iterator for token batches.
+    public struct TokenBatchIterator: IteratorProtocol, Sequence {
+        private let dataset: MemoryMappedTokenDataset
+        private let batchSize: Int
+        private let device: Device
+        private var indices: [Int]
+        private var currentIndex: Int = 0
+
+        init(dataset: MemoryMappedTokenDataset, batchSize: Int, device: Device, shuffle: Bool) {
+            self.dataset = dataset
+            self.batchSize = batchSize
+            self.device = device
+            self.indices = Array(0..<dataset.count)
+            if shuffle {
+                self.indices.shuffle()
+            }
+        }
+
+        public mutating func next() -> (input: Tensor<Float>, target: Tensor<Float>)? {
+            guard currentIndex + batchSize <= indices.count else { return nil }
+
+            var inputBatch: [Float] = []
+            var targetBatch: [Float] = []
+            inputBatch.reserveCapacity(batchSize * dataset.sequenceLength)
+            targetBatch.reserveCapacity(batchSize * dataset.sequenceLength)
+
+            for i in 0..<batchSize {
+                let idx = indices[currentIndex + i]
+                let (input, target) = dataset.getSample(at: idx)
+                inputBatch.append(contentsOf: input.map { Float($0) })
+                targetBatch.append(contentsOf: target.map { Float($0) })
+            }
+
+            currentIndex += batchSize
+
+            let inputTensor = Tensor<Float>(
+                inputBatch,
+                shape: [batchSize, dataset.sequenceLength],
+                on: device
+            )
+            let targetTensor = Tensor<Float>(
+                targetBatch,
+                shape: [batchSize, dataset.sequenceLength],
+                on: device
+            )
+
+            return (inputTensor, targetTensor)
+        }
+    }
+}
+
+/// Errors for token dataset operations
+public enum TokenDatasetError: Error, CustomStringConvertible {
+    case fileNotFound(String)
+    case fileTooSmall(expected: Int, got: Int)
+    case mmapFailed
+
+    public var description: String {
+        switch self {
+        case .fileNotFound(let path):
+            return "Token file not found: \(path)"
+        case .fileTooSmall(let expected, let got):
+            return "Token file too small: need at least \(expected) tokens, got \(got)"
+        case .mmapFailed:
+            return "Failed to memory-map file"
+        }
+    }
+}
+
+// MARK: - Language Model Batch Utilities
+
+/// Utilities for creating language model training batches.
+public enum LanguageModelBatch {
+    /// Create input/target pairs from a sequence of tokens with shifting.
+    ///
+    /// For language models, target is the input shifted by 1 position.
+    ///
+    /// - Parameters:
+    ///   - tokens: 1D tensor of token IDs.
+    ///   - sequenceLength: Length of each sequence.
+    ///   - device: Device to create tensors on.
+    /// - Returns: Tuple of (input, target) tensors.
+    ///
+    /// Example:
+    /// ```swift
+    /// // tokens = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], seqLen = 4
+    /// // input  = [0, 1, 2, 3]
+    /// // target = [1, 2, 3, 4]
+    /// let (x, y) = LanguageModelBatch.createPair(tokens, sequenceLength: 4)
+    /// ```
+    public static func createPair(
+        _ tokens: Tensor<Float>,
+        sequenceLength: Int,
+        device: Device = .default
+    ) -> (input: Tensor<Float>, target: Tensor<Float>) {
+        precondition(tokens.rank == 1, "Tokens must be 1D")
+        precondition(tokens.elementCount > sequenceLength,
+                    "Need more tokens than sequence length")
+
+        // Extract values
+        let values = tokens.scalars()
+
+        let input = Array(values.prefix(sequenceLength))
+        let target = Array(values.dropFirst().prefix(sequenceLength))
+
+        return (
+            Tensor<Float>(input, shape: [sequenceLength], on: device),
+            Tensor<Float>(target, shape: [sequenceLength], on: device)
+        )
+    }
+
+    /// Create random batches from a long token sequence.
+    ///
+    /// - Parameters:
+    ///   - tokens: 1D array of token IDs.
+    ///   - batchSize: Number of sequences per batch.
+    ///   - sequenceLength: Length of each sequence.
+    ///   - device: Device to create tensors on.
+    /// - Returns: Tuple of (input, target) batch tensors.
+    public static func randomBatch(
+        tokens: [Int32],
+        batchSize: Int,
+        sequenceLength: Int,
+        device: Device = .default
+    ) -> (input: Tensor<Float>, target: Tensor<Float>) {
+        let maxStart = tokens.count - sequenceLength - 1
+
+        var inputBatch: [Float] = []
+        var targetBatch: [Float] = []
+        inputBatch.reserveCapacity(batchSize * sequenceLength)
+        targetBatch.reserveCapacity(batchSize * sequenceLength)
+
+        for _ in 0..<batchSize {
+            let start = Int.random(in: 0...maxStart)
+            for j in 0..<sequenceLength {
+                inputBatch.append(Float(tokens[start + j]))
+                targetBatch.append(Float(tokens[start + j + 1]))
+            }
+        }
+
+        return (
+            Tensor<Float>(inputBatch, shape: [batchSize, sequenceLength], on: device),
+            Tensor<Float>(targetBatch, shape: [batchSize, sequenceLength], on: device)
+        )
     }
 }

@@ -123,6 +123,26 @@ public final class MetalHLOClient: @unchecked Sendable {
         let executable = try client.compile(mlir, config: config)
         return MetalHLOExecutable(executable: executable, client: self)
     }
+
+    /// Compile StableHLO MLIR with optimization level and disabled passes
+    ///
+    /// - Parameters:
+    ///   - mlir: The StableHLO MLIR module text.
+    ///   - optimizationLevel: Optimization level (.O0, .O1, .O2, .O3).
+    ///   - disabledPasses: Set of pass names to disable.
+    /// - Returns: A compiled executable ready for execution.
+    public func compile(
+        _ mlir: String,
+        optimizationLevel: MetalHLO.OptimizationLevel,
+        disabledPasses: Set<String>
+    ) throws -> MetalHLOExecutable {
+        let config = MetalHLO.CompilationConfig(
+            optimizationLevel: optimizationLevel,
+            disabledPasses: disabledPasses
+        )
+        let executable = try client.compile(mlir, config: config)
+        return MetalHLOExecutable(executable: executable, client: self)
+    }
 }
 
 // MARK: - MetalHLO Buffer
@@ -218,15 +238,26 @@ public final class MetalHLOExecutable: @unchecked Sendable {
 
         executionCount += 1
 
+        let outputTypes = executable.outputTypes
+
         // Wrap outputs in MetalHLOBuffer
         return metalOutputs.enumerated().map { (index, metalBuffer) in
-            // Get output type from executable
-            let outputType = executable.outputTypes[index]
-            return MetalHLOBuffer(
-                buffer: metalBuffer,
-                shape: outputType.shape,
-                elementType: convertFromMetalHLOElementType(outputType.elementType)
-            )
+            if index < outputTypes.count {
+                let outputType = outputTypes[index]
+                return MetalHLOBuffer(
+                    buffer: metalBuffer,
+                    shape: outputType.shape,
+                    elementType: convertFromMetalHLOElementType(outputType.elementType)
+                )
+            } else {
+                // Fallback: use shape from the buffer itself
+                // This handles cases where outputTypes count < actual outputs
+                return MetalHLOBuffer(
+                    buffer: metalBuffer,
+                    shape: metalBuffer.shape,
+                    elementType: .float32
+                )
+            }
         }
     }
 

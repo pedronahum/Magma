@@ -523,12 +523,30 @@ public final class MLIRBuilder: @unchecked Sendable {
     }
     
     private func compareOp(_ comparison: String, _ lhs: Value, _ rhs: Value) -> Value {
-        let resultType = TensorType(shape: lhs.type.shape, dtype: .bool)
-        let result = nextValue(type: resultType)
-        let compareType = lhs.type.dtype.isFloatingPoint ? "FLOAT" : "SIGNED"
-        let op = "    \(result.name) = stablehlo.compare \(comparison), \(lhs.displayName), \(rhs.displayName), \(compareType) : (\(lhs.type.mlirType), \(rhs.type.mlirType)) -> \(resultType.mlirType)"
+        // Broadcast inputs to the same shape (like binaryOp)
+        var lhsVal = lhs
+        var rhsVal = rhs
+
+        if lhsVal.type.shape != rhsVal.type.shape {
+            let targetShape = computeBroadcastShape(lhsVal.type.shape, rhsVal.type.shape)
+            if lhsVal.type.shape != targetShape {
+                lhsVal = broadcast(lhsVal, to: targetShape)
+            }
+            if rhsVal.type.shape != targetShape {
+                rhsVal = broadcast(rhsVal, to: targetShape)
+            }
+        }
+
+        let boolType = TensorType(shape: lhsVal.type.shape, dtype: .bool)
+        let boolResult = nextValue(type: boolType)
+        let compareType = lhsVal.type.dtype.isFloatingPoint ? "FLOAT" : "SIGNED"
+        let op = "    \(boolResult.name) = stablehlo.compare \(comparison), \(lhsVal.displayName), \(rhsVal.displayName), \(compareType) : (\(lhsVal.type.mlirType), \(rhsVal.type.mlirType)) -> \(boolType.mlirType)"
         operations.append(op)
-        return result
+
+        // Auto-convert bool result to input dtype so downstream ops (matmul, multiply, etc.)
+        // get float values. The lazy tensor layer tracks comparisons as float (0.0/1.0).
+        let inputDtype = lhsVal.type.dtype
+        return convert(boolResult, to: inputDtype)
     }
     
     /// Select between two values based on condition
@@ -640,7 +658,7 @@ public final class MLIRBuilder: @unchecked Sendable {
         if intIndices.type.shape.count == 1 {
             resultShape[axis] = intIndices.type.shape[0]
         } else {
-            // Multi-dimensional indices
+            // Multi-dimensional indices: result has indices shape inserted at axis
             resultShape.remove(at: axis)
             resultShape.insert(contentsOf: intIndices.type.shape, at: axis)
         }
@@ -903,9 +921,16 @@ public final class MLIRBuilder: @unchecked Sendable {
     public func rngUniform(_ low: Value, _ high: Value, shape: [Int]) -> Value {
         let resultType = TensorType(shape: shape, dtype: low.type.dtype)
         let result = nextValue(type: resultType)
-        let shapeStr = shape.map { String($0) }.joined(separator: ", ")
 
-        let op = "    \(result.name) = stablehlo.rng \(low.displayName), \(high.displayName), shape = [\(shapeStr)], distribution = UNIFORM : (\(low.type.mlirType), \(high.type.mlirType)) -> \(resultType.mlirType)"
+        // Create shape constant as tensor<Nxi64>
+        let shapeConstType = TensorType(shape: [shape.count], dtype: .int64)
+        let shapeConst = nextValue(type: shapeConstType)
+        let shapeStr = shape.map { String($0) }.joined(separator: ", ")
+        let shapeConstOp = "    \(shapeConst.name) = stablehlo.constant dense<[\(shapeStr)]> : \(shapeConstType.mlirType)"
+        operations.append(shapeConstOp)
+
+        // Emit generic form: "stablehlo.rng"(%low, %high, %shape) {rng_distribution = #stablehlo<rng_distribution UNIFORM>}
+        let op = "    \(result.name) = \"stablehlo.rng\"(\(low.displayName), \(high.displayName), \(shapeConst.displayName)) {rng_distribution = #stablehlo<rng_distribution UNIFORM>} : (\(low.type.mlirType), \(high.type.mlirType), \(shapeConstType.mlirType)) -> \(resultType.mlirType)"
         operations.append(op)
         return result
     }
@@ -914,9 +939,16 @@ public final class MLIRBuilder: @unchecked Sendable {
     public func rngNormal(_ mean: Value, _ stddev: Value, shape: [Int]) -> Value {
         let resultType = TensorType(shape: shape, dtype: mean.type.dtype)
         let result = nextValue(type: resultType)
-        let shapeStr = shape.map { String($0) }.joined(separator: ", ")
 
-        let op = "    \(result.name) = stablehlo.rng \(mean.displayName), \(stddev.displayName), shape = [\(shapeStr)], distribution = NORMAL : (\(mean.type.mlirType), \(stddev.type.mlirType)) -> \(resultType.mlirType)"
+        // Create shape constant as tensor<Nxi64>
+        let shapeConstType = TensorType(shape: [shape.count], dtype: .int64)
+        let shapeConst = nextValue(type: shapeConstType)
+        let shapeStr = shape.map { String($0) }.joined(separator: ", ")
+        let shapeConstOp = "    \(shapeConst.name) = stablehlo.constant dense<[\(shapeStr)]> : \(shapeConstType.mlirType)"
+        operations.append(shapeConstOp)
+
+        // Emit generic form: "stablehlo.rng"(%mean, %stddev, %shape) {rng_distribution = #stablehlo<rng_distribution NORMAL>}
+        let op = "    \(result.name) = \"stablehlo.rng\"(\(mean.displayName), \(stddev.displayName), \(shapeConst.displayName)) {rng_distribution = #stablehlo<rng_distribution NORMAL>} : (\(mean.type.mlirType), \(stddev.type.mlirType), \(shapeConstType.mlirType)) -> \(resultType.mlirType)"
         operations.append(op)
         return result
     }

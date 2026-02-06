@@ -150,37 +150,6 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         return (self.log(), { v in v / self })
     }
 
-    /// VJP for gelu
-    @derivative(of: gelu)
-    public func vjpGelu() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
-        let result = self.gelu()
-        return (result, { v in
-            // GELU gradient is complex, approximate for now
-            // d/dx[x * Phi(x)] where Phi is the CDF of standard normal
-            // Approximation: gradient ≈ sigmoid(1.702 * x) * (1 + 1.702 * x * (1 - sigmoid(1.702 * x)))
-            // For simplicity, use numerical approximation
-            v * self.geluGrad()
-        })
-    }
-
-    /// Helper for GELU gradient (approximation)
-    internal func geluGrad() -> Tensor {
-        // Approximate GELU gradient
-        // Using tanh approximation: gelu(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-        // Gradient is complex, so we use a simplified form
-        let id = TensorRegistry.shared.nextTensorId()
-        let handle = LazyTensorHandle(
-            id: id,
-            shape: shape,
-            dtype: dtype,
-            device: device
-        )
-        // For now, return ones as placeholder - proper implementation needed
-        handle.irNode = .constant(values: Array(repeating: Float(1.0), count: elementCount), shape: shape)
-        TensorRegistry.shared.registerPending(handle)
-        return Tensor(handle: handle)
-    }
-
 }
 
 // MARK: - VJPs for Matrix Operations
@@ -233,22 +202,35 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
     /// Helper to sum along broadcast dimensions
     internal func sumAlongBroadcastDims(to targetShape: [Int]) -> Tensor {
-        // Simplified: if target is smaller, sum and reshape
         if targetShape.isEmpty {
             return self.sum()
         }
-        // For matching ranks, sum along dimensions where target is 1
-        // For now, use a simplified approach
-        let id = TensorRegistry.shared.nextTensorId()
-        let handle = LazyTensorHandle(
-            id: id,
-            shape: targetShape,
-            dtype: dtype,
-            device: device
-        )
-        handle.irNode = .operation(op: .reduceSum, inputs: [self.handle], attributes: ["targetShape": targetShape])
-        TensorRegistry.shared.registerPending(handle)
-        return Tensor(handle: handle)
+        // Compute which dimensions were broadcast (target has 1, self has > 1)
+        // Left-pad target shape with 1s if ranks differ
+        let selfRank = self.shape.count
+        let targetRank = targetShape.count
+        let paddedTarget = Array(repeating: 1, count: selfRank - targetRank) + targetShape
+
+        var reduceDims: [Int] = []
+        for i in 0..<selfRank {
+            if paddedTarget[i] == 1 && self.shape[i] > 1 {
+                reduceDims.append(i)
+            }
+        }
+
+        if reduceDims.isEmpty {
+            // No broadcast dims to reduce, just reshape if ranks differ
+            if selfRank != targetRank {
+                return self.reshape(targetShape)
+            }
+            return self
+        }
+
+        let summed = self.sum(dims: reduceDims, keepDims: true)
+        if summed.shape == targetShape {
+            return summed
+        }
+        return summed.reshape(targetShape)
     }
 }
 
@@ -295,18 +277,108 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     }
 }
 
+// MARK: - VJPs for Batched Matrix Operations
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for batchedMatmul: [..., M, K] @ [..., K, N] -> [..., M, N]
+    /// dL/dA = dL/dC @ B^T, dL/dB = A^T @ dL/dC
+    @derivative(of: batchedMatmul)
+    public func vjpBatchedMatmul(_ other: Tensor) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
+        let result = self.batchedMatmul(other)
+        return (result, { v in
+            let dSelf = v.batchedMatmul(other.transpose(-1, -2))
+            let dOther = self.transpose(-1, -2).batchedMatmul(v)
+            return (dSelf, dOther)
+        })
+    }
+
+    /// VJP for transpose with dimension arguments
+    @derivative(of: transpose(_:_:))
+    public func vjpTransposeDims(_ dim1: Int, _ dim2: Int) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        return (self.transpose(dim1, dim2), { v in v.transpose(dim1, dim2) })
+    }
+}
+
+// MARK: - VJPs for Dimension-wise Reductions
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for sum along dimensions
+    @derivative(of: sum(dims:keepDims:))
+    public func vjpSumDims(dims: [Int], keepDims: Bool) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let originalShape = self.shape
+        let result = self.sum(dims: dims, keepDims: keepDims)
+        return (result, { v in
+            var grad = v
+            if !keepDims {
+                // Re-insert the reduced dimensions as size 1
+                let normalizedDims = dims.map { $0 < 0 ? originalShape.count + $0 : $0 }.sorted()
+                var expandedShape = v.shape
+                for dim in normalizedDims {
+                    expandedShape.insert(1, at: dim)
+                }
+                grad = v.reshape(expandedShape)
+            }
+            return grad.broadcast(to: originalShape)
+        })
+    }
+
+    /// VJP for mean along dimensions
+    @derivative(of: mean(dims:keepDims:))
+    public func vjpMeanDims(dims: [Int], keepDims: Bool) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let originalShape = self.shape
+        let normalizedDims = dims.map { $0 < 0 ? originalShape.count + $0 : $0 }
+        // Count of elements in the reduced dimensions
+        let count = normalizedDims.reduce(1) { $0 * originalShape[$1] }
+        let result = self.mean(dims: dims, keepDims: keepDims)
+        return (result, { v in
+            var grad = v / Tensor.full(v.shape, Scalar(count), on: v.device)
+            if !keepDims {
+                let sortedDims = normalizedDims.sorted()
+                var expandedShape = v.shape
+                for dim in sortedDims {
+                    expandedShape.insert(1, at: dim)
+                }
+                grad = grad.reshape(expandedShape)
+            }
+            return grad.broadcast(to: originalShape)
+        })
+    }
+}
+
 // MARK: - VJPs for Softmax
 
 extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
-    /// VJP for softmax
+    /// VJP for softmax along a dimension
+    /// Gradient: s * (v - sum(v * s, dim=dim))
     @derivative(of: softmax)
     public func vjpSoftmax(dim: Int) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
         let s = self.softmax(dim: dim)
         return (s, { v in
-            // Softmax gradient: s * (v - sum(v * s))
-            let sumVS = (v * s).sum()  // Simplified - should be along dim
+            let sumVS = (v * s).sum(dims: [dim], keepDims: true)
             return s * (v - sumVS.broadcast(to: s.shape))
+        })
+    }
+}
+
+// MARK: - VJPs for GELU (proper gradient)
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for gelu using sigmoid approximation
+    /// gelu(x) ≈ x * sigmoid(1.702 * x)
+    /// gelu'(x) ≈ sig + 1.702 * x * sig * (1 - sig)  where sig = sigmoid(1.702 * x)
+    @derivative(of: gelu)
+    public func vjpGelu() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.gelu()
+        return (result, { [selfCaptured = self] v in
+            let alpha = Tensor.full(selfCaptured.shape, Scalar(1.702), on: selfCaptured.device)
+            let one = Tensor.ones(selfCaptured.shape, on: selfCaptured.device)
+            let sig = (alpha * selfCaptured).sigmoid()
+            let geluGrad = sig + alpha * selfCaptured * sig * (one - sig)
+            return v * geluGrad
         })
     }
 }

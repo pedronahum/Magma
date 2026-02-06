@@ -7,6 +7,54 @@ import LazyTensor
 import StableHLO
 import XLARuntime
 
+// MARK: - Parameter Group
+
+/// A group of parameters with shared optimization settings.
+///
+/// Use parameter groups to apply different settings (like weight decay) to
+/// different parts of a model. This is common for transformers where you
+/// typically don't apply weight decay to biases and LayerNorm parameters.
+///
+/// Example:
+/// ```swift
+/// // Separate weight matrices from biases/norms
+/// let weightParams = model.parameters().filter { $0.name?.contains("weight") ?? false }
+/// let otherParams = model.parameters().filter { !($0.name?.contains("weight") ?? false) }
+///
+/// let groups = [
+///     ParameterGroup(parameters: weightParams, weightDecay: 0.1),
+///     ParameterGroup(parameters: otherParams, weightDecay: 0.0),
+/// ]
+///
+/// var optimizer = optim.AdamW(parameterGroups: groups, lr: 6e-4)
+/// ```
+public struct ParameterGroup {
+    /// Parameters in this group
+    public let parameters: [Parameter]
+
+    /// Learning rate multiplier for this group (applied on top of base LR)
+    public var lrMultiplier: Float
+
+    /// Weight decay for this group
+    public var weightDecay: Float
+
+    /// Creates a parameter group.
+    ///
+    /// - Parameters:
+    ///   - parameters: Parameters in this group.
+    ///   - weightDecay: Weight decay for this group. Defaults to 0.
+    ///   - lrMultiplier: Learning rate multiplier. Defaults to 1.0.
+    public init(
+        parameters: [Parameter],
+        weightDecay: Float = 0,
+        lrMultiplier: Float = 1.0
+    ) {
+        self.parameters = parameters
+        self.weightDecay = weightDecay
+        self.lrMultiplier = lrMultiplier
+    }
+}
+
 // MARK: - Optimizer Protocol
 
 /// Protocol for all optimizers.
@@ -304,6 +352,179 @@ extension optim {
     /// var optimizer = optim.AdamW(parameters: model.parameters(), lr: 0.001, weightDecay: 0.01)
     /// ```
     public typealias AdamW = Adam  // Adam already implements decoupled weight decay
+}
+
+// MARK: - AdamW with Parameter Groups
+
+extension optim {
+    /// AdamW optimizer with support for parameter groups.
+    ///
+    /// This allows applying different weight decay and learning rate multipliers
+    /// to different parameters. Essential for transformer training where you
+    /// typically don't apply weight decay to biases and LayerNorm.
+    ///
+    /// Example:
+    /// ```swift
+    /// // Separate parameters by type
+    /// let decayParams = model.parameters().filter { p in
+    ///     guard let name = p.name else { return true }
+    ///     return !name.contains("bias") && !name.contains("norm")
+    /// }
+    /// let noDecayParams = model.parameters().filter { p in
+    ///     guard let name = p.name else { return false }
+    ///     return name.contains("bias") || name.contains("norm")
+    /// }
+    ///
+    /// var optimizer = optim.AdamWGroups(
+    ///     parameterGroups: [
+    ///         ParameterGroup(parameters: decayParams, weightDecay: 0.1),
+    ///         ParameterGroup(parameters: noDecayParams, weightDecay: 0.0),
+    ///     ],
+    ///     lr: 6e-4
+    /// )
+    /// ```
+    public struct AdamWGroups: Optimizer {
+        /// Parameter groups with their settings
+        public let parameterGroups: [ParameterGroup]
+
+        /// Base learning rate
+        public var learningRate: Float
+
+        /// First moment decay rate
+        public let beta1: Float
+
+        /// Second moment decay rate
+        public let beta2: Float
+
+        /// Small constant for numerical stability
+        public let eps: Float
+
+        /// First moment estimates (flattened across all groups)
+        private var m: [Tensor<Float>?]
+
+        /// Second moment estimates (flattened across all groups)
+        private var v: [Tensor<Float>?]
+
+        /// Current time step
+        private var t: Int
+
+        /// All parameters flattened (for gradient indexing)
+        private let allParameters: [Parameter]
+
+        /// Group index for each parameter
+        private let parameterGroupIndex: [Int]
+
+        /// Creates an AdamW optimizer with parameter groups.
+        ///
+        /// - Parameters:
+        ///   - parameterGroups: Parameter groups with per-group settings.
+        ///   - lr: Base learning rate. Defaults to 0.001.
+        ///   - beta1: First moment decay. Defaults to 0.9.
+        ///   - beta2: Second moment decay. Defaults to 0.999.
+        ///   - eps: Numerical stability constant. Defaults to 1e-8.
+        public init(
+            parameterGroups: [ParameterGroup],
+            lr: Float = 0.001,
+            beta1: Float = 0.9,
+            beta2: Float = 0.999,
+            eps: Float = 1e-8
+        ) {
+            precondition(!parameterGroups.isEmpty, "At least one parameter group required")
+            precondition(lr > 0, "Learning rate must be positive")
+            precondition(beta1 >= 0 && beta1 < 1, "beta1 must be in [0, 1)")
+            precondition(beta2 >= 0 && beta2 < 1, "beta2 must be in [0, 1)")
+
+            self.parameterGroups = parameterGroups
+            self.learningRate = lr
+            self.beta1 = beta1
+            self.beta2 = beta2
+            self.eps = eps
+
+            // Flatten all parameters and track their group
+            var allParams: [Parameter] = []
+            var groupIndices: [Int] = []
+            for (groupIdx, group) in parameterGroups.enumerated() {
+                for param in group.parameters {
+                    allParams.append(param)
+                    groupIndices.append(groupIdx)
+                }
+            }
+            self.allParameters = allParams
+            self.parameterGroupIndex = groupIndices
+
+            self.m = Array(repeating: nil, count: allParams.count)
+            self.v = Array(repeating: nil, count: allParams.count)
+            self.t = 0
+        }
+
+        /// Update parameters using gradients.
+        public mutating func step(_ gradients: [Tensor<Float>]) {
+            precondition(gradients.count == allParameters.count,
+                        "Number of gradients must match total parameters across all groups")
+
+            t += 1
+
+            for i in 0..<allParameters.count {
+                let param = allParameters[i]
+                guard param.requiresGrad else { continue }
+
+                let groupIdx = parameterGroupIndex[i]
+                let group = parameterGroups[groupIdx]
+                let grad = gradients[i]
+
+                // Effective learning rate for this group
+                let effectiveLR = learningRate * group.lrMultiplier
+
+                // AdamW weight decay (decoupled)
+                if group.weightDecay != 0 {
+                    param.value = param.value - param.value * Tensor<Float>.full([], effectiveLR * group.weightDecay, on: param.value.device)
+                }
+
+                // Update first moment: m = beta1 * m + (1 - beta1) * g
+                let beta1Tensor = Tensor<Float>.full([], beta1, on: grad.device)
+                let oneMinusBeta1 = Tensor<Float>.full([], 1 - beta1, on: grad.device)
+                if let mPrev = m[i] {
+                    m[i] = mPrev * beta1Tensor + grad * oneMinusBeta1
+                } else {
+                    m[i] = grad * oneMinusBeta1
+                }
+
+                // Update second moment: v = beta2 * v + (1 - beta2) * g^2
+                let beta2Tensor = Tensor<Float>.full([], beta2, on: grad.device)
+                let oneMinusBeta2 = Tensor<Float>.full([], 1 - beta2, on: grad.device)
+                let gradSquared = grad * grad
+                if let vPrev = v[i] {
+                    v[i] = vPrev * beta2Tensor + gradSquared * oneMinusBeta2
+                } else {
+                    v[i] = gradSquared * oneMinusBeta2
+                }
+
+                // Bias correction
+                let beta1Power = pow(beta1, Float(t))
+                let beta2Power = pow(beta2, Float(t))
+                let mHat = m[i]! / Tensor<Float>.full([], 1 - beta1Power, on: grad.device)
+                let vHat = v[i]! / Tensor<Float>.full([], 1 - beta2Power, on: grad.device)
+
+                // Update: p = p - lr * m_hat / (sqrt(v_hat) + eps)
+                let sqrtV = vHat.sqrt()
+                let epsTensor = Tensor<Float>.full(sqrtV.shape, eps, on: grad.device)
+                let update = mHat / (sqrtV + epsTensor)
+                param.value = param.value - update * Tensor<Float>.full([], effectiveLR, on: grad.device)
+            }
+        }
+
+        /// Reset optimizer state.
+        public mutating func zeroGrad() {
+            m = Array(repeating: nil, count: allParameters.count)
+            v = Array(repeating: nil, count: allParameters.count)
+            t = 0
+        }
+
+        /// Get all parameters across all groups (for gradient computation).
+        public func parameters() -> [Parameter] {
+            allParameters
+        }
+    }
 }
 
 // MARK: - Tensor sqrt Extension
@@ -894,6 +1115,325 @@ extension optim {
             squareAvg = Array(repeating: nil, count: parameters.count)
             accDelta = Array(repeating: nil, count: parameters.count)
         }
+    }
+}
+
+// MARK: - Gradient Clipping
+
+extension optim {
+    /// Clip gradients by global L2 norm.
+    ///
+    /// If the total L2 norm of all gradients exceeds `maxNorm`, all gradients
+    /// are scaled down proportionally so the total norm equals `maxNorm`.
+    ///
+    /// This is essential for stable training of transformers and other deep networks.
+    ///
+    /// - Parameters:
+    ///   - gradients: Array of gradient tensors.
+    ///   - maxNorm: Maximum allowed L2 norm. Defaults to 1.0.
+    /// - Returns: Tuple of (clipped gradients, original total norm).
+    ///
+    /// Example:
+    /// ```swift
+    /// let grads = computeGradients(model, input, target)
+    /// let (clippedGrads, totalNorm) = optim.clipGradNorm(grads, maxNorm: 1.0)
+    /// optimizer.step(clippedGrads)
+    /// ```
+    public static func clipGradNorm(
+        _ gradients: [Tensor<Float>],
+        maxNorm: Float = 1.0
+    ) -> (clipped: [Tensor<Float>], totalNorm: Tensor<Float>) {
+        guard !gradients.isEmpty else {
+            return ([], Tensor<Float>.zeros([], on: .default))
+        }
+
+        let device = gradients[0].device
+
+        // Compute sum of squared norms for each gradient tensor
+        var sumSquaredNorms = Tensor<Float>.zeros([], on: device)
+        for grad in gradients {
+            let squaredNorm = (grad * grad).sum()
+            sumSquaredNorms = sumSquaredNorms + squaredNorm
+        }
+
+        // Total norm = sqrt(sum of squared norms)
+        let totalNorm = sumSquaredNorms.sqrt()
+
+        // Compute clip coefficient: min(maxNorm / totalNorm, 1.0)
+        // If totalNorm <= maxNorm, clipCoeff = 1.0 (no clipping)
+        // If totalNorm > maxNorm, clipCoeff = maxNorm / totalNorm
+        let maxNormTensor = Tensor<Float>.full([], maxNorm, on: device)
+        let one = Tensor<Float>.ones([], on: device)
+        let eps = Tensor<Float>.full([], 1e-6, on: device)
+
+        // clipCoeff = maxNorm / (totalNorm + eps)
+        let rawClipCoeff = maxNormTensor / (totalNorm + eps)
+
+        // Clamp to max of 1.0: min(rawClipCoeff, 1.0)
+        // Since we don't have a direct min op between tensors, use maskedFill
+        let needsClipping = rawClipCoeff.lessThan(one)
+        let clipCoeff = one.maskedFill(mask: needsClipping, value: rawClipCoeff)
+
+        // Scale all gradients
+        let clippedGrads = gradients.map { grad in
+            grad * clipCoeff.broadcast(to: grad.shape)
+        }
+
+        return (clippedGrads, totalNorm)
+    }
+
+    /// Clip gradients by value.
+    ///
+    /// Clamps each gradient element to be within [-clipValue, clipValue].
+    ///
+    /// - Parameters:
+    ///   - gradients: Array of gradient tensors.
+    ///   - clipValue: Maximum absolute value for any gradient element.
+    /// - Returns: Clipped gradients.
+    ///
+    /// Example:
+    /// ```swift
+    /// let grads = computeGradients(model, input, target)
+    /// let clippedGrads = optim.clipGradValue(grads, clipValue: 0.5)
+    /// optimizer.step(clippedGrads)
+    /// ```
+    public static func clipGradValue(
+        _ gradients: [Tensor<Float>],
+        clipValue: Float
+    ) -> [Tensor<Float>] {
+        gradients.map { grad in
+            grad.clamp(min: -clipValue, max: clipValue)
+        }
+    }
+}
+
+// MARK: - Gradient Accumulation
+
+extension optim {
+    /// Accumulates gradients over multiple steps before applying an update.
+    ///
+    /// This is useful for simulating larger batch sizes when memory is limited.
+    ///
+    /// Example:
+    /// ```swift
+    /// var accumulator = optim.GradientAccumulator(accumulationSteps: 4)
+    ///
+    /// for (step, batch) in dataLoader.enumerated() {
+    ///     let grads = computeGradients(model, batch)
+    ///     if let accumulatedGrads = accumulator.accumulate(grads) {
+    ///         // Only returns non-nil every accumulationSteps
+    ///         optimizer.step(accumulatedGrads)
+    ///     }
+    /// }
+    /// ```
+    public struct GradientAccumulator {
+        /// Number of steps to accumulate before returning gradients
+        public let accumulationSteps: Int
+
+        /// Current accumulated gradients
+        private var accumulated: [Tensor<Float>]?
+
+        /// Current step count
+        private var stepCount: Int = 0
+
+        /// Creates a gradient accumulator.
+        ///
+        /// - Parameter accumulationSteps: Number of micro-batches to accumulate.
+        public init(accumulationSteps: Int) {
+            precondition(accumulationSteps > 0, "Accumulation steps must be positive")
+            self.accumulationSteps = accumulationSteps
+        }
+
+        /// Accumulate gradients and optionally return averaged gradients.
+        ///
+        /// - Parameter gradients: Gradients from one micro-batch.
+        /// - Returns: Averaged gradients if accumulation is complete, nil otherwise.
+        public mutating func accumulate(_ gradients: [Tensor<Float>]) -> [Tensor<Float>]? {
+            stepCount += 1
+
+            if accumulated == nil {
+                // First step: initialize with gradients
+                accumulated = gradients
+            } else {
+                // Add to accumulated gradients
+                accumulated = zip(accumulated!, gradients).map { acc, grad in
+                    acc + grad
+                }
+            }
+
+            // Check if we've accumulated enough steps
+            if stepCount >= accumulationSteps {
+                // Average the accumulated gradients
+                let scale = Tensor<Float>.full([], 1.0 / Float(accumulationSteps), on: gradients[0].device)
+                let averaged = accumulated!.map { grad in
+                    grad * scale.broadcast(to: grad.shape)
+                }
+
+                // Reset state
+                accumulated = nil
+                stepCount = 0
+
+                return averaged
+            }
+
+            return nil
+        }
+
+        /// Reset accumulator state.
+        public mutating func reset() {
+            accumulated = nil
+            stepCount = 0
+        }
+
+        /// Whether an update is ready.
+        public var isUpdateReady: Bool {
+            stepCount >= accumulationSteps
+        }
+
+        /// Current accumulation progress (0.0 to 1.0).
+        public var progress: Float {
+            Float(stepCount) / Float(accumulationSteps)
+        }
+    }
+}
+
+// MARK: - Training State Checkpointing
+
+/// Complete training state for saving and resuming training.
+///
+/// Includes model parameters, optimizer state, and training progress.
+///
+/// Example:
+/// ```swift
+/// // Save training state
+/// let state = TrainingState(
+///     modelState: model.stateDict(),
+///     optimizerState: optimizer.stateDict(),
+///     step: currentStep,
+///     epoch: currentEpoch,
+///     loss: currentLoss
+/// )
+/// try state.save(to: URL(fileURLWithPath: "checkpoint.json"))
+///
+/// // Resume training
+/// let loaded = try TrainingState.load(from: URL(fileURLWithPath: "checkpoint.json"))
+/// try model.loadStateDict(loaded.modelState)
+/// optimizer.loadState(loaded.optimizerState)
+/// currentStep = loaded.step
+/// ```
+public struct TrainingState: Codable {
+    /// Model parameter values (name -> values + shape)
+    public var modelState: [String: TensorState]
+
+    /// Optimizer state (momentum buffers, etc.)
+    public var optimizerState: [String: Any]?
+
+    /// Current training step
+    public var step: Int
+
+    /// Current epoch
+    public var epoch: Int
+
+    /// Last recorded loss
+    public var loss: Float?
+
+    /// Best recorded loss (for early stopping)
+    public var bestLoss: Float?
+
+    /// Learning rate at save time
+    public var learningRate: Float?
+
+    /// Custom metadata
+    public var metadata: [String: String]
+
+    /// Serializable tensor state
+    public struct TensorState: Codable {
+        public var values: [Float]
+        public var shape: [Int]
+
+        public init(values: [Float], shape: [Int]) {
+            self.values = values
+            self.shape = shape
+        }
+    }
+
+    /// Creates a training state.
+    public init(
+        modelState: [String: TensorState] = [:],
+        step: Int = 0,
+        epoch: Int = 0,
+        loss: Float? = nil,
+        bestLoss: Float? = nil,
+        learningRate: Float? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        self.modelState = modelState
+        self.optimizerState = nil
+        self.step = step
+        self.epoch = epoch
+        self.loss = loss
+        self.bestLoss = bestLoss
+        self.learningRate = learningRate
+        self.metadata = metadata
+    }
+
+    // Custom coding to handle non-Codable optimizerState
+    enum CodingKeys: String, CodingKey {
+        case modelState, step, epoch, loss, bestLoss, learningRate, metadata
+    }
+
+    /// Save training state to disk.
+    public func save(to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        try data.write(to: url)
+    }
+
+    /// Load training state from disk.
+    public static func load(from url: URL) throws -> TrainingState {
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        return try decoder.decode(TrainingState.self, from: data)
+    }
+}
+
+/// Extension to create TrainingState from model state dict
+extension TrainingState {
+    /// Create training state from a model's state dict.
+    public static func from<M: Module>(
+        model: M,
+        step: Int = 0,
+        epoch: Int = 0,
+        loss: Float? = nil,
+        learningRate: Float? = nil
+    ) -> TrainingState {
+        let stateDict = model.stateDict()
+        var modelState: [String: TensorState] = [:]
+
+        for (name, tensor) in stateDict {
+            let values = tensor.scalars()
+            modelState[name] = TensorState(values: values, shape: tensor.shape)
+        }
+
+        return TrainingState(
+            modelState: modelState,
+            step: step,
+            epoch: epoch,
+            loss: loss,
+            learningRate: learningRate
+        )
+    }
+
+    /// Load model state into a model.
+    public func loadInto<M: Module>(_ model: inout M, on device: Device = .default) throws {
+        var stateDict: [String: Tensor<Float>] = [:]
+
+        for (name, state) in modelState {
+            stateDict[name] = Tensor<Float>(state.values, shape: state.shape, on: device)
+        }
+
+        try model.loadStateDict(stateDict)
     }
 }
 

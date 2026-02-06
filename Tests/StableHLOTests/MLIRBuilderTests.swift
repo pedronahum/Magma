@@ -367,4 +367,40 @@ struct ControlFlowTests {
 
         print("Generated MLIR:\n\(mlir)")
     }
+
+    @Test("RNG uniform")
+    func rngUniform() {
+        let builder = MLIRBuilder()
+        let low = builder.argument(TensorType(shape: [], dtype: .float32))
+        let high = builder.argument(TensorType(shape: [], dtype: .float32))
+        let result = builder.rngUniform(low, high, shape: [5, 10])
+
+        let mlir = builder.build(name: "rng_uniform", outputs: [result])
+
+        // Check that the new format is used:
+        // 1. Shape constant should be created
+        // 2. Generic form "stablehlo.rng" should be used
+        // 3. rng_distribution attribute should use #stablehlo<...> format
+        #expect(mlir.contains("stablehlo.constant dense<[5, 10]>"))
+        #expect(mlir.contains("\"stablehlo.rng\""))
+        #expect(mlir.contains("rng_distribution = #stablehlo<rng_distribution UNIFORM>"))
+
+        print("Generated MLIR:\n\(mlir)")
+    }
+
+    @Test("RNG normal")
+    func rngNormal() {
+        let builder = MLIRBuilder()
+        let mean = builder.argument(TensorType(shape: [], dtype: .float32))
+        let stddev = builder.argument(TensorType(shape: [], dtype: .float32))
+        let result = builder.rngNormal(mean, stddev, shape: [3, 4])
+
+        let mlir = builder.build(name: "rng_normal", outputs: [result])
+
+        #expect(mlir.contains("stablehlo.constant dense<[3, 4]>"))
+        #expect(mlir.contains("\"stablehlo.rng\""))
+        #expect(mlir.contains("rng_distribution = #stablehlo<rng_distribution NORMAL>"))
+
+        print("Generated MLIR:\n\(mlir)")
+    }
 }

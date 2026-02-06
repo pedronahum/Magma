@@ -815,7 +815,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
         // 7. Compile via MetalHLO with O3 optimization
         do {
             let client = try getMetalHLOClient()
-            executable = try client.compile(mlir, optimizationLevel: .O3)
+            executable = try client.compile(mlir)
 
             if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
                 print("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
@@ -912,20 +912,20 @@ private func MetalLazyTensorBarrier(on device: Device) {
         for (i, output) in outputs.enumerated() {
             if i < outputBuffers.count {
                 let metalBuffer = outputBuffers[i]
-                // Create a materialized result that can be read
-                output.materializedBuffer = nil  // No PJRT buffer for Metal
-                // Store a marker that this is a Metal-materialized tensor
-                // For now, we store the data in a special way
-                // In the future, we might want a proper dual-buffer system
+                output.materializedBuffer = nil
+
                 let hostData = try metalBuffer.toFloatArray()
+                let expectedCount = output.shape.reduce(1, *)
 
                 if debugEnabled {
                     print("Magma [Metal]: Output \(i) - shape: \(output.shape), data count: \(hostData.count), first few: \(Array(hostData.prefix(5)))")
                 }
 
-                // Re-materialize via PJRT for compatibility (if needed)
-                // For now, mark as materialized without a PJRT buffer
-                output.irNode = .constant(values: hostData, shape: output.shape)
+                if hostData.count == expectedCount {
+                    output.irNode = .constant(values: hostData, shape: output.shape)
+                } else if debugEnabled {
+                    print("Magma [Metal]: Graph validation failed: Shape mismatch in output \(i): expected \(expectedCount) values for shape \(output.shape), got \(hostData.count)")
+                }
             }
         }
     } catch {

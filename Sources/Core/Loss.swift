@@ -31,20 +31,6 @@ extension Tensor where Scalar == Float {
         self * self
     }
 
-    /// Element-wise square root
-    public func sqrt() -> Tensor {
-        let id = TensorRegistry.shared.nextTensorId()
-        let handle = LazyTensorHandle(
-            id: id,
-            shape: shape,
-            dtype: dtype,
-            device: device
-        )
-        handle.irNode = .operation(op: .sqrt, inputs: [self.handle], attributes: [:])
-        TensorRegistry.shared.registerPending(handle)
-        return Tensor(handle: handle)
-    }
-
     /// Sum along specified axes
     ///
     /// - Parameter axes: The axes to reduce over. Negative indices are supported.

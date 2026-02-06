@@ -345,13 +345,16 @@ public final class StableHLOEmitter {
         // Reductions
         case .reduceSum:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.rank)
-            return targetBuilder.reduceSum(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return targetBuilder.reduceSum(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMax:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.rank)
-            return targetBuilder.reduceMax(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return targetBuilder.reduceMax(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMin:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.rank)
-            return targetBuilder.reduceMin(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return targetBuilder.reduceMin(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMean:
             // Mean = sum / count
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.rank)
@@ -479,13 +482,16 @@ public final class StableHLOEmitter {
         // Reductions
         case .reduceSum:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.shape.count)
-            return builder.reduceSum(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceSum(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMax:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.shape.count)
-            return builder.reduceMax(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceMax(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMin:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.shape.count)
-            return builder.reduceMin(inputs[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceMin(inputs[0], axes: axes, keepDims: keepDims)
         case .reduceMean:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].type.shape.count)
             let keepDims = attributes["keepDims"] as? Bool ?? false
@@ -688,13 +694,16 @@ public final class StableHLOEmitter {
         // Reductions
         case .reduceSum:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].shape.count)
-            return builder.reduceSum(inputValues[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceSum(inputValues[0], axes: axes, keepDims: keepDims)
         case .reduceMax:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].shape.count)
-            return builder.reduceMax(inputValues[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceMax(inputValues[0], axes: axes, keepDims: keepDims)
         case .reduceMin:
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].shape.count)
-            return builder.reduceMin(inputValues[0], axes: axes)
+            let keepDims = attributes["keepDims"] as? Bool ?? false
+            return builder.reduceMin(inputValues[0], axes: axes, keepDims: keepDims)
         case .reduceMean:
             // Mean = sum / count
             let axes = attributes["axes"] as? [Int] ?? Array(0..<inputs[0].shape.count)
