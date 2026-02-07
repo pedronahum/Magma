@@ -1,14 +1,13 @@
 // GPT-2 Shakespeare Training Example
-// Trains a small GPT-2 model on Shakespeare text using Magma
+// Trains a character-level GPT-2 on Shakespeare text using Magma
+//
+// Reproduces Karpathy's nanoGPT character-level Shakespeare results.
 //
 // Usage:
-//   1. First, tokenize Shakespeare with Python (see prepare_data.py)
+//   1. python3 prepare_data.py    (downloads & tokenizes Shakespeare)
 //   2. swift run -c release GPT2Shakespeare
 //
-// This demonstrates:
-// - Building a GPT-2 model from scratch with Magma layers
-// - Causal self-attention with proper masking
-// - Training loop with loss computation
+// Expected: loss starts ~4.17 (ln(65)), decreases to ~1.5 over 5000 steps
 
 import Foundation
 import Magma
@@ -20,35 +19,23 @@ import MetalHLO
 
 // MARK: - GPT-2 Configuration
 
-/// Configuration for GPT-2 model
 struct GPT2Config {
-    let vocabSize: Int      // Vocabulary size
-    let blockSize: Int      // Maximum sequence length (context window)
-    let nLayer: Int         // Number of transformer blocks
-    let nHead: Int          // Number of attention heads
-    let nEmbd: Int          // Embedding dimension
-    let dropout: Float      // Dropout probability
-    let bias: Bool          // Use bias in Linear layers and LayerNorm
+    let vocabSize: Int
+    let blockSize: Int
+    let nLayer: Int
+    let nHead: Int
+    let nEmbd: Int
+    let dropout: Float
+    let bias: Bool
 
-    /// GPT-2 Small (124M params) - use for full training
-    static let gpt2Small = GPT2Config(
-        vocabSize: 50304,   // Padded for efficiency (50257 + padding)
-        blockSize: 1024,
-        nLayer: 12,
-        nHead: 12,
-        nEmbd: 768,
-        dropout: 0.0,
-        bias: true
-    )
-
-    /// Tiny model for Shakespeare (faster training)
+    /// Tiny model for Shakespeare character-level (matches nanoGPT)
     static let shakespeareTiny = GPT2Config(
-        vocabSize: 65,      // Character-level: ~65 unique characters
+        vocabSize: 65,
         blockSize: 256,
         nLayer: 6,
         nHead: 6,
         nEmbd: 384,
-        dropout: 0.0,
+        dropout: 0.2,
         bias: true
     )
 
@@ -59,26 +46,75 @@ struct GPT2Config {
         nLayer: 2,
         nHead: 2,
         nEmbd: 64,
-        dropout: 0.0,
+        dropout: 0.2,
         bias: true
+    )
+}
+
+// MARK: - Training Hyperparameters
+
+struct TrainConfig {
+    let numSteps: Int
+    let batchSize: Int
+    let learningRate: Float
+    let minLR: Float
+    let warmupSteps: Int
+    let weightDecay: Float
+    let beta1: Float
+    let beta2: Float
+    let gradClipNorm: Float
+    let evalInterval: Int
+    let evalBatches: Int
+    let logInterval: Int
+    let generateInterval: Int
+    let generateTokens: Int
+
+    static let shakespeare = TrainConfig(
+        numSteps: 5000,
+        batchSize: 64,
+        learningRate: 6e-4,
+        minLR: 6e-5,
+        warmupSteps: 100,
+        weightDecay: 0.1,
+        beta1: 0.9,
+        beta2: 0.99,
+        gradClipNorm: 1.0,
+        evalInterval: 250,
+        evalBatches: 10,
+        logInterval: 10,
+        generateInterval: 500,
+        generateTokens: 200
+    )
+
+    static let quick = TrainConfig(
+        numSteps: 50,
+        batchSize: 4,
+        learningRate: 1e-3,
+        minLR: 1e-4,
+        warmupSteps: 5,
+        weightDecay: 0.0,
+        beta1: 0.9,
+        beta2: 0.999,
+        gradClipNorm: 1.0,
+        evalInterval: 25,
+        evalBatches: 2,
+        logInterval: 5,
+        generateInterval: 25,
+        generateTokens: 100
     )
 }
 
 // MARK: - Causal Self Attention
 
-/// Multi-head causal self-attention for GPT-2.
-///
-/// Uses separate Q, K, V projections with causal masking to prevent
-/// attending to future tokens.
 struct CausalSelfAttention {
     let config: GPT2Config
     let headDim: Int
     let scale: Float
 
-    var wQ: nn.Linear  // Query projection
-    var wK: nn.Linear  // Key projection
-    var wV: nn.Linear  // Value projection
-    var wO: nn.Linear  // Output projection
+    var wQ: nn.Linear
+    var wK: nn.Linear
+    var wV: nn.Linear
+    var wO: nn.Linear
 
     init(config: GPT2Config, device: Device = .default) {
         self.config = config
@@ -91,27 +127,20 @@ struct CausalSelfAttention {
         self.wO = nn.Linear(inputSize: config.nEmbd, outputSize: config.nEmbd, bias: config.bias, device: device)
     }
 
-    /// Computes multi-head causal self-attention.
-    ///
-    /// - Parameter x: Input tensor of shape [batch, seqLen, nEmbd]
-    /// - Returns: Output tensor of shape [batch, seqLen, nEmbd]
     func forward(_ x: Tensor<Float>) -> Tensor<Float> {
         let B = x.shape[0]
         let T = x.shape[1]
         let nHead = config.nHead
 
-        // Project Q, K, V using 3D-native Linear: [B, T, C] -> [B, T, C]
         let qProj = wQ(x)
         let kProj = wK(x)
         let vProj = wV(x)
 
-        // Materialize projections to establish shapes for lazy graph
         qProj.markForMaterialization()
         kProj.markForMaterialization()
         vProj.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // Reshape to multi-head format: [B, T, C] -> [B, nHead, T, headDim]
         let q = qProj.reshape([B, T, nHead, headDim]).transpose(1, 2)
         let k = kProj.reshape([B, T, nHead, headDim]).transpose(1, 2)
         let v = vProj.reshape([B, T, nHead, headDim]).transpose(1, 2)
@@ -121,14 +150,12 @@ struct CausalSelfAttention {
         v.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // Scaled dot-product attention: QK^T / sqrt(d)
         let kT = k.transpose(-1, -2)
         let scores = q.batchedMatmul(kT) * Tensor<Float>.full([], scale, on: x.device)
 
         scores.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // Causal mask: additive mask with 0 for valid, -1e9 for future positions
         var maskData = [Float](repeating: -1e9, count: T * T)
         for i in 0..<T {
             for j in 0...i {
@@ -141,14 +168,12 @@ struct CausalSelfAttention {
         maskedScores.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // Softmax over keys and apply to values
         let attnWeights = maskedScores.softmax(dim: -1)
         let out = attnWeights.batchedMatmul(v)
 
         out.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // Concatenate heads and project: [B, nHead, T, headDim] -> [B, T, C]
         let outConcat = out.transpose(1, 2).reshape([B, T, config.nEmbd])
         return wO(outConcat)
     }
@@ -160,7 +185,6 @@ struct CausalSelfAttention {
 
 // MARK: - GPT-2 MLP
 
-/// Position-wise feed-forward network: Linear(C -> 4C) -> GELU -> Linear(4C -> C)
 struct GPT2MLP {
     let nEmbd: Int
     var cFc: nn.Linear
@@ -184,7 +208,6 @@ struct GPT2MLP {
 
 // MARK: - GPT-2 Block
 
-/// Single transformer decoder block with pre-normalization.
 struct GPT2Block {
     var ln1: nn.LayerNorm
     var attn: CausalSelfAttention
@@ -199,7 +222,6 @@ struct GPT2Block {
     }
 
     func forward(_ x: Tensor<Float>) -> Tensor<Float> {
-        // Attention with residual
         let normed1 = ln1(x)
         normed1.markForMaterialization()
         LazyTensorBarrier(on: x.device)
@@ -212,7 +234,6 @@ struct GPT2Block {
         h.markForMaterialization()
         LazyTensorBarrier(on: x.device)
 
-        // MLP with residual
         let normed2 = ln2(h)
         normed2.markForMaterialization()
         LazyTensorBarrier(on: x.device)
@@ -235,15 +256,14 @@ struct GPT2Block {
 
 // MARK: - GPT-2 Model
 
-/// Complete GPT-2 decoder-only transformer language model.
 struct GPT2 {
     let config: GPT2Config
 
-    var wte: nn.Embedding    // Token embeddings
-    var wpe: nn.Embedding    // Position embeddings
-    var blocks: [GPT2Block]  // Transformer blocks
-    var lnF: nn.LayerNorm    // Final layer norm
-    var lmHead: nn.Linear    // LM head
+    var wte: nn.Embedding
+    var wpe: nn.Embedding
+    var blocks: [GPT2Block]
+    var lnF: nn.LayerNorm
+    var lmHead: nn.Linear
 
     init(config: GPT2Config, device: Device = .default) {
         self.config = config
@@ -255,11 +275,9 @@ struct GPT2 {
         self.lmHead = nn.Linear(inputSize: config.nEmbd, outputSize: config.vocabSize, bias: false, device: device)
     }
 
-    func forward(_ idx: Tensor<Float>, targets: Tensor<Float>? = nil) -> (logits: Tensor<Float>, loss: Tensor<Float>?) {
-        let B = idx.shape[0]
+    func forward(_ idx: Tensor<Float>) -> Tensor<Float> {
         let T = idx.shape[1]
 
-        // Embed tokens and positions
         let tokEmb = wte(idx)
         tokEmb.markForMaterialization()
         LazyTensorBarrier(on: idx.device)
@@ -273,14 +291,12 @@ struct GPT2 {
         x.markForMaterialization()
         LazyTensorBarrier(on: idx.device)
 
-        // Apply transformer blocks
         for block in blocks {
             x = block.forward(x)
             x.markForMaterialization()
             LazyTensorBarrier(on: idx.device)
         }
 
-        // Final norm and project to logits
         let normed = lnF(x)
         normed.markForMaterialization()
         LazyTensorBarrier(on: idx.device)
@@ -289,17 +305,7 @@ struct GPT2 {
         logits.markForMaterialization()
         LazyTensorBarrier(on: idx.device)
 
-        // Compute loss if targets provided
-        var loss: Tensor<Float>? = nil
-        if let targets = targets {
-            let logitsFlat = logits.reshape([B * T, config.vocabSize])
-            let targetsFlat = targets.reshape([B * T])
-            loss = nn.functional.crossEntropy(logitsFlat, targetsFlat)
-            loss?.markForMaterialization()
-            LazyTensorBarrier(on: idx.device)
-        }
-
-        return (logits, loss)
+        return logits  // [B, T, vocabSize]
     }
 
     func parameters() -> [Parameter] {
@@ -317,7 +323,6 @@ struct GPT2 {
 
 import _Differentiation
 
-/// Weights for one transformer block (all raw tensors, no Parameter wrappers)
 struct BlockWeights: Differentiable {
     var ln1W: Tensor<Float>
     var ln1B: Tensor<Float>
@@ -331,19 +336,17 @@ struct BlockWeights: Differentiable {
     var projW: Tensor<Float>; var projB: Tensor<Float>
 }
 
-/// All GPT-2 model weights in a single differentiable struct
 struct GPT2Weights: Differentiable {
-    var wte: Tensor<Float>    // Token embeddings [vocabSize, nEmbd]
-    var wpe: Tensor<Float>    // Position embeddings [blockSize, nEmbd]
+    var wte: Tensor<Float>
+    var wpe: Tensor<Float>
     var blocks: [BlockWeights]
     var lnFW: Tensor<Float>
     var lnFB: Tensor<Float>
-    var lmHeadW: Tensor<Float>  // [nEmbd, vocabSize]
+    var lmHeadW: Tensor<Float>
 }
 
 // MARK: - Differentiable Primitives
 
-/// Differentiable linear projection: input @ weight^T + bias
 @differentiable(reverse, wrt: (input, weight, bias))
 func linear(_ input: Tensor<Float>, weight: Tensor<Float>, bias: Tensor<Float>) -> Tensor<Float> {
     let origShape = withoutDerivative(at: input.shape)
@@ -355,7 +358,6 @@ func linear(_ input: Tensor<Float>, weight: Tensor<Float>, bias: Tensor<Float>) 
     return out.reshape(Array(origShape.dropLast()) + [outDim])
 }
 
-/// Differentiable layer normalization
 @differentiable(reverse, wrt: (input, weight, bias))
 func layerNorm(_ input: Tensor<Float>, weight: Tensor<Float>, bias: Tensor<Float>, eps: Float = 1e-5) -> Tensor<Float> {
     let inputShape = withoutDerivative(at: input.shape)
@@ -369,7 +371,6 @@ func layerNorm(_ input: Tensor<Float>, weight: Tensor<Float>, bias: Tensor<Float
     return normalized * weight.broadcast(to: inputShape) + bias.broadcast(to: inputShape)
 }
 
-/// Differentiable embedding lookup
 @differentiable(reverse, wrt: table)
 func embedding(_ table: Tensor<Float>, indices: Tensor<Float>) -> Tensor<Float> {
     let inputShape = withoutDerivative(at: indices.shape)
@@ -380,11 +381,49 @@ func embedding(_ table: Tensor<Float>, indices: Tensor<Float>) -> Tensor<Float> 
     return gathered.reshape(inputShape + [embDim])
 }
 
-/// Differentiable cross-entropy loss (logits: [N, C], targets as indices: [N])
+/// Differentiable dropout with explicit VJP.
+/// The custom derivative ensures the same mask is used in forward and backward,
+/// and avoids intermediate broadcast operations from the auto-generated multiply VJP.
+@differentiable(reverse, wrt: input)
+func dropout(_ input: Tensor<Float>, rate: Float, device: Device) -> Tensor<Float> {
+    if rate == 0 { return input }
+    let mask = Tensor<Float>.randDevice(input.shape, on: device).greaterThan(rate)
+    let scale = Tensor<Float>.full([], 1.0 / (1.0 - rate), on: device)
+    return input * mask * scale
+}
+
+@derivative(of: dropout, wrt: input)
+func vjpDropout(_ input: Tensor<Float>, rate: Float, device: Device)
+    -> (value: Tensor<Float>, pullback: (Tensor<Float>) -> Tensor<Float>) {
+    if rate == 0 {
+        return (input, { $0 })
+    }
+    let mask = Tensor<Float>.randDevice(input.shape, on: device).greaterThan(rate)
+    let scale = Tensor<Float>.full([], 1.0 / (1.0 - rate), on: device)
+    let scaledMask = mask * scale
+    return (input * scaledMask, { upstream in upstream * scaledMask })
+}
+
+/// Numerically stable cross-entropy loss.
+/// Uses log-softmax trick: log(softmax(x)) = x - max(x) - log(sum(exp(x - max(x))))
 @differentiable(reverse, wrt: logits)
 func crossEntropyLoss(_ logits: Tensor<Float>, targets: Tensor<Float>, numClasses: Int, device: Device) -> Tensor<Float> {
-    // Inline logSoftmax: softmax then log (both have VJPs)
-    let logProbs = logits.softmax(dim: -1).log()
+    let logitsShape = withoutDerivative(at: logits.shape)
+
+    // Subtract max for numerical stability (detached from gradient)
+    let maxLogits = withoutDerivative(at:
+        logits.max(alongAxes: -1).expandingShape(at: -1).broadcast(to: logitsShape))
+    let shifted = logits - maxLogits
+
+    // log(sum(exp(shifted)))
+    let expShifted = shifted.exp()
+    let sumExp = expShifted.sum(dims: [-1], keepDims: true)
+    let logSumExp = sumExp.log().broadcast(to: logitsShape)
+
+    // logSoftmax = shifted - logSumExp
+    let logProbs = shifted - logSumExp
+
+    // Select target log-probs via one-hot
     let oneHot = withoutDerivative(at: Tensor<Float>.oneHot(targets, numClasses: numClasses, on: device))
     let targetLogProbs = (logProbs * oneHot).sum(dims: [1], keepDims: false)
     return (-targetLogProbs).mean()
@@ -392,15 +431,14 @@ func crossEntropyLoss(_ logits: Tensor<Float>, targets: Tensor<Float>, numClasse
 
 // MARK: - Differentiable Forward Pass
 
-/// Full GPT-2 forward pass as a differentiable function.
-/// Returns scalar loss suitable for gradient computation.
 @differentiable(reverse, wrt: weights)
 func gpt2Loss(
     weights: GPT2Weights,
     input: Tensor<Float>,
     targets: Tensor<Float>,
     causalMask: Tensor<Float>,
-    config: GPT2Config
+    config: GPT2Config,
+    dropoutRate: Float
 ) -> Tensor<Float> {
     let B = withoutDerivative(at: input.shape[0])
     let T = withoutDerivative(at: input.shape[1])
@@ -410,22 +448,19 @@ func gpt2Loss(
     let scale = withoutDerivative(at: 1.0 / Float(headDim).squareRoot())
     let vocabSize = withoutDerivative(at: config.vocabSize)
     let device = withoutDerivative(at: input.device)
+    let drop = withoutDerivative(at: dropoutRate)
 
-    // Token + position embeddings
     let tokEmb = embedding(weights.wte, indices: input)
     let posIndices = withoutDerivative(at: Tensor<Float>.arange(T, on: device).reshape([1, T]))
     let posEmb = embedding(weights.wpe, indices: posIndices)
     let tokEmbShape = withoutDerivative(at: tokEmb.shape)
-    var x = tokEmb + posEmb.broadcast(to: tokEmbShape)
+    var x = dropout(tokEmb + posEmb.broadcast(to: tokEmbShape), rate: drop, device: device)
 
-    // Transformer blocks
     let blockCount = withoutDerivative(at: weights.blocks.count)
     for i in withoutDerivative(at: 0..<blockCount) {
         let block = weights.blocks[i]
-        // Pre-norm attention
         let normed1 = layerNorm(x, weight: block.ln1W, bias: block.ln1B)
 
-        // Q, K, V projections -> reshape to multi-head
         let q4d = linear(normed1, weight: block.wQW, bias: block.wQB)
             .reshape([B, T, nHead, headDim]).transpose(1, 2)
         let k4d = linear(normed1, weight: block.wKW, bias: block.wKB)
@@ -433,27 +468,23 @@ func gpt2Loss(
         let v4d = linear(normed1, weight: block.wVW, bias: block.wVB)
             .reshape([B, T, nHead, headDim]).transpose(1, 2)
 
-        // Scaled dot-product attention with causal mask
         let scaleTensor = withoutDerivative(at: Tensor<Float>.full([], scale, on: device))
         let scores = q4d.batchedMatmul(k4d.transpose(-1, -2)) * scaleTensor
         let scoresShape = withoutDerivative(at: scores.shape)
         let maskedScores = scores + causalMask.broadcast(to: scoresShape)
-        let attnW = maskedScores.softmax(dim: -1)
+        let attnW = dropout(maskedScores.softmax(dim: -1), rate: drop, device: device)
         let attnOut = attnW.batchedMatmul(v4d)
 
-        // Concatenate heads + output projection
         let concat = attnOut.transpose(1, 2).reshape([B, T, nEmbd])
-        let projected = linear(concat, weight: block.wOW, bias: block.wOB)
+        let projected = dropout(linear(concat, weight: block.wOW, bias: block.wOB), rate: drop, device: device)
         let h = x + projected
 
-        // Pre-norm MLP
         let normed2 = layerNorm(h, weight: block.ln2W, bias: block.ln2B)
         let hidden = linear(normed2, weight: block.fcW, bias: block.fcB).gelu()
-        let mlpOut = linear(hidden, weight: block.projW, bias: block.projB)
+        let mlpOut = dropout(linear(hidden, weight: block.projW, bias: block.projB), rate: drop, device: device)
         x = h + mlpOut
     }
 
-    // Final layer norm + LM head (no bias for LM head)
     let normed = layerNorm(x, weight: weights.lnFW, bias: weights.lnFB)
     let zeroBias = withoutDerivative(at: Tensor<Float>.zeros([vocabSize], on: device))
     let logits = linear(normed, weight: weights.lmHeadW, bias: zeroBias)
@@ -463,7 +494,7 @@ func gpt2Loss(
     return crossEntropyLoss(logitsFlat, targets: targetsFlat, numClasses: vocabSize, device: device)
 }
 
-// MARK: - Weight Extraction Helpers
+// MARK: - Weight Helpers
 
 func extractWeights(from model: GPT2, config: GPT2Config) -> GPT2Weights {
     var blockWeights: [BlockWeights] = []
@@ -497,41 +528,10 @@ func extractWeights(from model: GPT2, config: GPT2Config) -> GPT2Weights {
     )
 }
 
-/// Copy updated weights back into model Parameters
-func applyWeights(_ weights: GPT2Weights, to model: inout GPT2) {
-    model.wte.parameters()[0].value = weights.wte
-    model.wpe.parameters()[0].value = weights.wpe
-    for (i, block) in model.blocks.enumerated() {
-        let bw = weights.blocks[i]
-        block.ln1.parameters()[0].value = bw.ln1W
-        block.ln1.parameters()[1].value = bw.ln1B
-        block.attn.wQ.parameters()[0].value = bw.wQW
-        block.attn.wQ.parameters()[1].value = bw.wQB
-        block.attn.wK.parameters()[0].value = bw.wKW
-        block.attn.wK.parameters()[1].value = bw.wKB
-        block.attn.wV.parameters()[0].value = bw.wVW
-        block.attn.wV.parameters()[1].value = bw.wVB
-        block.attn.wO.parameters()[0].value = bw.wOW
-        block.attn.wO.parameters()[1].value = bw.wOB
-        block.ln2.parameters()[0].value = bw.ln2W
-        block.ln2.parameters()[1].value = bw.ln2B
-        block.mlp.cFc.parameters()[0].value = bw.fcW
-        block.mlp.cFc.parameters()[1].value = bw.fcB
-        block.mlp.cProj.parameters()[0].value = bw.projW
-        block.mlp.cProj.parameters()[1].value = bw.projB
-    }
-    model.lnF.parameters()[0].value = weights.lnFW
-    model.lnF.parameters()[1].value = weights.lnFB
-    model.lmHead.parameters()[0].value = weights.lmHeadW
-}
-
-/// Flatten GPT2Weights gradient into array matching model.parameters() order
 func flattenGradients(_ grad: GPT2Weights.TangentVector) -> [Tensor<Float>] {
     var grads: [Tensor<Float>] = []
-    // wte, wpe
     grads.append(grad.wte)
     grads.append(grad.wpe)
-    // blocks - .base accesses the underlying array from DifferentiableView
     for bg in grad.blocks.base {
         grads.append(contentsOf: [
             bg.ln1W, bg.ln1B,
@@ -540,9 +540,144 @@ func flattenGradients(_ grad: GPT2Weights.TangentVector) -> [Tensor<Float>] {
             bg.fcW, bg.fcB, bg.projW, bg.projB
         ])
     }
-    // lnF, lmHead
     grads.append(contentsOf: [grad.lnFW, grad.lnFB, grad.lmHeadW])
     return grads
+}
+
+// MARK: - Data Loading
+
+struct VocabMeta {
+    let vocabSize: Int
+    let stoi: [String: Int]
+    let itos: [Int: String]
+
+    func encode(_ text: String) -> [Int] {
+        text.map { stoi[String($0)] ?? 0 }
+    }
+
+    func decode(_ ids: [Int]) -> String {
+        ids.map { itos[$0] ?? "?" }.joined()
+    }
+}
+
+func loadMeta(path: String) throws -> VocabMeta {
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let vocabSize = json["vocab_size"] as? Int,
+          let stoiRaw = json["stoi"] as? [String: Int],
+          let itosRaw = json["itos"] as? [String: String] else {
+        fatalError("Invalid meta.json format")
+    }
+    var itos: [Int: String] = [:]
+    for (k, v) in itosRaw {
+        if let key = Int(k) { itos[key] = v }
+    }
+    return VocabMeta(vocabSize: vocabSize, stoi: stoiRaw, itos: itos)
+}
+
+func getRandomBatch(
+    from dataset: MemoryMappedTokenDataset,
+    batchSize: Int,
+    device: Device
+) -> (input: Tensor<Float>, target: Tensor<Float>) {
+    var inputBatch: [Float] = []
+    var targetBatch: [Float] = []
+    inputBatch.reserveCapacity(batchSize * dataset.sequenceLength)
+    targetBatch.reserveCapacity(batchSize * dataset.sequenceLength)
+
+    for _ in 0..<batchSize {
+        let idx = Int.random(in: 0..<dataset.count)
+        let (input, target) = dataset.getSample(at: idx)
+        inputBatch.append(contentsOf: input.map { Float($0) })
+        targetBatch.append(contentsOf: target.map { Float($0) })
+    }
+
+    let inputs = Tensor<Float>(inputBatch, shape: [batchSize, dataset.sequenceLength], on: device)
+    let targets = Tensor<Float>(targetBatch, shape: [batchSize, dataset.sequenceLength], on: device)
+    return (inputs, targets)
+}
+
+// MARK: - Text Generation
+
+func generateSample(
+    model: GPT2,
+    meta: VocabMeta,
+    config: GPT2Config,
+    device: Device,
+    numTokens: Int = 200,
+    temperature: Float = 0.8
+) -> String {
+    // Start with a newline character
+    let startToken = meta.stoi["\n"] ?? 0
+    var tokens: [Float] = [Float(startToken)]
+
+    for _ in 0..<numTokens {
+        // Truncate to blockSize if needed
+        let contextTokens = Array(tokens.suffix(config.blockSize))
+        let seqLen = contextTokens.count
+
+        let input = Tensor<Float>(contextTokens, shape: [1, seqLen], on: device)
+        input.markForMaterialization()
+        LazyTensorBarrier(on: device)
+
+        // Forward pass (non-differentiable)
+        let logits = model.forward(input)  // [1, seqLen, vocabSize]
+        logits.markForMaterialization()
+        LazyTensorBarrier(on: device)
+
+        // Get last position logits: slice the last time step
+        let lastLogits = logits.slice(axis: 1, start: seqLen - 1, stop: seqLen)  // [1, 1, V]
+        let lastLogitsFlat = lastLogits.reshape([1, config.vocabSize])  // [1, V]
+
+        // Apply temperature
+        let scaled: Tensor<Float>
+        if temperature != 1.0 {
+            scaled = lastLogitsFlat / Tensor<Float>.full(lastLogitsFlat.shape, temperature, on: device)
+        } else {
+            scaled = lastLogitsFlat
+        }
+
+        // Softmax + multinomial sampling
+        let probs = scaled.softmax(dim: -1)
+        let nextToken = probs.multinomial(numSamples: 1)  // [1]
+        nextToken.markForMaterialization()
+        LazyTensorBarrier(on: device)
+
+        let tokenId = Int(nextToken.scalars()[0])
+        tokens.append(Float(tokenId))
+    }
+
+    return meta.decode(tokens.map { Int($0) })
+}
+
+// MARK: - Validation
+
+func evaluateValidation(
+    model: GPT2,
+    config: GPT2Config,
+    dataset: MemoryMappedTokenDataset,
+    causalMask: Tensor<Float>,
+    numBatches: Int,
+    batchSize: Int,
+    device: Device
+) -> Float {
+    var totalLoss: Float = 0
+
+    for _ in 0..<numBatches {
+        let (inputs, targets) = getRandomBatch(from: dataset, batchSize: batchSize, device: device)
+        inputs.markForMaterialization()
+        targets.markForMaterialization()
+        LazyTensorBarrier(on: device)
+
+        let weights = extractWeights(from: model, config: config)
+        let loss = gpt2Loss(weights: weights, input: inputs, targets: targets,
+                            causalMask: causalMask, config: config, dropoutRate: 0)
+        loss.markForMaterialization()
+        LazyTensorBarrier(on: device)
+        totalLoss += loss.scalars()[0]
+    }
+
+    return totalLoss / Float(numBatches)
 }
 
 // MARK: - Training
@@ -559,29 +694,73 @@ func trainShakespeare() {
     let device = Device(backend: .metal, index: 0)
     print("Device: \(MetalBackend.deviceName ?? "unknown")\n")
 
-    let config = GPT2Config.test
-    print("Model config:")
-    print("  - Vocab size: \(config.vocabSize)")
-    print("  - Block size: \(config.blockSize)")
-    print("  - Layers: \(config.nLayer)")
-    print("  - Heads: \(config.nHead)")
-    print("  - Embedding dim: \(config.nEmbd)\n")
+    // Load data
+    let dataDir = "data"
+    let trainPath = "\(dataDir)/train.bin"
+    let valPath = "\(dataDir)/val.bin"
+    let metaPath = "\(dataDir)/meta.json"
 
+    guard FileManager.default.fileExists(atPath: trainPath) else {
+        print("ERROR: Training data not found at \(trainPath)")
+        print("Run: python3 prepare_data.py")
+        return
+    }
+
+    let meta: VocabMeta
+    do {
+        meta = try loadMeta(path: metaPath)
+        print("Vocabulary: \(meta.vocabSize) characters")
+    } catch {
+        print("ERROR: Failed to load meta.json: \(error)")
+        return
+    }
+
+    let modelConfig = GPT2Config.shakespeareTiny
+    let trainCfg = TrainConfig.shakespeare
+
+    print("Model config:")
+    print("  Vocab size: \(modelConfig.vocabSize)")
+    print("  Block size: \(modelConfig.blockSize)")
+    print("  Layers: \(modelConfig.nLayer)")
+    print("  Heads: \(modelConfig.nHead)")
+    print("  Embedding dim: \(modelConfig.nEmbd)")
+    print("Training config:")
+    print("  Steps: \(trainCfg.numSteps)")
+    print("  Batch size: \(trainCfg.batchSize)")
+    print("  LR: \(trainCfg.learningRate) -> \(trainCfg.minLR)")
+    print("  Warmup: \(trainCfg.warmupSteps) steps")
+    print("  Weight decay: \(trainCfg.weightDecay)")
+    print()
+
+    // Load datasets
+    let trainDataset: MemoryMappedTokenDataset
+    let valDataset: MemoryMappedTokenDataset
+    do {
+        trainDataset = try MemoryMappedTokenDataset(path: trainPath, sequenceLength: modelConfig.blockSize)
+        valDataset = try MemoryMappedTokenDataset(path: valPath, sequenceLength: modelConfig.blockSize)
+        print("Train tokens: \(trainDataset.tokenCount)")
+        print("Val tokens: \(valDataset.tokenCount)")
+        print()
+    } catch {
+        print("ERROR: Failed to load datasets: \(error)")
+        return
+    }
+
+    // Create model
     print("Creating model...")
-    let model = GPT2(config: config, device: device)
+    let model = GPT2(config: modelConfig, device: device)
     let paramCount = model.parameterCount()
     print("Total parameters: \(paramCount) (\(String(format: "%.2f", Float(paramCount) / 1_000_000))M)")
 
-    // Materialize all model weights
     print("Materializing weights...")
     for param in model.parameters() {
         param.value.markForMaterialization()
-        LazyTensorBarrier(on: device)
     }
+    LazyTensorBarrier(on: device)
     print("Weights materialized.\n")
 
-    // Build causal mask (constant, not differentiated)
-    let seqLen = config.blockSize
+    // Build causal mask
+    let seqLen = modelConfig.blockSize
     var maskData = [Float](repeating: -1e9, count: seqLen * seqLen)
     for i in 0..<seqLen {
         for j in 0...i {
@@ -592,95 +771,132 @@ func trainShakespeare() {
     causalMask.markForMaterialization()
     LazyTensorBarrier(on: device)
 
-    // Create sample training data
-    print("Creating sample data...")
-    let batchSize = 4
+    // Optimizer + scheduler
+    var optimizer = optim.Adam(
+        parameters: model.parameters(),
+        lr: trainCfg.learningRate,
+        beta1: trainCfg.beta1,
+        beta2: trainCfg.beta2,
+        weightDecay: trainCfg.weightDecay
+    )
+    var scheduler = optim.WarmupCosineScheduler(
+        baseLR: trainCfg.learningRate,
+        warmupSteps: trainCfg.warmupSteps,
+        totalSteps: trainCfg.numSteps,
+        minLR: trainCfg.minLR
+    )
 
-    var inputData: [Float] = []
-    var targetData: [Float] = []
-    for _ in 0..<(batchSize * seqLen) {
-        let token = Float(Int.random(in: 0..<config.vocabSize))
-        inputData.append(token)
-        targetData.append(Float((Int(token) + 1) % config.vocabSize))
-    }
+    setbuf(stdout, nil)
 
-    let inputs = Tensor<Float>(inputData, shape: [batchSize, seqLen], on: device)
-    let targets = Tensor<Float>(targetData, shape: [batchSize, seqLen], on: device)
-    inputs.markForMaterialization()
-    targets.markForMaterialization()
-    LazyTensorBarrier(on: device)
+    print("Expected initial loss: ~\(String(format: "%.2f", log(Float(modelConfig.vocabSize))))")
+    print("Training for \(trainCfg.numSteps) steps...\n")
 
-    print("Input shape: \(inputs.shape)")
-    print("Target shape: \(targets.shape)")
-    print("Expected initial loss (random): ~\(String(format: "%.2f", log(Float(config.vocabSize))))\n")
+    var bestValLoss: Float = Float.infinity
+    let startTime = Date()
 
-    setbuf(stdout, nil)  // Disable output buffering
+    for step in 0..<trainCfg.numSteps {
+        let stepStart = Date()
 
-    // Training loop
-    let numSteps = 10
-    let lr: Float = 1e-3
-    var optimizer = optim.Adam(parameters: model.parameters(), lr: lr)
-    var losses: [Float] = []
+        // Update learning rate
+        optimizer.learningRate = scheduler.currentLR
+        let currentLR = scheduler.currentLR
 
-    print("Training for \(numSteps) steps (lr=\(lr))...\n")
-
-    for step in 0..<numSteps {
-        // Extract current weights
-        let weights = extractWeights(from: model, config: config)
+        // Get batch
+        let (inputs, targets) = getRandomBatch(from: trainDataset, batchSize: trainCfg.batchSize, device: device)
+        inputs.markForMaterialization()
+        targets.markForMaterialization()
+        LazyTensorBarrier(on: device)
 
         // Forward + backward
+        let weights = extractWeights(from: model, config: modelConfig)
         let (loss, grad) = valueWithGradient(at: weights) { w -> Tensor<Float> in
             gpt2Loss(weights: w, input: inputs, targets: targets,
-                     causalMask: causalMask, config: config)
+                     causalMask: causalMask, config: modelConfig, dropoutRate: modelConfig.dropout)
         }
 
-        // Materialize loss
         loss.markForMaterialization()
         LazyTensorBarrier(on: device)
         let lossVal = loss.scalars()[0]
-        losses.append(lossVal)
 
-        // Flatten gradients and materialize
+        // Flatten and materialize gradients
         let grads = flattenGradients(grad)
-        for g in grads {
-            g.markForMaterialization()
-        }
+        for g in grads { g.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
         // Gradient clipping
-        let (clippedGrads, _) = optim.clipGradNorm(grads, maxNorm: 1.0)
-        for g in clippedGrads {
-            g.markForMaterialization()
-        }
+        let (clippedGrads, gradNorm) = optim.clipGradNorm(grads, maxNorm: trainCfg.gradClipNorm)
+        for g in clippedGrads { g.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
         // Optimizer step
         optimizer.step(clippedGrads)
 
         // Materialize updated parameters
-        for param in model.parameters() {
-            param.value.markForMaterialization()
-        }
+        for param in model.parameters() { param.value.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
-        print("Step \(step + 1)/\(numSteps) | Loss: \(String(format: "%.4f", lossVal))")
+        // LR scheduler step
+        scheduler.step()
+
+        let stepTime = Date().timeIntervalSince(stepStart)
+
+        // Logging
+        if step % trainCfg.logInterval == 0 || step == trainCfg.numSteps - 1 {
+            gradNorm.markForMaterialization()
+            LazyTensorBarrier(on: device)
+            let normVal = gradNorm.scalars()[0]
+            let elapsed = Date().timeIntervalSince(startTime)
+            print(String(format: "step %4d | loss %.4f | lr %.2e | grad_norm %.2f | %.1fms/step | %.0fs elapsed",
+                         step, lossVal, currentLR, normVal, stepTime * 1000, elapsed))
+        }
+
+        // Validation
+        if step > 0 && step % trainCfg.evalInterval == 0 {
+            let valLoss = evaluateValidation(
+                model: model, config: modelConfig, dataset: valDataset,
+                causalMask: causalMask, numBatches: trainCfg.evalBatches,
+                batchSize: trainCfg.batchSize, device: device
+            )
+            let marker = valLoss < bestValLoss ? " *" : ""
+            if valLoss < bestValLoss { bestValLoss = valLoss }
+            print(String(format: "         val_loss %.4f%@", valLoss, marker))
+        }
+
+        // Text generation sample
+        if step > 0 && step % trainCfg.generateInterval == 0 {
+            print("\n--- Sample (step \(step)) ---")
+            let sample = generateSample(model: model, meta: meta, config: modelConfig,
+                                         device: device, numTokens: trainCfg.generateTokens)
+            print(sample)
+            print("--- End sample ---\n")
+        }
     }
 
-    // Summary
-    print("\n--- Training Summary ---")
-    print("Initial loss: \(String(format: "%.4f", losses.first ?? 0))")
-    print("Final loss:   \(String(format: "%.4f", losses.last ?? 0))")
-    if let first = losses.first, let last = losses.last {
-        let decreased = last < first
-        print("Loss decreased: \(decreased ? "YES" : "NO") (\(String(format: "%.4f", first - last)) reduction)")
-    }
-    print("\nTraining complete!")
+    // Final evaluation
+    print("\n" + String(repeating: "=", count: 60))
+    print("Training complete!")
+    let totalTime = Date().timeIntervalSince(startTime)
+    print(String(format: "Total time: %.1f seconds (%.1f min)", totalTime, totalTime / 60))
+
+    let finalValLoss = evaluateValidation(
+        model: model, config: modelConfig, dataset: valDataset,
+        causalMask: causalMask, numBatches: trainCfg.evalBatches * 2,
+        batchSize: trainCfg.batchSize, device: device
+    )
+    print(String(format: "Final val loss: %.4f (best: %.4f)", finalValLoss, bestValLoss))
+
+    // Final generation sample
+    print("\n--- Final Sample ---")
+    let finalSample = generateSample(model: model, meta: meta, config: modelConfig,
+                                      device: device, numTokens: 500, temperature: 0.8)
+    print(finalSample)
+    print("--- End ---")
 }
 
 // MARK: - Main
 
 print("╔════════════════════════════════════════════════════════════╗")
-print("║          GPT-2 Shakespeare - Magma Example                 ║")
+print("║        GPT-2 Shakespeare - Magma / MetalHLO              ║")
 print("╚════════════════════════════════════════════════════════════╝\n")
 
 trainShakespeare()

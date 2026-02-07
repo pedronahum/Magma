@@ -93,6 +93,18 @@ public final class CommonSubexpressionEliminationPass: OptimizationPass {
 
             switch irNode {
             case .operation(let opKind, let inputs, let attributes):
+                // RNG operations must never be CSE'd — each call produces
+                // independent random values even with identical inputs
+                if opKind == .rngUniform || opKind == .rngNormal {
+                    let resolvedInputs = inputs.map { input -> LazyTensorHandle in
+                        replacements[input.id] ?? input
+                    }
+                    if resolvedInputs != inputs {
+                        node.irNode = .operation(op: opKind, inputs: resolvedInputs, attributes: attributes)
+                    }
+                    break
+                }
+
                 // Apply existing replacements to inputs
                 let resolvedInputs = inputs.map { input -> LazyTensorHandle in
                     replacements[input.id] ?? input

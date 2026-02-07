@@ -15,7 +15,7 @@ The output files can be loaded in Magma using MemoryMappedTokenDataset.
 
 import os
 import json
-import numpy as np
+import struct
 import urllib.request
 
 # Configuration
@@ -84,7 +84,6 @@ def main():
     # Encode entire text
     print("Encoding text...")
     data = encode(text, stoi)
-    data = np.array(data, dtype=np.uint16)
     print(f"Total tokens: {len(data)}")
     print()
 
@@ -97,12 +96,14 @@ def main():
     print(f"Val tokens: {len(val_data)}")
     print()
 
-    # Save binary files
+    # Save binary files (UInt16 little-endian)
     train_path = os.path.join(DATA_DIR, "train.bin")
     val_path = os.path.join(DATA_DIR, "val.bin")
 
-    train_data.tofile(train_path)
-    val_data.tofile(val_path)
+    with open(train_path, 'wb') as f:
+        f.write(struct.pack(f'<{len(train_data)}H', *train_data))
+    with open(val_path, 'wb') as f:
+        f.write(struct.pack(f'<{len(val_data)}H', *val_data))
 
     print(f"Saved {train_path} ({os.path.getsize(train_path)} bytes)")
     print(f"Saved {val_path} ({os.path.getsize(val_path)} bytes)")
@@ -122,8 +123,10 @@ def main():
 
     # Verify
     print("Verifying...")
-    loaded = np.memmap(train_path, dtype=np.uint16, mode='r')
-    sample = decode(loaded[:100].tolist(), itos)
+    with open(train_path, 'rb') as f:
+        raw = f.read(200)  # 100 uint16 = 200 bytes
+        loaded = struct.unpack(f'<{len(raw)//2}H', raw)
+    sample = decode(list(loaded), itos)
     print(f"First 100 chars: {repr(sample)}")
     print()
 

@@ -852,6 +852,14 @@ public func computeBroadcastShape(_ lhs: [Int], _ rhs: [Int]) -> [Int]? {
 
 // MARK: - Arithmetic Operations
 
+/// When operands are on different devices (e.g. Tensor.zero on CPU + gradient on Metal),
+/// prefer the non-default device so results stay on the accelerator.
+private func resolveDevice(_ a: Device, _ b: Device) -> Device {
+    if a == b { return a }
+    if a == .default { return b }
+    return a
+}
+
 extension Tensor {
 
     /// Element-wise addition with broadcasting support.
@@ -872,7 +880,7 @@ extension Tensor {
             id: id,
             shape: resultShape,
             dtype: lhs.dtype,
-            device: lhs.device
+            device: resolveDevice(lhs.device, rhs.device)
         )
         handle.irNode = .operation(op: .add, inputs: [lhs.handle, rhs.handle], attributes: [:])
         TensorRegistry.shared.registerPending(handle)
@@ -893,7 +901,7 @@ extension Tensor {
             id: id,
             shape: resultShape,
             dtype: lhs.dtype,
-            device: lhs.device
+            device: resolveDevice(lhs.device, rhs.device)
         )
         handle.irNode = .operation(op: .subtract, inputs: [lhs.handle, rhs.handle], attributes: [:])
         TensorRegistry.shared.registerPending(handle)
@@ -914,7 +922,7 @@ extension Tensor {
             id: id,
             shape: resultShape,
             dtype: lhs.dtype,
-            device: lhs.device
+            device: resolveDevice(lhs.device, rhs.device)
         )
         handle.irNode = .operation(op: .multiply, inputs: [lhs.handle, rhs.handle], attributes: [:])
         TensorRegistry.shared.registerPending(handle)
@@ -935,7 +943,7 @@ extension Tensor {
             id: id,
             shape: resultShape,
             dtype: lhs.dtype,
-            device: lhs.device
+            device: resolveDevice(lhs.device, rhs.device)
         )
         handle.irNode = .operation(op: .divide, inputs: [lhs.handle, rhs.handle], attributes: [:])
         TensorRegistry.shared.registerPending(handle)
