@@ -7,6 +7,7 @@ import LazyTensor
 import XLARuntime
 import MLX
 import MLXNN
+import _Differentiation
 
 // MARK: - Benchmark Infrastructure
 
@@ -597,6 +598,201 @@ do {
     let result = BenchmarkResult(
         name: "Attention-Large",
         category: "compound",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+print()
+
+// MARK: - Gradient (Forward + Backward) Benchmarks
+
+print("═══════════════════════════════════════════════════════════════════════════")
+print("GRADIENT OPERATIONS (FORWARD + BACKWARD)")
+print("═══════════════════════════════════════════════════════════════════════════")
+
+// Differentiable weight struct for Magma gradient benchmarks
+struct MLPWeights: Differentiable {
+    var w1: Tensor<Float>
+    var w2: Tensor<Float>
+}
+
+// MLP forward+backward - Small
+do {
+    let batchSize = 32
+    let inputDim = 512
+    let hiddenDim = 1024
+    let outputDim = 256
+
+    // Magma setup
+    let magmaX = Tensor<Float>.ones([batchSize, inputDim], on: metal)
+    var magmaWeights = MLPWeights(
+        w1: Tensor<Float>.full([inputDim, hiddenDim], 0.01, on: metal),
+        w2: Tensor<Float>.full([hiddenDim, outputDim], 0.01, on: metal)
+    )
+    magmaX.markForMaterialization()
+    magmaWeights.w1.markForMaterialization()
+    magmaWeights.w2.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    // MLX setup
+    let mlxX = MLXArray.ones([batchSize, inputDim])
+    let mlxW1 = MLXArray.ones([inputDim, hiddenDim]) * Float(0.01)
+    let mlxW2 = MLXArray.ones([hiddenDim, outputDim]) * Float(0.01)
+    eval(mlxX, mlxW1, mlxW2)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, grads) = valueWithGradient(at: magmaWeights) { w -> Tensor<Float> in
+            let h = magmaX.matmul(w.w1).gelu()
+            return h.matmul(w.w2).sum()
+        }
+        loss.markForMaterialization()
+        grads.w1.markForMaterialization()
+        grads.w2.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxForwardBackward = MLX.valueAndGrad { (params: [MLXArray]) -> [MLXArray] in
+        let h = MLXNN.gelu(matmul(mlxX, params[0]))
+        return [matmul(h, params[1]).sum()]
+    }
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, _) = mlxForwardBackward([mlxW1, mlxW2])
+        eval(loss)
+    }
+
+    let result = BenchmarkResult(
+        name: "MLP-Grad-Small",
+        category: "gradient",
+        shape: "32x512->1024->256",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// MLP forward+backward - Large
+do {
+    let batchSize = 128
+    let inputDim = 1024
+    let hiddenDim = 4096
+    let outputDim = 1024
+
+    // Magma setup
+    let magmaX = Tensor<Float>.ones([batchSize, inputDim], on: metal)
+    var magmaWeights = MLPWeights(
+        w1: Tensor<Float>.full([inputDim, hiddenDim], 0.01, on: metal),
+        w2: Tensor<Float>.full([hiddenDim, outputDim], 0.01, on: metal)
+    )
+    magmaX.markForMaterialization()
+    magmaWeights.w1.markForMaterialization()
+    magmaWeights.w2.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    // MLX setup
+    let mlxX = MLXArray.ones([batchSize, inputDim])
+    let mlxW1 = MLXArray.ones([inputDim, hiddenDim]) * Float(0.01)
+    let mlxW2 = MLXArray.ones([hiddenDim, outputDim]) * Float(0.01)
+    eval(mlxX, mlxW1, mlxW2)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, grads) = valueWithGradient(at: magmaWeights) { w -> Tensor<Float> in
+            let h = magmaX.matmul(w.w1).gelu()
+            return h.matmul(w.w2).sum()
+        }
+        loss.markForMaterialization()
+        grads.w1.markForMaterialization()
+        grads.w2.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxForwardBackward = MLX.valueAndGrad { (params: [MLXArray]) -> [MLXArray] in
+        let h = MLXNN.gelu(matmul(mlxX, params[0]))
+        return [matmul(h, params[1]).sum()]
+    }
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, _) = mlxForwardBackward([mlxW1, mlxW2])
+        eval(loss)
+    }
+
+    let result = BenchmarkResult(
+        name: "MLP-Grad-Large",
+        category: "gradient",
+        shape: "128x1024->4096->1024",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// Attention forward+backward
+struct AttnWeights: Differentiable {
+    var q: Tensor<Float>
+    var k: Tensor<Float>
+    var v: Tensor<Float>
+}
+
+do {
+    let batch = 4
+    let heads = 16
+    let seqLen = 256
+    let headDim = 64
+
+    // Magma setup
+    var magmaWeights = AttnWeights(
+        q: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal),
+        k: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal),
+        v: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    )
+    magmaWeights.q.markForMaterialization()
+    magmaWeights.k.markForMaterialization()
+    magmaWeights.v.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    // MLX setup
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    let scaleLargeGrad = Float(1.0 / Foundation.sqrt(Float(headDim)))
+    eval(mlxQ, mlxK, mlxV)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, grads) = valueWithGradient(at: magmaWeights) { w -> Tensor<Float> in
+            let kT = w.k.transpose(-1, -2)
+            let scores = w.q.batchedMatmul(kT).softmax(dim: -1)
+            return scores.batchedMatmul(w.v).sum()
+        }
+        loss.markForMaterialization()
+        grads.q.markForMaterialization()
+        grads.k.markForMaterialization()
+        grads.v.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxAttnGrad = MLX.valueAndGrad { (params: [MLXArray]) -> [MLXArray] in
+        let kT = params[1].transposed(0, 1, 3, 2)
+        let scores = softmax(matmul(params[0], kT) * scaleLargeGrad, axis: -1)
+        return [matmul(scores, params[2]).sum()]
+    }
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, _) = mlxAttnGrad([mlxQ, mlxK, mlxV])
+        eval(loss)
+    }
+
+    let result = BenchmarkResult(
+        name: "Attention-Grad-Large",
+        category: "gradient",
         shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
         magmaMeanMs: magmaTime.mean,
         magmaMinMs: magmaTime.min,
