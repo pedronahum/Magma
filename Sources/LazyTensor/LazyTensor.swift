@@ -32,8 +32,19 @@ public final class LazyTensorHandle: @unchecked Sendable {
     /// Device where this tensor resides
     public let device: Device
 
+    /// Incremental structural hash — computed automatically when irNode is set.
+    /// Two structurally equivalent DAGs produce the same hash regardless of tensor IDs.
+    /// Used for fast-path cache lookup at barrier time.
+    public private(set) var structuralHash: UInt64 = 0
+
     /// The IR node that produces this tensor (nil if materialized)
-    public var irNode: IRNode?
+    public var irNode: IRNode? {
+        didSet {
+            if let node = irNode {
+                structuralHash = IRNode.computeIncrementalHash(node: node, shape: shape, dtype: dtype)
+            }
+        }
+    }
 
     /// Materialized buffer (nil if not yet computed)
     public var materializedBuffer: PJRTBuffer?
@@ -93,6 +104,71 @@ public indirect enum IRNode: @unchecked Sendable {
         bodyOutputs: [LazyTensorHandle],
         bodyNodes: [LazyTensorHandle]
     )
+
+
+    // MARK: - Incremental Hashing
+
+    /// Compute a structural hash for this node, incorporating input hashes recursively.
+    /// This enables O(1) graph hash computation at barrier time.
+    static func computeIncrementalHash(node: IRNode, shape: [Int], dtype: DType) -> UInt64 {
+        var hasher = Hasher()
+        hasher.combine(shape)
+        hasher.combine(dtype)
+
+        switch node {
+        case .data:
+            hasher.combine("data")
+
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            hasher.combine("data")
+        #endif
+
+        case .constant(_, let constShape):
+            // All constants are promoted (threshold = Int.max), so exclude values
+            hasher.combine("promoted_const")
+            hasher.combine(constShape)
+
+        case .operation(let op, let inputs, let attributes):
+            hasher.combine(op.rawValue)
+            // Incorporate input hashes in order — this captures DAG structure
+            for input in inputs {
+                hasher.combine(input.structuralHash)
+            }
+            IRNode.hashAttributes(attributes, into: &hasher)
+
+        case .whileLoopTraced(let iterations, let initialValues, _, let bodyOutputs, _):
+            hasher.combine("while")
+            hasher.combine(iterations)
+            for input in initialValues {
+                hasher.combine(input.structuralHash)
+            }
+            for output in bodyOutputs {
+                hasher.combine(output.structuralHash)
+            }
+        }
+
+        return UInt64(hasher.finalize().magnitude)
+    }
+
+    /// Hash operation attributes in a stable, sorted order.
+    static func hashAttributes(_ attributes: [String: Any], into hasher: inout Hasher) {
+        for (key, value) in attributes.sorted(by: { $0.key < $1.key }) {
+            hasher.combine(key)
+            switch value {
+            case let v as Int: hasher.combine(v)
+            case let v as Float: hasher.combine(v)
+            case let v as Double: hasher.combine(v)
+            case let v as Bool: hasher.combine(v)
+            case let v as String: hasher.combine(v)
+            case let v as [Int]: v.forEach { hasher.combine($0) }
+            case let v as [Float]: v.forEach { hasher.combine($0) }
+            case let v as [[Int]]: v.forEach { inner in inner.forEach { hasher.combine($0) } }
+            default:
+                hasher.combine(String(describing: value))
+            }
+        }
+    }
 }
 
 // MARK: - Operation Kinds
@@ -464,9 +540,36 @@ public final class CompilationCache: @unchecked Sendable {
     }
 }
 
+// MARK: - Cached Graph Metadata
+
+/// Metadata stored alongside a cached executable to enable fast-path
+/// buffer assembly without re-analyzing the graph.
+public struct CachedGraphMetadata: Sendable {
+    /// Number of data (on-device buffer) inputs expected
+    public let dataInputCount: Int
+
+    /// Promoted constant slot descriptors, in input order
+    public let promotedConstantSlots: [PromotedConstantSlot]
+
+    /// Total number of outputs
+    public let outputCount: Int
+}
+
+/// Describes a promoted constant input slot (shape/dtype only, no values).
+public struct PromotedConstantSlot: Sendable {
+    public let shape: [Int]
+    public let dtype: DType
+}
+
 // MARK: - Metal Compilation Cache
 
 #if os(macOS) && canImport(MetalHLO)
+
+/// Cache entry combining executable and metadata for fast-path replay.
+public struct MetalCacheEntry: Sendable {
+    public let executable: MetalHLOExecutable
+    public let metadata: CachedGraphMetadata
+}
 
 /// Cache for compiled Metal executables
 public final class MetalCompilationCache: @unchecked Sendable {
@@ -474,26 +577,43 @@ public final class MetalCompilationCache: @unchecked Sendable {
     /// Shared cache instance
     public static let shared = MetalCompilationCache()
 
-    /// Cache entries keyed by structural hash
+    /// Slow-path cache keyed by post-optimization structural hash
     private var cache: [String: MetalHLOExecutable] = [:]
+
+    /// Fast-path cache keyed by incremental (pre-optimization) hash
+    private var fastCache: [UInt64: MetalCacheEntry] = [:]
 
     /// Lock for thread safety
     private let lock = NSLock()
 
     private init() {}
 
-    /// Look up a cached executable
+    /// Look up a cached executable (slow path, post-optimization hash)
     public func get(hash: String) -> MetalHLOExecutable? {
         lock.lock()
         defer { lock.unlock() }
         return cache[hash]
     }
 
-    /// Store an executable in the cache
+    /// Store an executable in the cache (slow path)
     public func put(hash: String, executable: MetalHLOExecutable) {
         lock.lock()
         defer { lock.unlock() }
         cache[hash] = executable
+    }
+
+    /// Look up a cached entry by incremental hash (fast path)
+    public func getFast(hash: UInt64) -> MetalCacheEntry? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fastCache[hash]
+    }
+
+    /// Store a cache entry by incremental hash (fast path)
+    public func putFast(hash: UInt64, entry: MetalCacheEntry) {
+        lock.lock()
+        defer { lock.unlock() }
+        fastCache[hash] = entry
     }
 
     /// Clear all cached entries
@@ -501,18 +621,21 @@ public final class MetalCompilationCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
+        fastCache.removeAll()
         hitCount = 0
         missCount = 0
+        fastHitCount = 0
     }
 
     /// Cache statistics
     public var hitCount: Int = 0
     public var missCount: Int = 0
+    public var fastHitCount: Int = 0
 
     /// Cache hit rate
     public var hitRate: Double {
-        let total = hitCount + missCount
-        return total > 0 ? Double(hitCount) / Double(total) : 0
+        let total = hitCount + missCount + fastHitCount
+        return total > 0 ? Double(hitCount + fastHitCount) / Double(total) : 0
     }
 }
 
@@ -737,36 +860,165 @@ public func LazyTensorBarrier(on device: Device = .default) {
 #if os(macOS) && canImport(MetalHLO)
 import MetalHLO
 
+/// Compute a fast-path cache key from output tensors' incremental hashes.
+/// This is O(n) in the number of outputs, not O(graph_size).
+private func computeFastPathHash(outputs: [LazyTensorHandle]) -> UInt64 {
+    var hasher = Hasher()
+    hasher.combine(outputs.count)
+    for output in outputs {
+        hasher.combine(output.structuralHash)
+        hasher.combine(output.shape)
+        hasher.combine(output.dtype)
+    }
+    return UInt64(hasher.finalize().magnitude)
+}
+
+/// Lightweight input collection from output tensors for the fast path.
+/// Walks the DAG from outputs collecting leaf nodes (data/metalData and constants)
+/// in topological order, without building a full IRGraph or running optimization.
+///
+/// Returns (dataBuffers, constants) in the order the executable expects.
+private func collectInputsFastPath(
+    outputs: [LazyTensorHandle]
+) -> (dataInputs: [LazyTensorHandle], constants: [(values: [Float], shape: [Int])]) {
+    var dataInputs: [LazyTensorHandle] = []
+    var constants: [(values: [Float], shape: [Int])] = []
+    var visited = Set<UInt64>()
+
+    func visit(_ handle: LazyTensorHandle) {
+        guard !visited.contains(handle.id) else { return }
+        visited.insert(handle.id)
+
+        guard let node = handle.irNode else { return }
+        switch node {
+        case .metalData, .data:
+            dataInputs.append(handle)
+
+        case .constant(let values, let shape):
+            constants.append((values: values, shape: shape))
+
+        case .operation(_, let inputs, _):
+            for input in inputs {
+                visit(input)
+            }
+
+        case .whileLoopTraced(_, let initialValues, _, _, _):
+            for input in initialValues {
+                visit(input)
+            }
+        }
+    }
+
+    for output in outputs {
+        visit(output)
+    }
+
+    return (dataInputs, constants)
+}
+
 /// Metal-specific lazy tensor barrier
 ///
-/// This function handles execution on Metal GPUs via MetalHLO.
-/// It follows the same pattern as the PJRT-based barrier but uses MetalHLO for compilation and execution.
+/// Uses a two-tier cache: the fast path checks the incremental (pre-optimization) hash
+/// and skips graph building, optimization, and MLIR emission entirely on cache hit.
+/// The slow path falls through to the full pipeline on cache miss.
 private func MetalLazyTensorBarrier(on device: Device) {
     // 1. Collect all pending tensors for this device
     let pending = TensorRegistry.shared.takePending(for: device)
     if pending.isEmpty {
-        return // Nothing to execute
+        return
     }
 
-    // Find all outputs (tensors that need to be materialized)
     let outputs = pending.filter { !$0.isMaterialized }
     if outputs.isEmpty {
         return
     }
 
-    // Mark outputs as live (for future memory optimization)
     for output in outputs {
         output.isLive = true
     }
 
-    // 2. Build IR graph
+    let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
+    let cache = MetalCompilationCache.shared
+
+    // 2. Fast-path: check incremental hash before building any graph
+    let fastHash = computeFastPathHash(outputs: outputs)
+
+    if let entry = cache.getFast(hash: fastHash) {
+        cache.fastHitCount += 1
+
+        if debugEnabled {
+            print("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
+        }
+
+        // Collect inputs by lightweight DAG walk (no IRGraph, no optimization)
+        let (dataInputHandles, constantInputs) = collectInputsFastPath(outputs: outputs)
+
+        // Sanity check: input counts must match
+        let expectedDataCount = entry.metadata.dataInputCount
+        let expectedConstCount = entry.metadata.promotedConstantSlots.count
+        if dataInputHandles.count == expectedDataCount && constantInputs.count == expectedConstCount {
+            // Assemble input buffers
+            var inputBuffers: [MetalHLOBuffer] = []
+
+            // Data inputs
+            for handle in dataInputHandles {
+                if case .metalData(let metalBuffer) = handle.irNode {
+                    inputBuffers.append(metalBuffer)
+                } else if case .data(let pjrtBuffer) = handle.irNode {
+                    do {
+                        let client = try getMetalHLOClient()
+                        let hostData = try pjrtBuffer.toFloatArray()
+                        let metalBuffer = client.createBuffer(hostData, shape: handle.shape)
+                        inputBuffers.append(metalBuffer)
+                    } catch {
+                        print("Magma [Metal]: Fast-path PJRT conversion failed: \(error)")
+                        return
+                    }
+                }
+            }
+
+            // Promoted constant inputs
+            do {
+                let client = try getMetalHLOClient()
+                for constant in constantInputs {
+                    let buffer = client.createBuffer(constant.values, shape: constant.shape)
+                    inputBuffers.append(buffer)
+                }
+            } catch {
+                print("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
+                return
+            }
+
+            // Execute and update handles
+            do {
+                let outputBuffers = try entry.executable.execute(inputBuffers)
+                for (i, output) in outputs.enumerated() {
+                    if i < outputBuffers.count {
+                        output.materializedBuffer = nil
+                        output.irNode = .metalData(outputBuffers[i])
+                    }
+                }
+                return  // Fast path succeeded
+            } catch {
+                print("Magma [Metal]: Fast-path execution failed: \(error)")
+                return
+            }
+        } else if debugEnabled {
+            print("Magma [Metal]: Fast-path sanity check failed (data: \(dataInputHandles.count)/\(expectedDataCount), const: \(constantInputs.count)/\(expectedConstCount)), falling through to slow path")
+        }
+        // Fall through to slow path on sanity check failure
+    }
+
+    // ── Slow path: full graph build → optimize → emit → compile ──
+
+    // 3. Build IR graph
     let graph = IRGraph()
     for output in outputs {
         graph.addOutput(output)
     }
     graph.buildTopologicalOrder()
 
-    // 3. Validate graph (catch errors early with better messages)
+    // 4. Validate graph
     do {
         try graph.validate()
     } catch {
@@ -774,13 +1026,13 @@ private func MetalLazyTensorBarrier(on device: Device) {
         return
     }
 
-    // 3.5. Run optimization passes
+    // 5. Run optimization passes
     let optimizedGraph: IRGraph
     if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
         let passManager = PassManager.shared
         optimizedGraph = passManager.run(on: graph)
 
-        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+        if debugEnabled {
             let originalCount = graph.nodes.count
             let optimizedCount = optimizedGraph.nodes.count
             if originalCount != optimizedCount {
@@ -791,14 +1043,11 @@ private func MetalLazyTensorBarrier(on device: Device) {
         optimizedGraph = graph
     }
 
-    // Use optimized graph from here on
-
-    // 4. Analyze for constant promotion
+    // 6. Analyze for constant promotion
     let promotionResult = optimizedGraph.analyzeForConstantPromotion()
     let structuralHash = promotionResult.structuralHash
 
-    // 5. Check Metal compilation cache using structural hash
-    let cache = MetalCompilationCache.shared
+    // 7. Check slow-path cache
     var executable: MetalHLOExecutable
     if let cached = cache.get(hash: structuralHash) {
         cache.hitCount += 1
@@ -806,42 +1055,35 @@ private func MetalLazyTensorBarrier(on device: Device) {
     } else {
         cache.missCount += 1
 
-        // 6. Emit StableHLO MLIR with constant promotion
+        // 8. Emit StableHLO MLIR
         let emitter = StableHLOEmitter(graph: optimizedGraph)
         let mlir = emitter.emit(
             name: "metal_graph_\(structuralHash.prefix(8))",
             promotedConstants: promotionResult.promotedConstants
         )
 
-        // Debug: Print the MLIR being generated (opt-in via MAGMA_DEBUG=1)
-        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+        if debugEnabled {
             print("Magma [Metal]: Generated MLIR:")
             print(mlir)
-            print("Magma [Metal]: Promoted constants count: \(promotionResult.promotedConstants.count)")
-            print("Magma [Metal]: Was promoted: \(promotionResult.wasPromoted)")
         }
 
-        // 7. Compile via MetalHLO with O3 optimization
+        // 9. Compile
         do {
             let client = try getMetalHLOClient()
             executable = try client.compile(mlir)
 
-            if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+            if debugEnabled {
                 print("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
             }
 
             cache.put(hash: structuralHash, executable: executable)
         } catch {
-            // Always write failing MLIR to debug file for first unique failure
             let debugPath = "/tmp/magma_metal_debug_\(structuralHash.prefix(8)).mlir"
             if !FileManager.default.fileExists(atPath: debugPath) {
                 print("Magma [Metal]: MLIR that failed to compile (hash=\(structuralHash.prefix(8))):")
                 print(mlir.prefix(3000))
-                print("... (truncated)")
                 if let data = mlir.data(using: .utf8) {
-                    let url = URL(fileURLWithPath: debugPath)
-                    try? data.write(to: url)
-                    print("Magma [Metal]: Full MLIR written to \(debugPath)")
+                    try? data.write(to: URL(fileURLWithPath: debugPath))
                 }
             }
             print("Magma [Metal]: Compilation failed: \(error)")
@@ -849,25 +1091,32 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
     }
 
-    // 8. Collect input buffers
-    // For Metal, we handle: metalData (on-device), data (PJRT), and promoted constants
+    // Store in fast cache for future iterations
+    let dataInputCount = optimizedGraph.nodes.filter { node in
+        if case .data = node.irNode { return true }
+        if case .metalData = node.irNode { return true }
+        return false
+    }.count
+    let metadata = CachedGraphMetadata(
+        dataInputCount: dataInputCount,
+        promotedConstantSlots: promotionResult.promotedConstants
+            .sorted(by: { $0.inputIndex < $1.inputIndex })
+            .map { PromotedConstantSlot(shape: $0.shape, dtype: $0.dtype) },
+        outputCount: outputs.count
+    )
+    cache.putFast(hash: fastHash, entry: MetalCacheEntry(executable: executable, metadata: metadata))
 
+    // 10. Collect input buffers
     var inputBuffers: [MetalHLOBuffer] = []
 
-    // First: data nodes — either already on Metal (.metalData) or from PJRT (.data)
     for node in optimizedGraph.nodes {
         if case .metalData(let metalBuffer) = node.irNode {
-            // Already on GPU — pass directly, zero copy
             inputBuffers.append(metalBuffer)
         } else if case .data(let pjrtBuffer) = node.irNode {
-            // Transfer PJRT buffer data to Metal (cross-backend fallback)
             do {
                 let client = try getMetalHLOClient()
                 let hostData = try pjrtBuffer.toFloatArray()
-                let metalBuffer = client.createBuffer(
-                    hostData,
-                    shape: node.shape
-                )
+                let metalBuffer = client.createBuffer(hostData, shape: node.shape)
                 inputBuffers.append(metalBuffer)
             } catch {
                 print("Magma [Metal]: Failed to convert PJRT buffer to Metal: \(error)")
@@ -876,57 +1125,30 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
     }
 
-    let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
-
-    // Second: promoted constants (need to create buffers for their values)
     if promotionResult.wasPromoted {
         do {
             let client = try getMetalHLOClient()
             for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
-                if debugEnabled {
-                    print("Magma [Metal]: Promoted constant \(promoted.inputIndex) - shape: \(promoted.shape), values count: \(promoted.values.count), first 5: \(Array(promoted.values.prefix(5)))")
-                }
-                // Use optimized non-throwing createBuffer for Float arrays
-                let buffer = client.createBuffer(
-                    promoted.values,
-                    shape: promoted.shape
-                )
+                let buffer = client.createBuffer(promoted.values, shape: promoted.shape)
                 inputBuffers.append(buffer)
             }
         } catch {
-            print("Magma [Metal]: Failed to create buffers for promoted constants: \(error)")
+            print("Magma [Metal]: Failed to create constant buffers: \(error)")
             return
         }
     }
 
-    if debugEnabled {
-        print("Magma [Metal]: Input buffers count: \(inputBuffers.count)")
-        print("Magma [Metal]: Outputs to materialize: \(outputs.count)")
-        for (i, output) in outputs.enumerated() {
-            print("Magma [Metal]: Output \(i) handle ID: \(output.id), shape: \(output.shape)")
-        }
-    }
-
-    // 9. Execute
+    // 11. Execute
     do {
         let outputBuffers = try executable.execute(inputBuffers)
-
-        if debugEnabled {
-            print("Magma [Metal]: Output buffers received: \(outputBuffers.count)")
-        }
-
-        // 10. Update tensor handles with results
-        // Keep data on GPU as .metalData — no D2H copy.
-        // Data only transfers to host when user explicitly reads values (e.g. scalars()).
         for (i, output) in outputs.enumerated() {
             if i < outputBuffers.count {
-                let metalBuffer = outputBuffers[i]
                 output.materializedBuffer = nil
-                output.irNode = .metalData(metalBuffer)
+                output.irNode = .metalData(outputBuffers[i])
 
                 if debugEnabled {
-                    let hostData = try metalBuffer.toFloatArray()
-                    print("Magma [Metal]: Output \(i) - shape: \(output.shape), data count: \(hostData.count), first few: \(Array(hostData.prefix(5)))")
+                    let hostData = try outputBuffers[i].toFloatArray()
+                    print("Magma [Metal]: Output \(i) - shape: \(output.shape), first few: \(Array(hostData.prefix(5)))")
                 }
             }
         }
