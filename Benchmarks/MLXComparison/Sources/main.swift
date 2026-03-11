@@ -662,8 +662,9 @@ do {
         return [matmul(h, params[1]).sum()]
     }
     let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
-        let (loss, _) = mlxForwardBackward([mlxW1, mlxW2])
+        let (loss, grads) = mlxForwardBackward([mlxW1, mlxW2])
         eval(loss)
+        eval(grads)
     }
 
     let result = BenchmarkResult(
@@ -719,8 +720,9 @@ do {
         return [matmul(h, params[1]).sum()]
     }
     let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
-        let (loss, _) = mlxForwardBackward([mlxW1, mlxW2])
+        let (loss, grads) = mlxForwardBackward([mlxW1, mlxW2])
         eval(loss)
+        eval(grads)
     }
 
     let result = BenchmarkResult(
@@ -786,8 +788,9 @@ do {
         return [matmul(scores, params[2]).sum()]
     }
     let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
-        let (loss, _) = mlxAttnGrad([mlxQ, mlxK, mlxV])
+        let (loss, grads) = mlxAttnGrad([mlxQ, mlxK, mlxV])
         eval(loss)
+        eval(grads)
     }
 
     let result = BenchmarkResult(

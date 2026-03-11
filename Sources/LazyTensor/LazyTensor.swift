@@ -595,6 +595,11 @@ public struct PromotedConstantSlot: Sendable {
 public struct MetalCacheEntry: Sendable {
     public let executable: MetalHLOExecutable
     public let metadata: CachedGraphMetadata
+    /// Values for each promoted constant slot, in input order.
+    /// Stored so the fast path can re-create constant buffers without re-traversing
+    /// the (pre-optimization) graph — which would find different constants than the
+    /// post-optimization graph the executable was compiled from.
+    public let promotedConstantValues: [[Float]]
 }
 
 /// Cache for compiled Metal executables
@@ -936,11 +941,13 @@ private func computeFastPathHash(outputs: [LazyTensorHandle]) -> UInt64 {
 /// in topological order, without building a full IRGraph or running optimization.
 ///
 /// Returns (dataBuffers, constants) in the order the executable expects.
-private func collectInputsFastPath(
+/// Lightweight DAG walk that collects only data inputs (`.metalData` / `.data` nodes).
+/// Constants are NOT collected here — the fast path uses cached constant values from
+/// the `MetalCacheEntry` instead of re-traversing the pre-optimization graph.
+private func collectDataInputsFastPath(
     outputs: [LazyTensorHandle]
-) -> (dataInputs: [LazyTensorHandle], constants: [(values: [Float], shape: [Int])]) {
+) -> [LazyTensorHandle] {
     var dataInputs: [LazyTensorHandle] = []
-    var constants: [(values: [Float], shape: [Int])] = []
     var visited = Set<UInt64>()
 
     func visit(_ handle: LazyTensorHandle) {
@@ -952,8 +959,8 @@ private func collectInputsFastPath(
         case .metalData, .data:
             dataInputs.append(handle)
 
-        case .constant(let values, let shape):
-            constants.append((values: values, shape: shape))
+        case .constant:
+            break  // skip — constants come from cache entry
 
         case .operation(_, let inputs, _):
             for input in inputs {
@@ -971,14 +978,16 @@ private func collectInputsFastPath(
         visit(output)
     }
 
-    return (dataInputs, constants)
+    return dataInputs
 }
+
 
 /// Metal-specific lazy tensor barrier
 ///
 /// Uses a two-tier cache: the fast path checks the incremental (pre-optimization) hash
 /// and skips graph building, optimization, and MLIR emission entirely on cache hit.
 /// The slow path falls through to the full pipeline on cache miss.
+
 private func MetalLazyTensorBarrier(on device: Device) {
     // 1. Collect all pending tensors for this device
     let pending = TensorRegistry.shared.takePending(for: device)
@@ -1002,23 +1011,22 @@ private func MetalLazyTensorBarrier(on device: Device) {
     let fastHash = computeFastPathHash(outputs: outputs)
 
     if let entry = cache.getFast(hash: fastHash) {
-        cache.fastHitCount += 1
+        // Collect data inputs only (no constant traversal — constants come from cache entry)
+        let dataInputHandles = collectDataInputsFastPath(outputs: outputs)
 
-        if debugEnabled {
-            print("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
-        }
+        // Sanity check: data input count must match
+        if dataInputHandles.count == entry.metadata.dataInputCount {
+            cache.fastHitCount += 1
 
-        // Collect inputs by lightweight DAG walk (no IRGraph, no optimization)
-        let (dataInputHandles, constantInputs) = collectInputsFastPath(outputs: outputs)
+            if debugEnabled {
+                print("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
+            }
 
-        // Sanity check: input counts must match
-        let expectedDataCount = entry.metadata.dataInputCount
-        let expectedConstCount = entry.metadata.promotedConstantSlots.count
-        if dataInputHandles.count == expectedDataCount && constantInputs.count == expectedConstCount {
-            // Assemble input buffers
+            // Assemble input buffers: data inputs first, then cached constant values
             var inputBuffers: [MetalHLOBuffer] = []
 
             // Data inputs
+            var fastPathFailed = false
             for handle in dataInputHandles {
                 if case .metalData(let metalBuffer) = handle.irNode {
                     inputBuffers.append(metalBuffer)
@@ -1030,41 +1038,45 @@ private func MetalLazyTensorBarrier(on device: Device) {
                         inputBuffers.append(metalBuffer)
                     } catch {
                         print("Magma [Metal]: Fast-path PJRT conversion failed: \(error)")
-                        return
+                        fastPathFailed = true
+                        break
                     }
                 }
             }
 
-            // Promoted constant inputs
-            do {
-                let client = try getMetalHLOClient()
-                for constant in constantInputs {
-                    let buffer = client.createBuffer(constant.values, shape: constant.shape)
-                    inputBuffers.append(buffer)
+            if !fastPathFailed {
+                // Promoted constant inputs — use cached values (avoids re-traversing pre-opt graph)
+                do {
+                    let client = try getMetalHLOClient()
+                    for (i, values) in entry.promotedConstantValues.enumerated() {
+                        let slot = entry.metadata.promotedConstantSlots[i]
+                        let buffer = client.createBuffer(values, shape: slot.shape)
+                        inputBuffers.append(buffer)
+                    }
+                } catch {
+                    print("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
+                    fastPathFailed = true
                 }
-            } catch {
-                print("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
-                return
             }
 
-            // Execute and update handles
-            do {
-                let outputBuffers = try entry.executable.execute(inputBuffers)
-                for (i, output) in outputs.enumerated() {
-                    if i < outputBuffers.count {
-                        output.materializedBuffer = nil
-                        output.irNode = .metalData(outputBuffers[i])
+            if !fastPathFailed {
+                // Execute and update handles
+                do {
+                    let outputBuffers = try entry.executable.execute(inputBuffers)
+                    for (i, output) in outputs.enumerated() {
+                        if i < outputBuffers.count {
+                            output.materializedBuffer = nil
+                            output.irNode = .metalData(outputBuffers[i])
+                        }
                     }
+                    return  // Fast path succeeded
+                } catch {
+                    print("Magma [Metal]: Fast-path execution failed: \(error)")
+                    return
                 }
-                return  // Fast path succeeded
-            } catch {
-                print("Magma [Metal]: Fast-path execution failed: \(error)")
-                return
             }
-        } else if debugEnabled {
-            print("Magma [Metal]: Fast-path sanity check failed (data: \(dataInputHandles.count)/\(expectedDataCount), const: \(constantInputs.count)/\(expectedConstCount)), falling through to slow path")
         }
-        // Fall through to slow path on sanity check failure
+        // Fall through to slow path if data count mismatches or execution failed
     }
 
     // ── Slow path: full graph build → optimize → emit → compile ──
@@ -1167,14 +1179,18 @@ private func MetalLazyTensorBarrier(on device: Device) {
         if case .metalData = node.irNode { return true }
         return false
     }.count
+    let sortedPromoted = promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex })
     let metadata = CachedGraphMetadata(
         dataInputCount: dataInputCount,
-        promotedConstantSlots: promotionResult.promotedConstants
-            .sorted(by: { $0.inputIndex < $1.inputIndex })
-            .map { PromotedConstantSlot(shape: $0.shape, dtype: $0.dtype) },
+        promotedConstantSlots: sortedPromoted.map { PromotedConstantSlot(shape: $0.shape, dtype: $0.dtype) },
         outputCount: outputs.count
     )
-    cache.putFast(hash: fastHash, entry: MetalCacheEntry(executable: executable, metadata: metadata))
+    let promotedConstantValues = sortedPromoted.map { $0.values }
+    cache.putFast(hash: fastHash, entry: MetalCacheEntry(
+        executable: executable,
+        metadata: metadata,
+        promotedConstantValues: promotedConstantValues
+    ))
 
     // 10. Collect input buffers
     var inputBuffers: [MetalHLOBuffer] = []
