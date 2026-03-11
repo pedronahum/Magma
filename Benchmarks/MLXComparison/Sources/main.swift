@@ -7,6 +7,7 @@ import LazyTensor
 import XLARuntime
 import MLX
 import MLXNN
+import MLXFast
 import _Differentiation
 
 // MARK: - Benchmark Infrastructure
@@ -796,6 +797,221 @@ do {
     let result = BenchmarkResult(
         name: "Attention-Grad-Large",
         category: "gradient",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+print()
+
+// MARK: - FlashAttention (Fused SDPA) Benchmarks
+
+print("═══════════════════════════════════════════════════════════════════════════")
+print("FLASH ATTENTION — FUSED SCALED DOT-PRODUCT ATTENTION")
+print("═══════════════════════════════════════════════════════════════════════════")
+print("  Magma: nn.scaledDotProductAttention  |  MLX: MLXFast.scaledDotProductAttention")
+print()
+
+// FlashAttention forward - Small
+do {
+    let batch = 2
+    let heads = 8
+    let seqLen = 64
+    let headDim = 64
+    let scale = Float(1.0 / Foundation.sqrt(Float(headDim)))
+
+    let magmaQ = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaK = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaV = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    magmaQ.markForMaterialization(); magmaK.markForMaterialization(); magmaV.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    eval(mlxQ, mlxK, mlxV)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (output, _) = nn.scaledDotProductAttention(query: magmaQ, key: magmaK, value: magmaV)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let output = MLXFast.scaledDotProductAttention(queries: mlxQ, keys: mlxK, values: mlxV, scale: scale, mask: nil)
+        eval(output)
+    }
+
+    let result = BenchmarkResult(
+        name: "FlashAttn-Small",
+        category: "flash_attention",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// FlashAttention forward - Large (seqLen=512, where memory savings are significant)
+do {
+    let batch = 4
+    let heads = 16
+    let seqLen = 512
+    let headDim = 64
+    let scale = Float(1.0 / Foundation.sqrt(Float(headDim)))
+
+    let magmaQ = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaK = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaV = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    magmaQ.markForMaterialization(); magmaK.markForMaterialization(); magmaV.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    eval(mlxQ, mlxK, mlxV)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (output, _) = nn.scaledDotProductAttention(query: magmaQ, key: magmaK, value: magmaV)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let output = MLXFast.scaledDotProductAttention(queries: mlxQ, keys: mlxK, values: mlxV, scale: scale, mask: nil)
+        eval(output)
+    }
+
+    let result = BenchmarkResult(
+        name: "FlashAttn-Large",
+        category: "flash_attention",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// FlashAttention forward - XLarge (seqLen=1024)
+do {
+    let batch = 2
+    let heads = 16
+    let seqLen = 1024
+    let headDim = 64
+    let scale = Float(1.0 / Foundation.sqrt(Float(headDim)))
+
+    let magmaQ = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaK = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaV = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    magmaQ.markForMaterialization(); magmaK.markForMaterialization(); magmaV.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    eval(mlxQ, mlxK, mlxV)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (output, _) = nn.scaledDotProductAttention(query: magmaQ, key: magmaK, value: magmaV)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let output = MLXFast.scaledDotProductAttention(queries: mlxQ, keys: mlxK, values: mlxV, scale: scale, mask: nil)
+        eval(output)
+    }
+
+    let result = BenchmarkResult(
+        name: "FlashAttn-XLarge",
+        category: "flash_attention",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+print()
+
+// FlashAttention forward+backward
+print("FlashAttention forward+backward:")
+print()
+
+struct SDPAWeights: Differentiable {
+    var q: Tensor<Float>
+    var k: Tensor<Float>
+    var v: Tensor<Float>
+}
+
+// FlashAttention gradient - Large
+do {
+    let batch = 4
+    let heads = 16
+    let seqLen = 512
+    let headDim = 64
+    let scale = Float(1.0 / Foundation.sqrt(Float(headDim)))
+
+    var magmaWeights = SDPAWeights(
+        q: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal),
+        k: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal),
+        v: Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    )
+    magmaWeights.q.markForMaterialization()
+    magmaWeights.k.markForMaterialization()
+    magmaWeights.v.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    eval(mlxQ, mlxK, mlxV)
+
+    let sdpaScale = Tensor<Float>.full([], Float(1.0 / Foundation.sqrt(Float(headDim))), on: metal)
+    sdpaScale.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, grads) = valueWithGradient(at: magmaWeights) { w -> Tensor<Float> in
+            let kT = w.k.transpose(-1, -2)
+            let scores = w.q.batchedMatmul(kT) * sdpaScale
+            let attnWeights = scores.softmax(dim: -1)
+            return attnWeights.batchedMatmul(w.v).sum()
+        }
+        loss.markForMaterialization()
+        grads.q.markForMaterialization()
+        grads.k.markForMaterialization()
+        grads.v.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxGradFn = MLX.valueAndGrad { (params: [MLXArray]) -> [MLXArray] in
+        let out = MLXFast.scaledDotProductAttention(queries: params[0], keys: params[1], values: params[2], scale: scale, mask: nil)
+        return [out.sum()]
+    }
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let (loss, grads) = mlxGradFn([mlxQ, mlxK, mlxV])
+        eval(loss)
+        eval(grads)
+    }
+
+    let result = BenchmarkResult(
+        name: "FlashAttn-Grad-Large",
+        category: "flash_attention",
         shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
         magmaMeanMs: magmaTime.mean,
         magmaMinMs: magmaTime.min,

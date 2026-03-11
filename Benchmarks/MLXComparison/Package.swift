@@ -15,6 +15,7 @@ let package = Package(
                 .product(name: "Magma", package: "Magma"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
             ],
             path: "Sources"
         ),
