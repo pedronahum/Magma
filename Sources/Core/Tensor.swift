@@ -598,10 +598,23 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             }
         }
 
-        // If this is a constant (including Metal-materialized tensors), return values directly
+        // If this is a constant, return values directly
         if case .constant(let values, _) = handle.irNode {
             return convertFloatArrayToScalar(values)
         }
+
+        // If this is a Metal device buffer, transfer to host lazily (only when user reads)
+        #if os(macOS) && canImport(MetalHLO)
+        if case .metalData(let metalBuffer) = handle.irNode {
+            do {
+                let floats = try metalBuffer.toFloatArray()
+                return convertFloatArrayToScalar(floats)
+            } catch {
+                print("Magma: Failed to transfer Metal buffer to host: \(error)")
+                return []
+            }
+        }
+        #endif
 
         // Mark this tensor for materialization and trigger computation
         TensorRegistry.shared.markForMaterialization(handle)
@@ -623,10 +636,23 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             }
         }
 
-        // Check for constant (Metal backend stores results as constants)
+        // Check for constant (fallback after barrier)
         if case .constant(let values, _) = handle.irNode {
             return convertFloatArrayToScalar(values)
         }
+
+        // Check for Metal buffer (fallback after barrier)
+        #if os(macOS) && canImport(MetalHLO)
+        if case .metalData(let metalBuffer) = handle.irNode {
+            do {
+                let floats = try metalBuffer.toFloatArray()
+                return convertFloatArrayToScalar(floats)
+            } catch {
+                print("Magma: Failed to transfer Metal buffer to host: \(error)")
+                return []
+            }
+        }
+        #endif
 
         // No data available
         return []

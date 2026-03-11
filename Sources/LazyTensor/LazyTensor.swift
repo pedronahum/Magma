@@ -40,7 +40,11 @@ public final class LazyTensorHandle: @unchecked Sendable {
 
     /// Whether this tensor has been materialized
     public var isMaterialized: Bool {
-        materializedBuffer != nil
+        if materializedBuffer != nil { return true }
+        #if os(macOS) && canImport(MetalHLO)
+        if case .metalData = irNode { return true }
+        #endif
+        return false
     }
 
     /// Whether this tensor is "live" - explicitly requested by the user for materialization.
@@ -62,8 +66,13 @@ public final class LazyTensorHandle: @unchecked Sendable {
 
 /// Represents an operation in the computation graph
 public indirect enum IRNode: @unchecked Sendable {
-    /// Data from a materialized buffer
+    /// Data from a materialized PJRT buffer (stays on device)
     case data(PJRTBuffer)
+
+    /// Data from a materialized Metal buffer (stays on GPU, no D2H copy)
+    #if os(macOS) && canImport(MetalHLO)
+    case metalData(MetalHLOBuffer)
+    #endif
 
     /// Constant value
     case constant(values: [Float], shape: [Int])
@@ -841,20 +850,20 @@ private func MetalLazyTensorBarrier(on device: Device) {
     }
 
     // 8. Collect input buffers
-    // For Metal, we need to handle both data nodes and promoted constants
-    // Note: Data nodes from PJRT buffers need to be converted to Metal buffers
+    // For Metal, we handle: metalData (on-device), data (PJRT), and promoted constants
 
     var inputBuffers: [MetalHLOBuffer] = []
 
-    // First: Check for any data nodes - these would come from pre-existing PJRT buffers
-    // which is not typical for Metal-first execution, but we should handle it
+    // First: data nodes — either already on Metal (.metalData) or from PJRT (.data)
     for node in optimizedGraph.nodes {
-        if case .data(let pjrtBuffer) = node.irNode {
-            // Transfer PJRT buffer data to Metal
+        if case .metalData(let metalBuffer) = node.irNode {
+            // Already on GPU — pass directly, zero copy
+            inputBuffers.append(metalBuffer)
+        } else if case .data(let pjrtBuffer) = node.irNode {
+            // Transfer PJRT buffer data to Metal (cross-backend fallback)
             do {
                 let client = try getMetalHLOClient()
                 let hostData = try pjrtBuffer.toFloatArray()
-                // Use optimized non-throwing createBuffer for Float arrays
                 let metalBuffer = client.createBuffer(
                     hostData,
                     shape: node.shape
@@ -907,24 +916,17 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
 
         // 10. Update tensor handles with results
-        // For Metal, we store the MetalHLO buffer data back to host and create a "virtual" PJRT buffer
-        // This allows seamless interop with the rest of the Magma system
+        // Keep data on GPU as .metalData — no D2H copy.
+        // Data only transfers to host when user explicitly reads values (e.g. scalars()).
         for (i, output) in outputs.enumerated() {
             if i < outputBuffers.count {
                 let metalBuffer = outputBuffers[i]
                 output.materializedBuffer = nil
-
-                let hostData = try metalBuffer.toFloatArray()
-                let expectedCount = output.shape.reduce(1, *)
+                output.irNode = .metalData(metalBuffer)
 
                 if debugEnabled {
+                    let hostData = try metalBuffer.toFloatArray()
                     print("Magma [Metal]: Output \(i) - shape: \(output.shape), data count: \(hostData.count), first few: \(Array(hostData.prefix(5)))")
-                }
-
-                if hostData.count == expectedCount {
-                    output.irNode = .constant(values: hostData, shape: output.shape)
-                } else if debugEnabled {
-                    print("Magma [Metal]: Graph validation failed: Shape mismatch in output \(i): expected \(expectedCount) values for shape \(output.shape), got \(hostData.count)")
                 }
             }
         }

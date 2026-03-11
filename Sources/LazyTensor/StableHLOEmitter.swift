@@ -51,8 +51,14 @@ public final class StableHLOEmitter {
         let sortedNodes = topologicalSort()
 
         // Collect data inputs first (they come before promoted constants)
+        // Both .data (PJRT) and .metalData (Metal) are on-device inputs
         for handle in sortedNodes {
-            if case .data = handle.irNode {
+            var isDataInput = false
+            if case .data = handle.irNode { isDataInput = true }
+            #if os(macOS) && canImport(MetalHLO)
+            if case .metalData = handle.irNode { isDataInput = true }
+            #endif
+            if isDataInput {
                 inputHandles.append(handle)
             }
         }
@@ -104,6 +110,12 @@ public final class StableHLOEmitter {
         case .data:
             // Should have been handled as an argument
             fatalError("Data node should have been created as argument")
+
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            // Should have been handled as an argument (same as .data)
+            fatalError("MetalData node should have been created as argument")
+        #endif
 
         case .operation(let op, let inputs, let attributes):
             return emitOperation(op: op, inputs: inputs, output: handle, attributes: attributes)
@@ -221,7 +233,13 @@ public final class StableHLOEmitter {
                 let result = emitOperationWithBuilder(bodyBuilder, op: op, inputs: inputValues, output: node, attributes: attributes)
                 localValueMap[node.id] = result
 
-            case .data, .whileLoopTraced:
+            case .data:
+                fatalError("Unexpected node type in while body")
+            #if os(macOS) && canImport(MetalHLO)
+            case .metalData:
+                fatalError("Unexpected node type in while body")
+            #endif
+            case .whileLoopTraced:
                 fatalError("Unexpected node type in while body")
             }
         }
@@ -617,6 +635,10 @@ public final class StableHLOEmitter {
                         debugMsg += "    -> constant with shape \(shape)\n"
                     case .data:
                         debugMsg += "    -> data node\n"
+                    #if os(macOS) && canImport(MetalHLO)
+                    case .metalData:
+                        debugMsg += "    -> metalData node\n"
+                    #endif
                     case .operation(let innerOp, _, _):
                         debugMsg += "    -> operation \(innerOp)\n"
                     case .whileLoopTraced(let iters, _, _, _, _):
@@ -867,6 +889,10 @@ public final class StableHLOEmitter {
                     }
                 case .constant, .data:
                     break
+                #if os(macOS) && canImport(MetalHLO)
+                case .metalData:
+                    break
+                #endif
                 }
             }
 
@@ -911,6 +937,10 @@ extension IRGraph {
                     }
                 case .constant, .data:
                     break
+                #if os(macOS) && canImport(MetalHLO)
+                case .metalData:
+                    break
+                #endif
                 }
             }
 
@@ -942,6 +972,10 @@ extension IRGraph {
                     components.append("const:\(shape):\(values.prefix(4))")
                 case .data:
                     components.append("data:\(node.shape):\(node.dtype)")
+                #if os(macOS) && canImport(MetalHLO)
+                case .metalData:
+                    components.append("data:\(node.shape):\(node.dtype)")
+                #endif
                 case .operation(let op, let inputs, _):
                     // Use RELATIVE indices not absolute IDs for cache compatibility
                     let inputIndices = inputs.map { input -> String in
@@ -990,6 +1024,9 @@ extension IRGraph {
         // First, count existing data inputs to offset promoted constant indices
         let dataInputCount = reachableNodes.filter {
             if case .data = $0.irNode { return true }
+            #if os(macOS) && canImport(MetalHLO)
+            if case .metalData = $0.irNode { return true }
+            #endif
             return false
         }.count
 
@@ -1031,6 +1068,11 @@ extension IRGraph {
 
             case .data:
                 structuralComponents.append("data:\(node.shape):\(node.dtype)")
+
+            #if os(macOS) && canImport(MetalHLO)
+            case .metalData:
+                structuralComponents.append("data:\(node.shape):\(node.dtype)")
+            #endif
 
             case .operation(let op, let inputs, _):
                 // Use RELATIVE indices (position in topological order) not absolute IDs
@@ -1091,6 +1133,10 @@ extension IRGraph {
                     }
                 case .constant, .data:
                     break
+                #if os(macOS) && canImport(MetalHLO)
+                case .metalData:
+                    break
+                #endif
                 }
             }
 
@@ -1198,6 +1244,12 @@ extension IRGraph {
         case .data:
             // Data nodes are always valid
             break
+
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            // Metal data nodes are always valid
+            break
+        #endif
 
         case .operation(let op, let inputs, let attributes):
             try validateOperation(op: op, inputs: inputs, output: handle, attributes: attributes)

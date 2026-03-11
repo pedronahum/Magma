@@ -88,6 +88,10 @@ public final class ConstantFoldingPass: OptimizationPass {
 
             case .constant, .data, .whileLoopTraced:
                 break
+            #if os(macOS) && canImport(MetalHLO)
+            case .metalData:
+                break
+            #endif
             }
         }
 

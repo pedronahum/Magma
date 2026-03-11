@@ -78,6 +78,10 @@ public final class DeadCodeEliminationPass: OptimizationPass {
         switch node {
         case .constant, .data:
             return []
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            return []
+        #endif
 
         case .operation(_, let inputs, _):
             return inputs

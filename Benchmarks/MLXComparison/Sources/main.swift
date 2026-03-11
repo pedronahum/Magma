@@ -105,12 +105,12 @@ print("MATRIX OPERATIONS (GEMM)")
 print("═══════════════════════════════════════════════════════════════════════════")
 
 let gemmConfigs: [(name: String, m: Int, n: Int, k: Int)] = [
-    ("GEMM-32", 32, 32, 32),
-    ("GEMM-64", 64, 64, 64),
     ("GEMM-128", 128, 128, 128),
     ("GEMM-256", 256, 256, 256),
     ("GEMM-512", 512, 512, 512),
     ("GEMM-1024", 1024, 1024, 1024),
+    ("GEMM-2048", 2048, 2048, 2048),
+    ("GEMM-4096", 4096, 4096, 4096),
 ]
 
 for cfg in gemmConfigs {
@@ -154,45 +154,48 @@ for cfg in gemmConfigs {
 
 print()
 
-// MARK: - Transpose
+// MARK: - Transpose + Matmul (forces actual data movement, unlike bare transpose which is a no-op in MLX)
 
 print("═══════════════════════════════════════════════════════════════════════════")
-print("TRANSPOSE OPERATIONS")
+print("TRANSPOSE + MATMUL (A^T @ A)")
 print("═══════════════════════════════════════════════════════════════════════════")
 
-let transposeConfigs: [(name: String, shape: [Int])] = [
-    ("Transpose-256x256", [256, 256]),
-    ("Transpose-512x256", [512, 256]),
-    ("Transpose-1024x512", [1024, 512]),
+let transMatConfigs: [(name: String, m: Int, n: Int)] = [
+    ("TransMatmul-256", 256, 256),
+    ("TransMatmul-512", 512, 512),
+    ("TransMatmul-1024", 1024, 1024),
+    ("TransMatmul-2048", 2048, 2048),
 ]
 
-for cfg in transposeConfigs {
+for cfg in transMatConfigs {
     // Magma setup
-    let magmaA = Tensor<Float>.ones(cfg.shape, on: metal)
+    let magmaA = Tensor<Float>.ones([cfg.m, cfg.n], on: metal)
     magmaA.markForMaterialization()
     LazyTensorBarrier(on: metal)
 
     // MLX setup
-    let mlxA = MLXArray.ones(cfg.shape)
+    let mlxA = MLXArray.ones([cfg.m, cfg.n])
     eval(mlxA)
 
-    // Benchmark Magma
+    // Benchmark Magma: transpose then matmul
     let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
         let t = magmaA.transpose()
-        t.markForMaterialization()
+        let r = t.matmul(magmaA)
+        r.markForMaterialization()
         LazyTensorBarrier(on: metal)
     }
 
-    // Benchmark MLX
+    // Benchmark MLX: transpose then matmul
     let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
         let t = mlxA.T
-        eval(t)
+        let r = matmul(t, mlxA)
+        eval(r)
     }
 
     let result = BenchmarkResult(
         name: cfg.name,
         category: "matrix",
-        shape: cfg.shape.map(String.init).joined(separator: "x"),
+        shape: "\(cfg.m)x\(cfg.n)",
         magmaMeanMs: magmaTime.mean,
         magmaMinMs: magmaTime.min,
         mlxMeanMs: mlxTime.mean,
@@ -211,10 +214,11 @@ print("REDUCTION OPERATIONS")
 print("═══════════════════════════════════════════════════════════════════════════")
 
 let reductionConfigs: [(name: String, shape: [Int], axis: Int?)] = [
-    ("GlobalSum-256x256", [256, 256], nil),
     ("GlobalSum-512x512", [512, 512], nil),
-    ("RowSum-256x256", [256, 256], 1),
-    ("ColSum-256x256", [256, 256], 0),
+    ("GlobalSum-2048x2048", [2048, 2048], nil),
+    ("RowSum-1024x1024", [1024, 1024], 1),
+    ("ColSum-1024x1024", [1024, 1024], 0),
+    ("GlobalSum-4096x4096", [4096, 4096], nil),
 ]
 
 for cfg in reductionConfigs {
@@ -272,10 +276,11 @@ print("ELEMENT-WISE ARITHMETIC")
 print("═══════════════════════════════════════════════════════════════════════════")
 
 let arithmeticConfigs: [(name: String, shape: [Int], op: String)] = [
-    ("Add-256x256", [256, 256], "add"),
     ("Add-512x512", [512, 512], "add"),
-    ("Mul-256x256", [256, 256], "multiply"),
+    ("Add-2048x2048", [2048, 2048], "add"),
     ("Mul-512x512", [512, 512], "multiply"),
+    ("Mul-2048x2048", [2048, 2048], "multiply"),
+    ("Add-4096x4096", [4096, 4096], "add"),
 ]
 
 for cfg in arithmeticConfigs {
@@ -326,12 +331,12 @@ print("UNARY OPERATIONS")
 print("═══════════════════════════════════════════════════════════════════════════")
 
 let unaryConfigs: [(name: String, shape: [Int], op: String)] = [
-    ("Exp-256x256", [256, 256], "exp"),
-    ("Tanh-256x256", [256, 256], "tanh"),
-    ("Sigmoid-256x256", [256, 256], "sigmoid"),
-    ("ReLU-512x512", [512, 512], "relu"),
-    ("GELU-256x256", [256, 256], "gelu"),
-    ("Softmax-256x256", [256, 256], "softmax"),
+    ("Exp-1024x1024", [1024, 1024], "exp"),
+    ("Tanh-1024x1024", [1024, 1024], "tanh"),
+    ("Sigmoid-1024x1024", [1024, 1024], "sigmoid"),
+    ("ReLU-2048x2048", [2048, 2048], "relu"),
+    ("GELU-1024x1024", [1024, 1024], "gelu"),
+    ("Softmax-1024x1024", [1024, 1024], "softmax"),
 ]
 
 for cfg in unaryConfigs {
@@ -396,12 +401,12 @@ print("════════════════════════�
 print("COMPOUND OPERATIONS")
 print("═══════════════════════════════════════════════════════════════════════════")
 
-// MLP Forward Pass
+// MLP Forward Pass - Small
 do {
     let batchSize = 32
-    let inputDim = 256
-    let hiddenDim = 512
-    let outputDim = 128
+    let inputDim = 512
+    let hiddenDim = 1024
+    let outputDim = 256
 
     // Magma setup
     let magmaX = Tensor<Float>.ones([batchSize, inputDim], on: metal)
@@ -434,9 +439,9 @@ do {
     }
 
     let result = BenchmarkResult(
-        name: "MLP-Forward",
+        name: "MLP-Small",
         category: "compound",
-        shape: "\(batchSize)x\(inputDim)->...",
+        shape: "32x512->1024->256",
         magmaMeanMs: magmaTime.mean,
         magmaMinMs: magmaTime.min,
         mlxMeanMs: mlxTime.mean,
@@ -446,7 +451,57 @@ do {
     print(result.summary)
 }
 
-// Attention
+// MLP Forward Pass - Large
+do {
+    let batchSize = 128
+    let inputDim = 1024
+    let hiddenDim = 4096
+    let outputDim = 1024
+
+    // Magma setup
+    let magmaX = Tensor<Float>.ones([batchSize, inputDim], on: metal)
+    let magmaW1 = Tensor<Float>.full([inputDim, hiddenDim], 0.01, on: metal)
+    let magmaW2 = Tensor<Float>.full([hiddenDim, outputDim], 0.01, on: metal)
+    magmaX.markForMaterialization()
+    magmaW1.markForMaterialization()
+    magmaW2.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    // MLX setup
+    let mlxX = MLXArray.ones([batchSize, inputDim])
+    let mlxW1 = MLXArray.ones([inputDim, hiddenDim]) * Float(0.01)
+    let mlxW2 = MLXArray.ones([hiddenDim, outputDim]) * Float(0.01)
+    eval(mlxX, mlxW1, mlxW2)
+
+    // Benchmark Magma
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let h = magmaX.matmul(magmaW1).gelu()
+        let output = h.matmul(magmaW2)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    // Benchmark MLX
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let h = MLXNN.gelu(matmul(mlxX, mlxW1))
+        let output = matmul(h, mlxW2)
+        eval(output)
+    }
+
+    let result = BenchmarkResult(
+        name: "MLP-Large",
+        category: "compound",
+        shape: "128x1024->4096->1024",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// Attention - Small
 do {
     let batch = 2
     let heads = 8
@@ -469,29 +524,78 @@ do {
     let scale = Float(1.0 / Foundation.sqrt(Float(headDim)))
     eval(mlxQ, mlxK, mlxV)
 
-    // Benchmark Magma - skip scaling to avoid broadcast issue for now
     let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
         let kT = magmaK.transposeLastTwo()
         let scores = magmaQ.batchedMatmul(kT)
-        // Skip scaling - the performance comparison is still valid
         let attnWeights = scores.softmax(dim: -1)
         let output = attnWeights.batchedMatmul(magmaV)
         output.markForMaterialization()
         LazyTensorBarrier(on: metal)
     }
 
-    // Benchmark MLX
     let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
         let kT = mlxK.transposed(0, 1, 3, 2)
-        let scores = matmul(mlxQ, kT)
-        let scaledScores = scores * scale
-        let attnWeights = softmax(scaledScores, axis: -1)
+        let scores = matmul(mlxQ, kT) * scale
+        let attnWeights = softmax(scores, axis: -1)
         let output = matmul(attnWeights, mlxV)
         eval(output)
     }
 
     let result = BenchmarkResult(
-        name: "Attention",
+        name: "Attention-Small",
+        category: "compound",
+        shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
+        magmaMeanMs: magmaTime.mean,
+        magmaMinMs: magmaTime.min,
+        mlxMeanMs: mlxTime.mean,
+        mlxMinMs: mlxTime.min
+    )
+    results.append(result)
+    print(result.summary)
+}
+
+// Attention - Large
+do {
+    let batch = 4
+    let heads = 16
+    let seqLen = 256
+    let headDim = 64
+
+    // Magma setup
+    let magmaQ = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaK = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    let magmaV = Tensor<Float>.ones([batch, heads, seqLen, headDim], on: metal)
+    magmaQ.markForMaterialization()
+    magmaK.markForMaterialization()
+    magmaV.markForMaterialization()
+    LazyTensorBarrier(on: metal)
+
+    // MLX setup
+    let mlxQ = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxK = MLXArray.ones([batch, heads, seqLen, headDim])
+    let mlxV = MLXArray.ones([batch, heads, seqLen, headDim])
+    let scaleLarge = Float(1.0 / Foundation.sqrt(Float(headDim)))
+    eval(mlxQ, mlxK, mlxV)
+
+    let magmaTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let kT = magmaK.transposeLastTwo()
+        let scores = magmaQ.batchedMatmul(kT)
+        let attnWeights = scores.softmax(dim: -1)
+        let output = attnWeights.batchedMatmul(magmaV)
+        output.markForMaterialization()
+        LazyTensorBarrier(on: metal)
+    }
+
+    let mlxTime = measureTime(iterations: config.measurementIterations, warmup: config.warmupIterations) {
+        let kT = mlxK.transposed(0, 1, 3, 2)
+        let scores = matmul(mlxQ, kT) * scaleLarge
+        let attnWeights = softmax(scores, axis: -1)
+        let output = matmul(attnWeights, mlxV)
+        eval(output)
+    }
+
+    let result = BenchmarkResult(
+        name: "Attention-Large",
         category: "compound",
         shape: "[\(batch),\(heads),\(seqLen),\(headDim)]",
         magmaMeanMs: magmaTime.mean,

@@ -155,6 +155,10 @@ public final class CommonSubexpressionEliminationPass: OptimizationPass {
             case .data, .whileLoopTraced:
                 // Data nodes and while loops are not CSE candidates
                 break
+            #if os(macOS) && canImport(MetalHLO)
+            case .metalData:
+                break
+            #endif
             }
         }
 
