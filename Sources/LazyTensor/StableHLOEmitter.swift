@@ -910,20 +910,57 @@ public final class StableHLOEmitter {
     }
 }
 
+// MARK: - Persistent Subgraph Cache
+//
+// Inspired by TensorFlow Swift's ObjectIdentifier-based operation dependency caching
+// (LazyTensorTrace.swift). Caches the topological subtree for each handle by pointer
+// identity so that repeated barriers reuse pre-computed subgraph orderings for
+// persistent handles (weights, materialized intermediate tensors) rather than
+// re-traversing them every barrier.
+//
+// Entries are invalidated in LazyTensorHandle.irNode.didSet when a handle is updated.
+
+nonisolated(unsafe) var _subgraphCache: [ObjectIdentifier: [LazyTensorHandle]] = [:]
+private let _subgraphCacheMaxEntries = 8000
+
+/// Invalidate the cached subgraph entry for a specific handle.
+/// Must be called when a handle's irNode changes.
+internal func invalidateSubgraphCache(for handle: LazyTensorHandle) {
+    _subgraphCache.removeValue(forKey: ObjectIdentifier(handle))
+}
+
 // MARK: - IRGraph Extension
 
 extension IRGraph {
 
-    /// Build the topological order from outputs
+    /// Build the topological order from outputs.
+    ///
+    /// Uses pointer identity (ObjectIdentifier) for visited tracking and consults
+    /// the module-level persistent subgraph cache for handles whose subtrees are
+    /// already known. Persistent handles (weights as .metalData, pre-materialized
+    /// tensors) benefit most: their cached subtree is reused without any recursion.
     public func buildTopologicalOrder() {
         var result: [LazyTensorHandle] = []
-        var visited = Set<UInt64>()
+        var visited = Set<ObjectIdentifier>()
 
         func visit(_ handle: LazyTensorHandle) {
-            if visited.contains(handle.id) {
+            let oid = ObjectIdentifier(handle)
+            guard !visited.contains(oid) else { return }
+
+            // Fast path: use cached subtree if available (built in a previous barrier).
+            // The cache is invalidated when irNode changes, so this is always up-to-date.
+            if let cached = _subgraphCache[oid] {
+                for node in cached {
+                    let noid = ObjectIdentifier(node)
+                    if visited.insert(noid).inserted {
+                        result.append(node)
+                    }
+                }
                 return
             }
-            visited.insert(handle.id)
+
+            visited.insert(oid)
+            let subtreeStart = result.count
 
             if let node = handle.irNode {
                 switch node {
@@ -945,6 +982,12 @@ extension IRGraph {
             }
 
             result.append(handle)
+
+            // Cache this handle's subtree for reuse in subsequent barriers.
+            // Cap the cache size to bound memory growth.
+            if _subgraphCache.count < _subgraphCacheMaxEntries {
+                _subgraphCache[oid] = Array(result[subtreeStart...])
+            }
         }
 
         for output in outputs {

@@ -43,6 +43,10 @@ public final class LazyTensorHandle: @unchecked Sendable {
             if let node = irNode {
                 structuralHash = IRNode.computeIncrementalHash(node: node, shape: shape, dtype: dtype)
             }
+            // Invalidate persistent subgraph cache entry for this handle.
+            // Required when irNode changes (e.g., after materialization to .metalData),
+            // so stale subtrees are not replayed in subsequent barriers.
+            invalidateSubgraphCache(for: self)
         }
     }
 
@@ -488,6 +492,11 @@ public final class CompilationCache: @unchecked Sendable {
     /// Cache entries keyed by structural hash
     private var cache: [String: PJRTExecutable] = [:]
 
+    /// MLIR text cache keyed by structural hash.
+    /// Stores the emitted MLIR text alongside compiled executables so that if the
+    /// executable cache is cleared, re-compilation can skip re-emission entirely.
+    private var mlirCache: [String: String] = [:]
+
     /// Lock for thread safety
     private let lock = NSLock()
 
@@ -512,20 +521,37 @@ public final class CompilationCache: @unchecked Sendable {
         cache[hash] = executable
     }
 
+    /// Look up cached MLIR text
+    public func getMlir(hash: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mlirCache[hash]
+    }
+
+    /// Store MLIR text in the cache
+    public func putMlir(hash: String, mlir: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        mlirCache[hash] = mlir
+    }
+
     /// Clear all cached entries
     public func clear() {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
+        mlirCache.removeAll()
         hitCount = 0
         missCount = 0
         promotionHitCount = 0
+        mlirHitCount = 0
     }
 
     /// Cache statistics
     public var hitCount: Int = 0
     public var missCount: Int = 0
     public var promotionHitCount: Int = 0  // Hits due to constant promotion
+    public var mlirHitCount: Int = 0       // Hits on MLIR text cache (skipped re-emission)
 
     /// Cache hit rate
     public var hitRate: Double {
@@ -583,6 +609,14 @@ public final class MetalCompilationCache: @unchecked Sendable {
     /// Fast-path cache keyed by incremental (pre-optimization) hash
     private var fastCache: [UInt64: MetalCacheEntry] = [:]
 
+    /// MLIR text cache keyed by post-optimization structural hash.
+    ///
+    /// Stores the emitted MLIR alongside compiled executables so that if the
+    /// executable cache is cleared (or future eviction is added), re-compilation
+    /// can skip re-emission — the most expensive CPU-side step before compilation.
+    /// Inspired by TensorFlow Swift's TFFunctionBuilder node-level caching strategy.
+    private var mlirCache: [String: String] = [:]
+
     /// Lock for thread safety
     private let lock = NSLock()
 
@@ -616,21 +650,38 @@ public final class MetalCompilationCache: @unchecked Sendable {
         fastCache[hash] = entry
     }
 
+    /// Look up cached MLIR text (slow path, post-optimization hash)
+    public func getMlir(hash: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mlirCache[hash]
+    }
+
+    /// Store MLIR text in the cache alongside the executable
+    public func putMlir(hash: String, mlir: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        mlirCache[hash] = mlir
+    }
+
     /// Clear all cached entries
     public func clear() {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
         fastCache.removeAll()
+        mlirCache.removeAll()
         hitCount = 0
         missCount = 0
         fastHitCount = 0
+        mlirHitCount = 0
     }
 
     /// Cache statistics
     public var hitCount: Int = 0
     public var missCount: Int = 0
     public var fastHitCount: Int = 0
+    public var mlirHitCount: Int = 0
 
     /// Cache hit rate
     public var hitRate: Double {
@@ -777,12 +828,19 @@ public func LazyTensorBarrier(on device: Device = .default) {
     } else {
         cache.missCount += 1
 
-        // 6. Emit StableHLO MLIR with constant promotion (use optimized graph)
-        let emitter = StableHLOEmitter(graph: optimizedGraph)
-        let mlir = emitter.emit(
-            name: "lazy_graph_\(structuralHash.prefix(8))",
-            promotedConstants: promotionResult.promotedConstants
-        )
+        // 6. Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission
+        let mlir: String
+        if let cachedMlir = cache.getMlir(hash: structuralHash) {
+            cache.mlirHitCount += 1
+            mlir = cachedMlir
+        } else {
+            let emitter = StableHLOEmitter(graph: optimizedGraph)
+            mlir = emitter.emit(
+                name: "lazy_graph_\(structuralHash.prefix(8))",
+                promotedConstants: promotionResult.promotedConstants
+            )
+            cache.putMlir(hash: structuralHash, mlir: mlir)
+        }
 
         // 7. Compile
         do {
@@ -1055,12 +1113,24 @@ private func MetalLazyTensorBarrier(on device: Device) {
     } else {
         cache.missCount += 1
 
-        // 8. Emit StableHLO MLIR
-        let emitter = StableHLOEmitter(graph: optimizedGraph)
-        let mlir = emitter.emit(
-            name: "metal_graph_\(structuralHash.prefix(8))",
-            promotedConstants: promotionResult.promotedConstants
-        )
+        // 8. Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission.
+        // The MLIR cache stores emitted text keyed by structural hash so that if the
+        // executable cache is cleared, re-compilation skips the StableHLOEmitter entirely.
+        let mlir: String
+        if let cachedMlir = cache.getMlir(hash: structuralHash) {
+            cache.mlirHitCount += 1
+            mlir = cachedMlir
+            if debugEnabled {
+                print("Magma [Metal]: MLIR cache hit (hash=\(structuralHash.prefix(8))), skipping emission")
+            }
+        } else {
+            let emitter = StableHLOEmitter(graph: optimizedGraph)
+            mlir = emitter.emit(
+                name: "metal_graph_\(structuralHash.prefix(8))",
+                promotedConstants: promotionResult.promotedConstants
+            )
+            cache.putMlir(hash: structuralHash, mlir: mlir)
+        }
 
         if debugEnabled {
             print("Magma [Metal]: Generated MLIR:")
