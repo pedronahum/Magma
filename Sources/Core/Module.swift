@@ -4354,20 +4354,33 @@ extension Module {
 public typealias StateDict = [String: Tensor<Float>]
 
 extension Module {
+    /// Builds a unique, order-stable key for a parameter in the flat
+    /// `parameters()` list. The index prefix is required because layers reuse
+    /// names like "weight"/"bias"; without it a multi-layer model's entries
+    /// collide and all but the last are silently lost. Mirrors PyTorch's
+    /// "0.weight" style. `stateDict()` and `loadStateDict()` must agree, so
+    /// both go through this helper.
+    static func stateDictKey(index: Int, name: String?) -> String {
+        "\(index).\(name ?? "param")"
+    }
+
     /// Returns a dictionary containing all module parameters.
     ///
     /// Similar to PyTorch's `state_dict()`.
+    ///
+    /// Keys are index-prefixed (e.g. "0.weight", "0.bias", "1.weight") so that
+    /// repeated parameter names across layers do not collide.
     ///
     /// Example:
     /// ```swift
     /// let model = nn.Linear(inputSize: 784, outputSize: 10)
     /// let stateDict = model.stateDict()
-    /// print(stateDict.keys)  // ["weight", "bias"]
+    /// print(stateDict.keys.sorted())  // ["0.bias", "0.weight"]
     /// ```
     public func stateDict() -> StateDict {
         var dict = StateDict()
         for (index, param) in parameters().enumerated() {
-            let key = param.name ?? "param_\(index)"
+            let key = Self.stateDictKey(index: index, name: param.name)
             dict[key] = param.value
         }
         return dict
@@ -4393,7 +4406,7 @@ extension Module {
         // Build mapping from name to parameter
         var nameToParam: [String: Parameter] = [:]
         for (index, param) in params.enumerated() {
-            let key = param.name ?? "param_\(index)"
+            let key = Self.stateDictKey(index: index, name: param.name)
             nameToParam[key] = param
         }
 

@@ -874,11 +874,42 @@ struct CheckpointTests {
         let linear = nn.Linear(inputSize: 10, outputSize: 5)
         let stateDict = linear.stateDict()
 
+        // Keys are prefixed with the flat parameter index to stay unique
+        // across layers: weight is param 0, bias is param 1.
         #expect(stateDict.count == 2)
-        #expect(stateDict["weight"] != nil)
-        #expect(stateDict["bias"] != nil)
-        #expect(stateDict["weight"]?.shape == [5, 10])
-        #expect(stateDict["bias"]?.shape == [5])
+        #expect(stateDict["0.weight"] != nil)
+        #expect(stateDict["1.bias"] != nil)
+        #expect(stateDict["0.weight"]?.shape == [5, 10])
+        #expect(stateDict["1.bias"]?.shape == [5])
+    }
+
+    @Test("State dict keys do not collide across layers")
+    func stateDictNoCollision() throws {
+        // Two Linear layers both name their params "weight"/"bias". Without
+        // index-prefixed keys they would collapse to 2 entries and silently
+        // lose the first layer's parameters.
+        let model = nn.Sequential(
+            nn.AnyLayer(nn.Linear(inputSize: 10, outputSize: 5)),
+            nn.AnyLayer(nn.Linear(inputSize: 5, outputSize: 2))
+        )
+
+        let stateDict = model.stateDict()
+
+        // 2 layers x (weight + bias) = 4 distinct entries, keyed by flat
+        // parameter index: 0.weight, 1.bias (layer 0), 2.weight, 3.bias (layer 1).
+        #expect(stateDict.count == 4)
+        #expect(stateDict["0.weight"]?.shape == [5, 10])
+        #expect(stateDict["1.bias"]?.shape == [5])
+        #expect(stateDict["2.weight"]?.shape == [2, 5])
+        #expect(stateDict["3.bias"]?.shape == [2])
+
+        // Round-trip: a fresh model with the same structure loads all 4.
+        var loaded = nn.Sequential(
+            nn.AnyLayer(nn.Linear(inputSize: 10, outputSize: 5)),
+            nn.AnyLayer(nn.Linear(inputSize: 5, outputSize: 2))
+        )
+        try loaded.loadStateDict(stateDict, strict: true)
+        #expect(loaded.parameters().count == 4)
     }
 
     @Test("Load state dict")
