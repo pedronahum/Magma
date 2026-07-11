@@ -757,6 +757,74 @@ public final class MLIRBuilder: @unchecked Sendable {
         return result
     }
 
+    // MARK: - Reduce Window (pooling)
+
+    /// Emit a `stablehlo.reduce_window` — the primitive behind 2D pooling.
+    ///
+    /// The window/stride/padding/dilation arrays are full-rank over the input's
+    /// layout (NHWC for pooling: `[1, kH, kW, 1]` etc. — no pooling over batch or
+    /// channel). `reduction` is the scalar op applied in the window ("maximum"
+    /// for max-pool, "add" for sum-pool; average-pool sums then divides at the
+    /// call site). `initValue` seeds the reduction (-inf for max, 0 for add) and
+    /// is materialized dtype-correctly (−inf uses the max finite literal, as in
+    /// `reduce`, so f16/int stay in range).
+    ///
+    /// - Parameters:
+    ///   - input: source tensor.
+    ///   - initValue: reduction identity.
+    ///   - reduction: scalar StableHLO op name applied per window.
+    ///   - windowDimensions: window size per input dim.
+    ///   - windowStrides: stride per input dim.
+    ///   - padding: `[[lo, hi], ...]`, one pair per input dim.
+    ///   - outputShape: precomputed result shape.
+    public func reduceWindow(
+        _ input: Value,
+        initValue: Double,
+        reduction: String,
+        windowDimensions: [Int],
+        windowStrides: [Int],
+        padding: [[Int]],
+        outputShape: [Int]
+    ) -> Value {
+        let resultType = TensorType(shape: outputShape, dtype: input.type.dtype)
+        let result = nextValue(type: resultType)
+        let scalarType = TensorType(shape: [], dtype: input.type.dtype)
+
+        // Reduction identity, dtype-correct (mirrors `reduce`).
+        let initStr: String
+        if initValue.isInfinite {
+            initStr = (initValue < 0 ? "-" : "") + input.type.dtype.maxFiniteLiteral
+        } else if input.type.dtype.isFloatingPoint {
+            initStr = "\(initValue)"
+        } else {
+            initStr = "\(Int(initValue))"
+        }
+        let initVal = nextValue(type: scalarType)
+        operations.append("    \(initVal.name) = stablehlo.constant dense<\(initStr)> : \(scalarType.mlirType)")
+
+        let rank = windowDimensions.count
+        let winDim = windowDimensions.map(String.init).joined(separator: ", ")
+        let winStr = windowStrides.map(String.init).joined(separator: ", ")
+        let ones = Array(repeating: "1", count: rank).joined(separator: ", ")
+        let padStr = padding.map { "[\($0[0]), \($0[1])]" }.joined(separator: ", ")
+
+        let op = """
+            \(result.name) = "stablehlo.reduce_window"(\(input.displayName), \(initVal.name)) <{
+              base_dilations = array<i64: \(ones)>,
+              padding = dense<[\(padStr)]> : tensor<\(rank)x2xi64>,
+              window_dilations = array<i64: \(ones)>,
+              window_dimensions = array<i64: \(winDim)>,
+              window_strides = array<i64: \(winStr)>
+            }> ({
+            ^bb0(%rw_a: \(scalarType.mlirType), %rw_b: \(scalarType.mlirType)):
+              %rw_r = stablehlo.\(reduction) %rw_a, %rw_b : \(scalarType.mlirType)
+              stablehlo.return %rw_r : \(scalarType.mlirType)
+            }) : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(resultType.mlirType)
+        """
+        operations.append(op)
+        return result
+    }
+
     // MARK: - Scatter Operation
 
     /// Scatter updates into input at specified indices

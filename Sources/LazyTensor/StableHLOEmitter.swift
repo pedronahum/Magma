@@ -865,8 +865,35 @@ public final class StableHLOEmitter {
                 outputShape: output.shape
             )
 
+        // 2D pooling over NHWC spatial dims (windows on H,W only) via reduce_window
+        case .maxPool2d, .avgPool2d:
+            let window = (attributes["windowSize"] as? [Int]) ?? [1, 1]
+            let strides = (attributes["strides"] as? [Int]) ?? window
+            let pad2 = (attributes["padding"] as? [[Int]]) ?? [[0, 0], [0, 0]]
+            // Lift the spatial-only attributes to full NHWC rank (no batch/channel pooling).
+            let windowDims = [1, window[0], window[1], 1]
+            let windowStrides = [1, strides[0], strides[1], 1]
+            let padding = [[0, 0], pad2[0], pad2[1], [0, 0]]
+            if op == .maxPool2d {
+                return builder.reduceWindow(
+                    inputValues[0], initValue: -.infinity, reduction: "maximum",
+                    windowDimensions: windowDims, windowStrides: windowStrides,
+                    padding: padding, outputShape: output.shape
+                )
+            } else {
+                // Average pool = sum pool / window element count (count_include_pad).
+                let summed = builder.reduceWindow(
+                    inputValues[0], initValue: 0.0, reduction: "add",
+                    windowDimensions: windowDims, windowStrides: windowStrides,
+                    padding: padding, outputShape: output.shape
+                )
+                let count = Double(window[0] * window[1])
+                let denom = builder.constant(count, type: summed.type)
+                return builder.divide(summed, denom)
+            }
+
         // Not yet implemented
-        case .conv1d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm:
+        case .conv1d, .convTranspose2d, .batchNorm, .layerNorm:
             fatalError("Operation \(op) not yet implemented in StableHLOEmitter")
         }
     }
