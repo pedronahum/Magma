@@ -423,49 +423,47 @@ struct DataLoaderTrainingTests {
 @Suite("Gather Tests")
 struct GatherTests {
 
-    @Test("Gather basic 2D")
-    func gatherBasic2D() {
-        let x = Tensor<Float>.randn([4, 8])  // [4, 8]
-        let indices = Tensor<Float>.zeros([4, 3])  // Gather 3 elements per row
+    // gather is 1-D index-select along `axis`. These verify actual values,
+    // not just shapes (the old shape-only, multi-dim tests asserted an
+    // unimplemented semantics and the op returned wrong values).
 
-        let result = x.gather(indices: indices, axis: 1)
-        #expect(result.shape == [4, 3])
-    }
-
-    @Test("Gather axis 0")
-    func gatherAxis0() {
-        let x = Tensor<Float>.randn([10, 5])  // [10, 5]
-        let indices = Tensor<Float>.zeros([3, 5])  // Gather 3 rows
+    @Test("Gather selects rows (axis 0)")
+    func gatherRowsAxis0() {
+        let x = Tensor<Float>([1, 2,  3, 4,  5, 6], shape: [3, 2])
+        let indices = Tensor<Float>([2, 0], shape: [2])
 
         let result = x.gather(indices: indices, axis: 0)
-        #expect(result.shape == [3, 5])
+        #expect(result.shape == [2, 2])
+        #expect(result.scalars() == [5, 6, 1, 2])   // row 2 then row 0
     }
 
-    @Test("Gather 3D")
-    func gather3D() {
-        let x = Tensor<Float>.randn([2, 8, 16])
-        let indices = Tensor<Float>.zeros([2, 4, 16])  // Gather 4 elements along axis 1
+    @Test("Gather selects columns (axis 1)")
+    func gatherColsAxis1() {
+        let x = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+        let indices = Tensor<Float>([2, 0], shape: [2])
 
         let result = x.gather(indices: indices, axis: 1)
-        #expect(result.shape == [2, 4, 16])
+        #expect(result.shape == [2, 2])
+        #expect(result.scalars() == [3, 1, 6, 4])   // cols 2,0 of each row
     }
 
     @Test("Gather negative axis")
     func gatherNegativeAxis() {
-        let x = Tensor<Float>.randn([4, 8])
-        let indices = Tensor<Float>.zeros([4, 2])
+        let x = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+        let indices = Tensor<Float>([0, 2], shape: [2])
 
-        let result = x.gather(indices: indices, axis: -1)  // Same as axis=1
-        #expect(result.shape == [4, 2])
+        let result = x.gather(indices: indices, axis: -1)  // same as axis 1
+        #expect(result.shape == [2, 2])
+        #expect(result.scalars() == [1, 3, 4, 6])
     }
 
-    @Test("Gather gradient")
+    @Test("Gather gradient shape")
     func gatherGradient() {
         let x = Tensor<Float>.randn([4, 8])
-        let indices = Tensor<Float>.zeros([4, 2])
+        let indices = Tensor<Float>([0, 2], shape: [2])   // 1-D
 
         let grad = gradient(at: x) { t in
-            t.gather(indices: indices, axis: 1).sum()
+            t.gather(indices: indices, axis: 0).sum()
         }
 
         #expect(grad.shape == [4, 8])

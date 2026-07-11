@@ -713,18 +713,16 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         let normalizedAxis = axis < 0 ? rank + axis : axis
         precondition(normalizedAxis >= 0 && normalizedAxis < rank, "axis out of range")
 
-        // Compute result shape: for slice selection, replace axis dim with indices count
-        // For ND indices, insert indices shape at axis position (like index_select with multi-dim output)
+        // Only 1-D indices are supported: this is index-select along `axis`
+        // (the axis dimension is replaced by the number of indices). The prior
+        // multi-dimensional path produced incorrect values (the gather
+        // dimension numbers were wrong), so it now fails loudly instead of
+        // silently returning garbage. All in-tree callers (data loaders,
+        // embedding lookup, image flips) use 1-D indices.
+        precondition(indices.rank == 1,
+            "gather supports only 1-D indices (index-select along axis); got indices shape \(indices.shape).")
         var resultShape = self.shape
-        if indices.rank == 1 {
-            // 1D indices: simple slice selection
-            resultShape[normalizedAxis] = indices.shape[0]
-        } else {
-            // Multi-dimensional indices: result has indices shape inserted at axis
-            // This is slice selection where each index selects a slice, shaped by indices
-            resultShape.remove(at: normalizedAxis)
-            resultShape.insert(contentsOf: indices.shape, at: normalizedAxis)
-        }
+        resultShape[normalizedAxis] = indices.shape[0]
 
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
