@@ -859,8 +859,17 @@ public final class StableHLOEmitter {
         }
     }
 
-    /// Topologically sort the graph nodes
+    /// Topologically sort the graph nodes.
+    ///
+    /// The barrier calls `IRGraph.buildTopologicalOrder()` before emitting,
+    /// which stores an equivalent topological order (same DFS from the same
+    /// outputs) in `graph.nodes`. Reuse it to avoid a redundant full traversal;
+    /// fall back to a fresh DFS only if the graph wasn't pre-ordered.
     private func topologicalSort() -> [LazyTensorHandle] {
+        if !graph.nodes.isEmpty {
+            return graph.nodes
+        }
+
         var result: [LazyTensorHandle] = []
         var visited = Set<UInt64>()
         var visiting = Set<UInt64>() // For cycle detection

@@ -8,13 +8,34 @@ public struct TensorType: Hashable, Sendable, CustomStringConvertible {
     
     /// Element data type
     public let dtype: DType
-    
+
+    /// MLIR type string (e.g., "tensor<32x784xf32>"), precomputed at init.
+    /// It is formatted 2-4x per emitted op, so caching it avoids repeated
+    /// array-map/join allocations. Derived from (shape, dtype), so equality
+    /// and hashing below ignore it.
+    public let mlirType: String
+
     /// Create a tensor type
     public init(shape: [Int], dtype: DType) {
         self.shape = shape
         self.dtype = dtype
+        if shape.isEmpty {
+            self.mlirType = "tensor<\(dtype.mlirName)>"
+        } else {
+            let shapeStr = shape.map(String.init).joined(separator: "x")
+            self.mlirType = "tensor<\(shapeStr)x\(dtype.mlirName)>"
+        }
     }
-    
+
+    public static func == (lhs: TensorType, rhs: TensorType) -> Bool {
+        lhs.shape == rhs.shape && lhs.dtype == rhs.dtype
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(shape)
+        hasher.combine(dtype)
+    }
+
     /// Number of dimensions (rank)
     public var rank: Int { shape.count }
     
@@ -31,16 +52,6 @@ public struct TensorType: Hashable, Sendable, CustomStringConvertible {
     /// Whether this is a scalar (rank 0)
     public var isScalar: Bool {
         shape.isEmpty
-    }
-    
-    /// MLIR type string (e.g., "tensor<32x784xf32>")
-    public var mlirType: String {
-        if shape.isEmpty {
-            return "tensor<\(dtype.mlirName)>"
-        } else {
-            let shapeStr = shape.map(String.init).joined(separator: "x")
-            return "tensor<\(shapeStr)x\(dtype.mlirName)>"
-        }
     }
     
     public var description: String { mlirType }
