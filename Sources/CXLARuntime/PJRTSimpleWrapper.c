@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 // Global state
 static void* g_plugin_handle = NULL;
@@ -1004,21 +1005,31 @@ static struct {
     size_t num_outputs;
 } g_num_outputs_cache[PJRT_NUM_OUTPUTS_CACHE_SIZE];
 static size_t g_num_outputs_cache_index = 0;
+// The cache is process-global shared state; executables are used from multiple
+// threads, so guard reads and writes with a mutex to avoid torn entries and a
+// racing index update.
+static pthread_mutex_t g_num_outputs_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static size_t GetCachedNumOutputs(void* executable) {
+    size_t result = (size_t)-1;  // Not found
+    pthread_mutex_lock(&g_num_outputs_cache_mutex);
     for (size_t i = 0; i < PJRT_NUM_OUTPUTS_CACHE_SIZE; i++) {
         if (g_num_outputs_cache[i].executable == executable) {
-            return g_num_outputs_cache[i].num_outputs;
+            result = g_num_outputs_cache[i].num_outputs;
+            break;
         }
     }
-    return (size_t)-1;  // Not found
+    pthread_mutex_unlock(&g_num_outputs_cache_mutex);
+    return result;
 }
 
 static void SetCachedNumOutputs(void* executable, size_t num_outputs) {
     // Simple round-robin replacement
+    pthread_mutex_lock(&g_num_outputs_cache_mutex);
     g_num_outputs_cache[g_num_outputs_cache_index].executable = executable;
     g_num_outputs_cache[g_num_outputs_cache_index].num_outputs = num_outputs;
     g_num_outputs_cache_index = (g_num_outputs_cache_index + 1) % PJRT_NUM_OUTPUTS_CACHE_SIZE;
+    pthread_mutex_unlock(&g_num_outputs_cache_mutex);
 }
 
 SW_PJRT_Error_Code PJRT_ExecuteWrapper(
