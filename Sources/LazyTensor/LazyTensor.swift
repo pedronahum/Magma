@@ -962,6 +962,40 @@ private func computeFastPathHash(outputs: [LazyTensorHandle]) -> UInt64 {
         hasher.combine(output.shape)
         hasher.combine(output.dtype)
     }
+
+    // Constant VALUES are intentionally excluded from `structuralHash` so the
+    // compiled executable can be reused across differing constant values (the
+    // slow-path executable cache is keyed by that hash). But on a fast-path
+    // hit we reuse the constant values captured at first compile
+    // (`entry.promotedConstantValues`). So the fast hash MUST distinguish
+    // constant values — otherwise a graph with identical structure but changed
+    // constants (e.g. a new input batch or scalar built as a constant) would
+    // hit the cache and silently execute a prior iteration's constant data.
+    //
+    // Fold constant values in via a deterministic DFS. This walk is O(graph)
+    // but far cheaper than the emit+compile it still skips; when constants
+    // differ, the miss falls through to the slow path, which reuses the
+    // executable (constant-excluded structural hash) with the current values.
+    var visited = Set<UInt64>()
+    func foldConstants(_ handle: LazyTensorHandle) {
+        guard !visited.contains(handle.id) else { return }
+        visited.insert(handle.id)
+        guard let node = handle.irNode else { return }
+        switch node {
+        case .constant(let values, let constShape):
+            hasher.combine("const")
+            hasher.combine(constShape)
+            hasher.combine(values)
+        case .operation(_, let inputs, _):
+            for input in inputs { foldConstants(input) }
+        case .whileLoopTraced(_, let initialValues, _, _, _):
+            for input in initialValues { foldConstants(input) }
+        case .data, .metalData:
+            break
+        }
+    }
+    for output in outputs { foldConstants(output) }
+
     return UInt64(hasher.finalize().magnitude)
 }
 
