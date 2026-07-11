@@ -36,8 +36,15 @@ public protocol Dataset {
     /// Total number of samples in the dataset.
     var count: Int { get }
 
-    /// Access a sample by index.
+    /// Access a single sample by index.
     subscript(index: Int) -> Element { get }
+
+    /// Assemble a batch from the given sample indices.
+    ///
+    /// A default implementation (for the `(input, target)` element type)
+    /// gathers each sample via `subscript` and concatenates along the batch
+    /// axis; datasets backed by contiguous tensors override this for efficiency.
+    func batch(indices: [Int]) -> Element
 }
 
 // MARK: - TensorDataset
@@ -78,8 +85,34 @@ public struct TensorDataset: Dataset {
 
     public subscript(index: Int) -> Element {
         precondition(index >= 0 && index < count, "Index out of bounds")
-        // For now, return slices (will need proper indexing)
-        // This is a simplified version - proper implementation needs gather
+        // A single sample, keeping a leading batch dimension of 1 so samples
+        // concatenate cleanly into a batch.
+        return (inputs.slice(start: index, size: 1), targets.slice(start: index, size: 1))
+    }
+
+    /// Efficient batch assembly. Contiguous ascending indices (the common
+    /// non-shuffled loader case) use a single slice; arbitrary/shuffled index
+    /// sets use gather. Mirrors SimpleBatchLoader.
+    public func batch(indices: [Int]) -> Element {
+        precondition(!indices.isEmpty, "batch(indices:) requires at least one index")
+        if let first = indices.first,
+           indices == Array(first..<(first + indices.count)) {
+            return (inputs.slice(start: first, size: indices.count),
+                    targets.slice(start: first, size: indices.count))
+        }
+        let indexTensor = Tensor<Float>(indices.map { Float($0) }, shape: [indices.count], on: inputs.device)
+        return (inputs.gather(indices: indexTensor, axis: 0),
+                targets.gather(indices: indexTensor, axis: 0))
+    }
+}
+
+extension Dataset where Element == (input: Tensor<Float>, target: Tensor<Float>) {
+    /// Default batching: gather each sample and concatenate along the batch axis.
+    public func batch(indices: [Int]) -> Element {
+        precondition(!indices.isEmpty, "batch(indices:) requires at least one index")
+        let samples = indices.map { self[$0] }
+        let inputs = samples[0].input.concat(with: samples.dropFirst().map { $0.input }, axis: 0)
+        let targets = samples[0].target.concat(with: samples.dropFirst().map { $0.target }, axis: 0)
         return (inputs, targets)
     }
 }
@@ -175,9 +208,8 @@ public struct DataLoaderIterator<D: Dataset>: IteratorProtocol where D.Element =
         let batchIndices = Array(indices[currentIndex..<endIndex])
         currentIndex = endIndex
 
-        // For TensorDataset, we can slice directly
-        // This is a simplified implementation
-        return loader.dataset[batchIndices[0]]
+        // Assemble the full batch from the selected indices (respects shuffle).
+        return loader.dataset.batch(indices: batchIndices)
     }
 }
 
@@ -195,8 +227,8 @@ extension data {
         guard !tensors.isEmpty else {
             fatalError("Cannot stack empty array")
         }
-        // For now, return first tensor (proper implementation needs concat)
-        return tensors[0]
+        // Stack along a new leading axis (e.g. [D] tensors -> [N, D]).
+        return Tensor<Float>.stack(tensors, axis: 0)
     }
 }
 

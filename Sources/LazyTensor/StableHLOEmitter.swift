@@ -1117,7 +1117,7 @@ extension IRGraph {
                 structuralComponents.append("data:\(node.shape):\(node.dtype)")
             #endif
 
-            case .operation(let op, let inputs, _):
+            case .operation(let op, let inputs, let attributes):
                 // Use RELATIVE indices (position in topological order) not absolute IDs
                 // This ensures structurally equivalent graphs hash the same
                 let inputIndices = inputs.map { input -> String in
@@ -1128,7 +1128,14 @@ extension IRGraph {
                         return "ext:\(input.shape)"
                     }
                 }.joined(separator: ",")
-                structuralComponents.append("\(op.rawValue):[\(inputIndices)]:\(node.shape)")
+                // Attributes must be part of the key: ops like slice/reduce/reshape
+                // bake attribute values (offsets, axes, target shapes) into the
+                // compiled executable, so two ops identical except for attributes
+                // (e.g. slice start=0 vs start=2) must not share a cache entry.
+                let attrString = attributes.sorted(by: { $0.key < $1.key })
+                    .map { "\($0.key)=\(String(describing: $0.value))" }
+                    .joined(separator: ",")
+                structuralComponents.append("\(op.rawValue):[\(inputIndices)]:\(node.shape):{\(attrString)}")
 
             case .whileLoopTraced(let iterations, let initialValues, _, _, _):
                 let inputIndices = initialValues.map { input -> String in
