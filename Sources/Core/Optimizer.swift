@@ -286,6 +286,23 @@ extension optim {
 
             t += 1
 
+            guard let device = gradients.first?.device else { return }
+
+            // Hoist parameter-invariant scalar constants out of the loop: these
+            // are identical for every parameter, so build them once per step
+            // instead of ~8 constant nodes per parameter per step. eps is a
+            // scalar broadcast at use rather than a full-shape constant.
+            let beta1T = Tensor<Float>.full([], beta1, on: device)
+            let oneMinusBeta1 = Tensor<Float>.full([], 1 - beta1, on: device)
+            let beta2T = Tensor<Float>.full([], beta2, on: device)
+            let oneMinusBeta2 = Tensor<Float>.full([], 1 - beta2, on: device)
+            let biasCorr1 = Tensor<Float>.full([], 1 - pow(beta1, Float(t)), on: device)
+            let biasCorr2 = Tensor<Float>.full([], 1 - pow(beta2, Float(t)), on: device)
+            let epsT = Tensor<Float>.full([], eps, on: device)
+            let lrT = Tensor<Float>.full([], learningRate, on: device)
+            let lrWdT = weightDecay != 0
+                ? Tensor<Float>.full([], learningRate * weightDecay, on: device) : nil
+
             for i in 0..<parameters.count {
                 let param = parameters[i]
                 guard param.requiresGrad else { continue }
@@ -293,40 +310,33 @@ extension optim {
                 let grad = gradients[i]
 
                 // AdamW weight decay (decoupled)
-                if weightDecay != 0 {
-                    param.value = param.value - param.value * Tensor<Float>.full([], learningRate * weightDecay, on: param.value.device)
+                if let lrWdT = lrWdT {
+                    param.value = param.value - param.value * lrWdT
                 }
 
                 // Update first moment: m = beta1 * m + (1 - beta1) * g
-                let beta1Tensor = Tensor<Float>.full([], beta1, on: grad.device)
-                let oneMinusBeta1 = Tensor<Float>.full([], 1 - beta1, on: grad.device)
                 if let mPrev = m[i] {
-                    m[i] = mPrev * beta1Tensor + grad * oneMinusBeta1
+                    m[i] = mPrev * beta1T + grad * oneMinusBeta1
                 } else {
                     m[i] = grad * oneMinusBeta1
                 }
 
                 // Update second moment: v = beta2 * v + (1 - beta2) * g^2
-                let beta2Tensor = Tensor<Float>.full([], beta2, on: grad.device)
-                let oneMinusBeta2 = Tensor<Float>.full([], 1 - beta2, on: grad.device)
                 let gradSquared = grad * grad
                 if let vPrev = v[i] {
-                    v[i] = vPrev * beta2Tensor + gradSquared * oneMinusBeta2
+                    v[i] = vPrev * beta2T + gradSquared * oneMinusBeta2
                 } else {
                     v[i] = gradSquared * oneMinusBeta2
                 }
 
                 // Bias correction
-                let beta1Power = pow(beta1, Float(t))
-                let beta2Power = pow(beta2, Float(t))
-                let mHat = m[i]! / Tensor<Float>.full([], 1 - beta1Power, on: grad.device)
-                let vHat = v[i]! / Tensor<Float>.full([], 1 - beta2Power, on: grad.device)
+                let mHat = m[i]! / biasCorr1
+                let vHat = v[i]! / biasCorr2
 
                 // Update: p = p - lr * m_hat / (sqrt(v_hat) + eps)
                 let sqrtV = vHat.sqrt()
-                let epsTensor = Tensor<Float>.full(sqrtV.shape, eps, on: grad.device)
-                let update = mHat / (sqrtV + epsTensor)
-                param.value = param.value - update * Tensor<Float>.full([], learningRate, on: grad.device)
+                let update = mHat / (sqrtV + epsT.broadcast(to: sqrtV.shape))
+                param.value = param.value - update * lrT
             }
         }
 
