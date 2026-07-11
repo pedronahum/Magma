@@ -564,8 +564,18 @@ public final class MLIRBuilder: @unchecked Sendable {
     
     /// Select between two values based on condition
     public func select(_ condition: Value, _ onTrue: Value, _ onFalse: Value) -> Value {
+        // stablehlo.select requires an i1 predicate. Conditions in this stack are
+        // usually float (0.0/1.0 produced by comparison ops), so coerce a
+        // non-bool condition to i1 via `condition != 0`.
+        let pred: Value
+        if condition.type.dtype == .bool {
+            pred = condition
+        } else {
+            let zero = constant(0.0, type: condition.type)
+            pred = compare(condition, zero, direction: .ne)
+        }
         let result = nextValue(type: onTrue.type)
-        let op = "    \(result.name) = stablehlo.select \(condition.displayName), \(onTrue.displayName), \(onFalse.displayName) : (\(condition.type.mlirType), \(onTrue.type.mlirType), \(onFalse.type.mlirType)) -> \(onTrue.type.mlirType)"
+        let op = "    \(result.name) = stablehlo.select \(pred.displayName), \(onTrue.displayName), \(onFalse.displayName) : (\(pred.type.mlirType), \(onTrue.type.mlirType), \(onFalse.type.mlirType)) -> \(onTrue.type.mlirType)"
         operations.append(op)
         return result
     }

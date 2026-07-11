@@ -2251,20 +2251,29 @@ extension Tensor where Scalar == Float {
             scaledLogits = self / Tensor<Float>.full(shape, temperature, on: device)
         }
 
-        // For top-k, we need to find the k-th largest value and mask everything below it
-        // This is a simplified implementation that works for the common case
+        let lastAxis = rank - 1
+        if k >= lastDim {
+            return scaledLogits.softmax(dim: -1)   // nothing to filter
+        }
 
-        // Get max for each position to use as a baseline
-        let maxVal = scaledLogits.max()
+        // Find the k-th largest value per row without a sort op: repeatedly take
+        // the running max along the last axis and mask it out; after k-1 strips
+        // the running max is the k-th largest. (Exact ties for the max are
+        // stripped together, so heavily-tied rows may keep more than k.)
+        let negInf = Tensor<Float>.full(shape, -1e30, on: device)
+        var working = scaledLogits
+        var threshold = working.max(dims: [lastAxis], keepDims: true)
+        for _ in 1..<k {
+            let isMax = working.greaterThanOrEqual(threshold.broadcast(to: shape))
+            working = Tensor.where_(isMax, negInf, working)
+            threshold = working.max(dims: [lastAxis], keepDims: true)
+        }
 
-        // For now, we'll use a simpler approach:
-        // Apply softmax first, then zero out low-probability tokens
-        // This gives similar results to true top-k for generation
-        let probs = scaledLogits.softmax(dim: -1)
-
-        // This is an approximation - true top-k requires sorting which isn't easily
-        // available. For production use, you'd want to implement actual top-k.
-        return probs
+        // Keep logits >= the k-th largest; everything else is masked out before
+        // softmax so only the top-k retain probability mass.
+        let keep = scaledLogits.greaterThanOrEqual(threshold.broadcast(to: shape))
+        let filtered = Tensor.where_(keep, scaledLogits, negInf)
+        return filtered.softmax(dim: -1)
     }
 
     /// Sample from a probability distribution (multinomial sampling).
