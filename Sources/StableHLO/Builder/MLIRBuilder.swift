@@ -467,9 +467,22 @@ public final class MLIRBuilder: @unchecked Sendable {
 
         let axesStr = axes.map(String.init).joined(separator: ", ")
 
-        // Emit in simplified format that MetalHLO parser expects:
-        // %result = stablehlo.reduce %input, %init applies stablehlo.op across dimensions = [...] : (type, type) -> type
-        let reduceOp = "    \(reducedResult.name) = stablehlo.reduce \(input.displayName), \(initVal.name) applies stablehlo.\(op) across dimensions = [\(axesStr)] : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(reducedType.mlirType)"
+        // The two backends want different reduce assembly:
+        //  - MetalHLO's custom parser expects the simplified comma form
+        //    `stablehlo.reduce %input, %init applies ...`
+        //  - The real XLA/StableHLO parser (CPU/GPU/TPU via PJRT) rejects that
+        //    and requires the canonical shorthand `stablehlo.reduce(%input init: %init) applies ...`
+        //    (verified: the comma form fails XLA compilation with code 2).
+        // Gate by platform: macOS keeps the Metal-compatible form byte-for-byte;
+        // every other platform (Linux/XLA) emits canonical StableHLO.
+        // NOTE: if the Metal backend is ever exercised through the PJRT/XLA path
+        // on macOS, this needs to switch to a backend-aware flag instead.
+        let reduceOp: String
+        #if os(macOS)
+        reduceOp = "    \(reducedResult.name) = stablehlo.reduce \(input.displayName), \(initVal.name) applies stablehlo.\(op) across dimensions = [\(axesStr)] : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(reducedType.mlirType)"
+        #else
+        reduceOp = "    \(reducedResult.name) = stablehlo.reduce(\(input.displayName) init: \(initVal.name)) applies stablehlo.\(op) across dimensions = [\(axesStr)] : (\(input.type.mlirType), \(scalarType.mlirType)) -> \(reducedType.mlirType)"
+        #endif
         operations.append(reduceOp)
 
         // If keepDims is true, reshape to add back the removed dimensions as size 1

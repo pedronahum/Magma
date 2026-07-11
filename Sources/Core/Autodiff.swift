@@ -47,31 +47,48 @@ extension Tensor: Differentiable where Scalar: TensorScalar & BinaryFloatingPoin
 
 extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
+    // NOTE: these operators broadcast their operands, so each pullback must
+    // reduce the incoming cotangent back to its operand's original shape
+    // (summing over the broadcast axes) via `sumAlongBroadcastDims(to:)`.
+    // Without this, e.g. `x[B,N] + bias[N]` yields a bias gradient of shape
+    // [B,N] instead of [N]. For same-shape operands the helper is a no-op.
+
     /// VJP for addition: d(a+b)/da = 1, d(a+b)/db = 1
     @derivative(of: +)
     public static func vjpAdd(lhs: Tensor, rhs: Tensor) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
-        return (lhs + rhs, { v in (v, v) })
+        let lhsShape = lhs.shape, rhsShape = rhs.shape
+        return (lhs + rhs, { v in
+            (v.sumAlongBroadcastDims(to: lhsShape), v.sumAlongBroadcastDims(to: rhsShape))
+        })
     }
 
     /// VJP for subtraction: d(a-b)/da = 1, d(a-b)/db = -1
     @derivative(of: -)
     public static func vjpSubtract(lhs: Tensor, rhs: Tensor) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
-        return (lhs - rhs, { v in (v, v.negated()) })
+        let lhsShape = lhs.shape, rhsShape = rhs.shape
+        return (lhs - rhs, { v in
+            (v.sumAlongBroadcastDims(to: lhsShape), v.negated().sumAlongBroadcastDims(to: rhsShape))
+        })
     }
 
     /// VJP for multiplication: d(a*b)/da = b, d(a*b)/db = a
     @derivative(of: *)
     public static func vjpMultiply(lhs: Tensor, rhs: Tensor) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
-        return (lhs * rhs, { v in (v * rhs, v * lhs) })
+        let lhsShape = lhs.shape, rhsShape = rhs.shape
+        return (lhs * rhs, { v in
+            ((v * rhs).sumAlongBroadcastDims(to: lhsShape),
+             (v * lhs).sumAlongBroadcastDims(to: rhsShape))
+        })
     }
 
     /// VJP for division: d(a/b)/da = 1/b, d(a/b)/db = -a/b^2
     @derivative(of: /)
     public static func vjpDivide(lhs: Tensor, rhs: Tensor) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
+        let lhsShape = lhs.shape, rhsShape = rhs.shape
         let result = lhs / rhs
         return (result, { v in
-            let dLhs = v / rhs
-            let dRhs = (v.negated()) * result / rhs
+            let dLhs = (v / rhs).sumAlongBroadcastDims(to: lhsShape)
+            let dRhs = ((v.negated()) * result / rhs).sumAlongBroadcastDims(to: rhsShape)
             return (dLhs, dRhs)
         })
     }
