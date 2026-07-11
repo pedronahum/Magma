@@ -69,3 +69,6 @@ coverage/
 
 # Benchmark results (optional - remove if you want to track these)
 # benchmark-results/
+
+# Local PJRT plugin symlink dir (points at JAX's CUDA plugin)
+.magma-xla/

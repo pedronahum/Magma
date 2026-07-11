@@ -245,12 +245,14 @@ public final class PassManager: @unchecked Sendable {
         for pass in sortedPassList {
             guard enabledSet.contains(pass.name) else { continue }
 
-            let startTime = CFAbsoluteTimeGetCurrent()
+            // Date().timeIntervalSinceReferenceDate matches CFAbsoluteTimeGetCurrent
+            // (seconds since the 2001 reference date) and is available on Linux.
+            let startTime = Date().timeIntervalSinceReferenceDate
             let nodesBefore = result.nodes.count
 
             result = pass.run(on: result)
 
-            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            let elapsed = Date().timeIntervalSinceReferenceDate - startTime
             let nodesAfter = result.nodes.count
             let transformations = max(0, nodesBefore - nodesAfter)
 

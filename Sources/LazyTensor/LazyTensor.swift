@@ -704,6 +704,34 @@ public final class MetalCompilationCache: @unchecked Sendable {
 nonisolated(unsafe) private var _globalClient: PJRTClient?
 private let _clientLock = NSLock()
 
+/// Resolve which backend to actually execute on.
+///
+/// Priority:
+/// 1. `MAGMA_DEFAULT_BACKEND` env override (`cpu`/`gpu`/`tpu`/`metal`), when that
+///    plugin is actually available.
+/// 2. The requested backend, when its plugin is available.
+/// 3. The best available backend (TPU > GPU > CPU) as a fallback, so execution
+///    still works on machines where the requested plugin — most often the CPU
+///    plugin — is not installed but another accelerator is present.
+public func resolveExecutionBackend(requested: Backend) -> Backend {
+    // Explicit override wins, but only if its plugin is present.
+    if let raw = ProcessInfo.processInfo.environment["MAGMA_DEFAULT_BACKEND"],
+       let override = Backend(rawValue: raw.lowercased()),
+       override.isAvailable {
+        return override
+    }
+
+    // Use the requested backend when its plugin is present.
+    if requested.isAvailable {
+        return requested
+    }
+
+    // Otherwise fall back to whatever is available so execution can proceed.
+    // (bestAvailable returns .cpu when nothing else is found, preserving the
+    // previous behavior of surfacing a plugin-load error to the caller.)
+    return Backend.bestAvailable
+}
+
 /// Get or create the global XLA client
 public func getGlobalClient(backend: Backend = .cpu) throws -> PJRTClient {
     _clientLock.lock()
@@ -713,7 +741,8 @@ public func getGlobalClient(backend: Backend = .cpu) throws -> PJRTClient {
         return client
     }
 
-    let client = try PJRTClient.create(backend: backend)
+    let resolved = resolveExecutionBackend(requested: backend)
+    let client = try PJRTClient.create(backend: resolved)
     _globalClient = client
     return client
 }

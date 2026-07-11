@@ -32,6 +32,17 @@ if enableXLA {
     #endif
 }
 
+// MetalHLO is only available/needed on macOS. The manifest runs on the host,
+// so on Linux we omit the package dependency and its product entirely.
+var packageDependencies: [Package.Dependency] = []
+var xlaRuntimeDependencies: [Target.Dependency] = ["CXLARuntime"]
+#if os(macOS)
+packageDependencies.append(.package(path: "../MetalHLO"))
+xlaRuntimeDependencies.append(
+    .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS]))
+)
+#endif
+
 let package = Package(
     name: "Magma",
     platforms: [
@@ -77,15 +88,8 @@ let package = Package(
             name: "Benchmarks",
             targets: ["Benchmarks"]
         ),
-        .executable(
-            name: "MetalExample",
-            targets: ["MetalExample"]
-        ),
     ],
-    dependencies: [
-        // MetalHLO for Metal GPU support on macOS
-        .package(path: "../MetalHLO"),
-    ],
+    dependencies: packageDependencies,
     targets: [
         // ════════════════════════════════════════════════════════════════════
         // LAYER 0: C Bindings to PJRT (header-only when XLA not enabled)
@@ -101,10 +105,7 @@ let package = Package(
         // ════════════════════════════════════════════════════════════════════
         .target(
             name: "XLARuntime",
-            dependencies: [
-                "CXLARuntime",
-                .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS])),
-            ],
+            dependencies: xlaRuntimeDependencies,
             path: "Sources/XLARuntime",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -170,12 +171,6 @@ let package = Package(
             dependencies: ["Magma"],
             path: "Examples/Benchmarks"
         ),
-        .executableTarget(
-            name: "MetalExample",
-            dependencies: ["Magma"],
-            path: "Examples/Metal"
-        ),
-
         // ════════════════════════════════════════════════════════════════════
         // TESTS
         // ════════════════════════════════════════════════════════════════════
@@ -210,3 +205,17 @@ let package = Package(
     ],
     swiftLanguageVersions: [.v5]
 )
+
+// The Metal example is macOS-only (it exercises the Metal backend).
+#if os(macOS)
+package.products.append(
+    .executable(name: "MetalExample", targets: ["MetalExample"])
+)
+package.targets.append(
+    .executableTarget(
+        name: "MetalExample",
+        dependencies: ["Magma"],
+        path: "Examples/Metal"
+    )
+)
+#endif
