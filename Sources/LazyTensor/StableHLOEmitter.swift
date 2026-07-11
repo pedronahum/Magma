@@ -392,15 +392,18 @@ public final class StableHLOEmitter {
         case .select:
             return targetBuilder.select(inputs[0], inputs[1], inputs[2])
 
-        // Slice and pad
+        // Slice and pad. Keys must match what the Data layer sets
+        // ("start"/"limit"/"lowPad"/"highPad") and the main emitOperation path;
+        // the old "starts"/"limits"/"low"/"high" lookups returned nil and the
+        // force-cast trapped for any slice/pad traced inside a while body.
         case .slice:
-            let starts = attributes["starts"] as! [Int]
-            let limits = attributes["limits"] as! [Int]
-            let strides = attributes["strides"] as! [Int]
+            let starts = attributes["start"] as? [Int] ?? []
+            let limits = attributes["limit"] as? [Int] ?? []
+            let strides = attributes["strides"] as? [Int] ?? Array(repeating: 1, count: starts.count)
             return targetBuilder.slice(inputs[0], starts: starts, limits: limits, strides: strides)
         case .pad:
-            let low = attributes["low"] as! [Int]
-            let high = attributes["high"] as! [Int]
+            let low = attributes["lowPad"] as? [Int] ?? []
+            let high = attributes["highPad"] as? [Int] ?? []
             return targetBuilder.pad(inputs[0], low: low, high: high)
         case .concatenate:
             let dim = attributes["dimension"] as! Int
@@ -971,9 +974,35 @@ public final class StableHLOEmitter {
 nonisolated(unsafe) var _subgraphCache: [ObjectIdentifier: [LazyTensorHandle]] = [:]
 private let _subgraphCacheMaxEntries = 8000
 
+// The cache is a plain Dictionary read/written during a barrier's
+// buildTopologicalOrder while invalidateSubgraphCache can fire from
+// LazyTensorHandle.irNode.didSet on any thread that mutates a handle.
+// Concurrent Dictionary mutation is a data race (heap corruption), so gate every
+// access through this lock. Locking is per dictionary op (not held across the
+// recursive traversal), so it stays re-entrancy-safe and off the per-op path.
+private let _subgraphCacheLock = NSLock()
+
+/// Look up a handle's cached subtree.
+func subgraphCacheGet(_ oid: ObjectIdentifier) -> [LazyTensorHandle]? {
+    _subgraphCacheLock.lock()
+    defer { _subgraphCacheLock.unlock() }
+    return _subgraphCache[oid]
+}
+
+/// Store a handle's subtree, respecting the size cap.
+func subgraphCacheSet(_ oid: ObjectIdentifier, _ subtree: [LazyTensorHandle]) {
+    _subgraphCacheLock.lock()
+    defer { _subgraphCacheLock.unlock() }
+    if _subgraphCache.count < _subgraphCacheMaxEntries {
+        _subgraphCache[oid] = subtree
+    }
+}
+
 /// Invalidate the cached subgraph entry for a specific handle.
 /// Must be called when a handle's irNode changes.
 internal func invalidateSubgraphCache(for handle: LazyTensorHandle) {
+    _subgraphCacheLock.lock()
+    defer { _subgraphCacheLock.unlock() }
     _subgraphCache.removeValue(forKey: ObjectIdentifier(handle))
 }
 
@@ -997,7 +1026,7 @@ extension IRGraph {
 
             // Fast path: use cached subtree if available (built in a previous barrier).
             // The cache is invalidated when irNode changes, so this is always up-to-date.
-            if let cached = _subgraphCache[oid] {
+            if let cached = subgraphCacheGet(oid) {
                 for node in cached {
                     let noid = ObjectIdentifier(node)
                     if visited.insert(noid).inserted {
@@ -1033,9 +1062,7 @@ extension IRGraph {
 
             // Cache this handle's subtree for reuse in subsequent barriers.
             // Cap the cache size to bound memory growth.
-            if _subgraphCache.count < _subgraphCacheMaxEntries {
-                _subgraphCache[oid] = Array(result[subtreeStart...])
-            }
+            subgraphCacheSet(oid, Array(result[subtreeStart...]))
         }
 
         for output in outputs {
