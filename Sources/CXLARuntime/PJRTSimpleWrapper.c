@@ -16,6 +16,11 @@
 // Global state
 static void* g_plugin_handle = NULL;
 static const PJRT_Api* g_api = NULL;
+// Path of the currently-loaded plugin. PJRT plugins register process-global
+// LLVM state, so only one backend can be loaded per process; we remember which
+// one so a request for a *different* backend fails loudly instead of silently
+// reusing the already-loaded one.
+static char g_plugin_path[4096] = {0};
 
 //===------------------------------------------------------------------===//
 // Plugin Loading
@@ -23,7 +28,17 @@ static const PJRT_Api* g_api = NULL;
 
 SW_PJRT_Error_Code PJRT_LoadPlugin(const char* plugin_path) {
     if (g_plugin_handle != NULL) {
-        return SW_PJRT_Error_OK; // Already loaded
+        // A plugin is already loaded. Reloading the same one is a no-op, but a
+        // request for a different plugin must fail: silently returning OK here
+        // would hand back a client for the already-loaded (wrong) backend.
+        if (plugin_path != NULL && strcmp(plugin_path, g_plugin_path) == 0) {
+            return SW_PJRT_Error_OK;
+        }
+        fprintf(stderr,
+            "PJRT plugin mismatch: '%s' is already loaded; cannot load '%s'. "
+            "Only one PJRT backend can be used per process.\n",
+            g_plugin_path, plugin_path ? plugin_path : "(null)");
+        return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
     // Use RTLD_DEEPBIND on Linux to isolate plugin's LLVM symbols from ours
@@ -56,6 +71,14 @@ SW_PJRT_Error_Code PJRT_LoadPlugin(const char* plugin_path) {
         return SW_PJRT_Error_INTERNAL;
     }
 
+    // Remember which plugin was loaded so a later different-path request fails.
+    if (plugin_path != NULL) {
+        strncpy(g_plugin_path, plugin_path, sizeof(g_plugin_path) - 1);
+        g_plugin_path[sizeof(g_plugin_path) - 1] = '\0';
+    } else {
+        g_plugin_path[0] = '\0';
+    }
+
     return SW_PJRT_Error_OK;
 }
 
@@ -64,6 +87,7 @@ void PJRT_UnloadPlugin(void) {
         dlclose(g_plugin_handle);
         g_plugin_handle = NULL;
         g_api = NULL;
+        g_plugin_path[0] = '\0';
     }
 }
 
