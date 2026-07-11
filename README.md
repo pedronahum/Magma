@@ -200,8 +200,11 @@ export MAGMA_ENABLE_XLA=1
 # Build with XLA
 swift build
 
-# Run all tests
-swift test
+# Run all tests. Use --no-parallel: many suites materialize tensors, and each
+# GPU PJRT client reserves ~75-80% of memory. On a unified-memory box (e.g.
+# NVIDIA GB10) a parallel run spins up several clients at once and OOM-freezes
+# the machine. One client at a time is the only safe way.
+swift test --no-parallel
 
 # Run MNIST example
 swift run MNISTExample
