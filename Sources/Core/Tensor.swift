@@ -1591,9 +1591,17 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         return Tensor(handle: handle)
     }
 
+    /// A scalar constant broadcast to this tensor's shape. Uploads a single
+    /// value (promoted as a scalar) and broadcasts on device, instead of baking
+    /// a full-size host constant into the graph.
+    @inline(__always)
+    internal func scalarConst(_ value: Scalar) -> Tensor {
+        Tensor.full([], value, on: device).broadcast(to: shape)
+    }
+
     /// Element-wise less than comparison with scalar.
     public func lessThan(_ value: Scalar) -> Tensor {
-        lessThan(Tensor.full(shape, value, on: device))
+        lessThan(scalarConst(value))
     }
 
     /// Element-wise greater than comparison.
@@ -1623,7 +1631,7 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
     /// Element-wise greater than comparison with scalar.
     public func greaterThan(_ value: Scalar) -> Tensor {
-        greaterThan(Tensor.full(shape, value, on: device))
+        greaterThan(scalarConst(value))
     }
 
     /// Element-wise equality comparison.
@@ -1653,40 +1661,40 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
     /// Element-wise equality comparison with scalar.
     public func equalTo(_ value: Scalar) -> Tensor {
-        equalTo(Tensor.full(shape, value, on: device))
+        equalTo(scalarConst(value))
     }
 
     /// Element-wise less than or equal comparison.
     public func lessThanOrEqual(_ other: Tensor) -> Tensor {
         let gt = greaterThan(other)
-        return Tensor.ones(gt.shape, on: device) - gt
+        return Tensor.ones([], on: device).broadcast(to: gt.shape) - gt
     }
 
     /// Element-wise less than or equal comparison with scalar.
     public func lessThanOrEqual(_ value: Scalar) -> Tensor {
-        lessThanOrEqual(Tensor.full(shape, value, on: device))
+        lessThanOrEqual(scalarConst(value))
     }
 
     /// Element-wise greater than or equal comparison.
     public func greaterThanOrEqual(_ other: Tensor) -> Tensor {
         let lt = lessThan(other)
-        return Tensor.ones(lt.shape, on: device) - lt
+        return Tensor.ones([], on: device).broadcast(to: lt.shape) - lt
     }
 
     /// Element-wise greater than or equal comparison with scalar.
     public func greaterThanOrEqual(_ value: Scalar) -> Tensor {
-        greaterThanOrEqual(Tensor.full(shape, value, on: device))
+        greaterThanOrEqual(scalarConst(value))
     }
 
     /// Element-wise not equal comparison.
     public func notEqual(_ other: Tensor) -> Tensor {
         let eq = equalTo(other)
-        return Tensor.ones(eq.shape, on: device) - eq
+        return Tensor.ones([], on: device).broadcast(to: eq.shape) - eq
     }
 
     /// Element-wise not equal comparison with scalar.
     public func notEqual(_ value: Scalar) -> Tensor {
-        notEqual(Tensor.full(shape, value, on: device))
+        notEqual(scalarConst(value))
     }
 
     // MARK: - Boolean Masking
@@ -2262,7 +2270,7 @@ extension Tensor where Scalar == Float {
         // Apply temperature
         var scaledLogits = self
         if temperature != 1.0 {
-            scaledLogits = self / Tensor<Float>.full(shape, temperature, on: device)
+            scaledLogits = self / scalarConst(temperature)
         }
 
         let lastAxis = rank - 1
@@ -2274,7 +2282,7 @@ extension Tensor where Scalar == Float {
         // the running max along the last axis and mask it out; after k-1 strips
         // the running max is the k-th largest. (Exact ties for the max are
         // stripped together, so heavily-tied rows may keep more than k.)
-        let negInf = Tensor<Float>.full(shape, -1e30, on: device)
+        let negInf = scalarConst(-1e30)
         var working = scaledLogits
         var threshold = working.max(dims: [lastAxis], keepDims: true)
         for _ in 1..<k {
