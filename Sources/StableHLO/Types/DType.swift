@@ -19,7 +19,33 @@ public enum DType: String, Hashable, Sendable {
     
     /// MLIR type string representation
     public var mlirName: String { rawValue }
-    
+
+    /// Largest finite-magnitude literal for this dtype, used as a ±infinity
+    /// sentinel for max/min reductions (StableHLO text can't carry raw inf here).
+    public var maxFiniteLiteral: String {
+        switch self {
+        case .float16:  return "6.5504e+4"                       // f16 max
+        case .bfloat16: return "3.3895314e+38"                   // bf16 max
+        case .float32:  return "3.4028235e+38"                   // f32 max
+        case .float64:  return "1.7976931348623157e+308"         // f64 max
+        case .int8:     return "127"
+        case .int16:    return "32767"
+        case .int32:    return "2147483647"
+        case .int64:    return "9223372036854775807"
+        case .uint8:    return "255"
+        case .uint16:   return "65535"
+        case .uint32:   return "4294967295"
+        case .uint64:   return "18446744073709551615"
+        case .bool:     return "1"
+        }
+    }
+
+    /// Zero literal for this dtype (for pad fill values etc.).
+    public var zeroLiteral: String {
+        if self == .bool { return "false" }
+        return isFloatingPoint ? "0.0" : "0"
+    }
+
     /// Size in bytes
     public var byteSize: Int {
         switch self {

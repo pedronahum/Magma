@@ -447,18 +447,13 @@ public final class MLIRBuilder: @unchecked Sendable {
         // Create init value
         let scalarType = TensorType(shape: [], dtype: input.type.dtype)
         let initValueStr: String
-        if input.type.dtype.isFloatingPoint {
-            if initValue.isInfinite {
-                // Use very large finite values that the parser can handle
-                // FLT_MAX ≈ 3.4028235e+38
-                if initValue < 0 {
-                    initValueStr = "-3.4028235e+38"
-                } else {
-                    initValueStr = "3.4028235e+38"
-                }
-            } else {
-                initValueStr = "\(initValue)"
-            }
+        if initValue.isInfinite {
+            // ±infinity sentinel, dtype-correct (f16 doesn't overflow to inf,
+            // f64 gets its full range) and safe for integer tensors (Int(inf)
+            // would trap in the else branch below).
+            initValueStr = (initValue < 0 ? "-" : "") + input.type.dtype.maxFiniteLiteral
+        } else if input.type.dtype.isFloatingPoint {
+            initValueStr = "\(initValue)"
         } else {
             initValueStr = "\(Int(initValue))"
         }
@@ -615,7 +610,7 @@ public final class MLIRBuilder: @unchecked Sendable {
         // Create zero constant for padding value
         let zeroName = "%pad_zero_\(nextValueId)"
         nextValueId += 1
-        let zeroOp = "    \(zeroName) = stablehlo.constant dense<0.0> : tensor<\(input.type.dtype.mlirName)>"
+        let zeroOp = "    \(zeroName) = stablehlo.constant dense<\(input.type.dtype.zeroLiteral)> : tensor<\(input.type.dtype.mlirName)>"
         operations.append(zeroOp)
 
         let lowStr = low.map(String.init).joined(separator: ", ")
