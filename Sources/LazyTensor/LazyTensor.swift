@@ -8,6 +8,7 @@
 // - LazyTensorBarrier: Triggers compilation and execution
 
 import Foundation
+import Synchronization
 import StableHLO
 import XLARuntime
 
@@ -40,9 +41,15 @@ public final class LazyTensorHandle: @unchecked Sendable {
     /// The IR node that produces this tensor (nil if materialized)
     public var irNode: IRNode? {
         didSet {
+            #if os(macOS) && canImport(MetalHLO)
+            // The incremental structural hash is only consumed by the Metal
+            // fast-path cache (computeFastPathHash). On CPU/GPU/TPU it is pure
+            // overhead — recomputed on every op assignment and never read — so
+            // skip it there.
             if let node = irNode {
                 structuralHash = IRNode.computeIncrementalHash(node: node, shape: shape, dtype: dtype)
             }
+            #endif
             // Invalidate persistent subgraph cache entry for this handle.
             // Required when irNode changes (e.g., after materialization to .metalData),
             // so stale subtrees are not replayed in subsequent barriers.
@@ -355,8 +362,9 @@ public final class TensorRegistry: @unchecked Sendable {
     /// Shared instance
     public static let shared = TensorRegistry()
 
-    /// Next available tensor ID
-    private var nextId: UInt64 = 0
+    /// Next available tensor ID. Atomic so the per-op hot path doesn't take the
+    /// registry lock (which also guards the pending dictionaries).
+    private let nextIdCounter = Atomic<UInt64>(0)
 
     /// Pending (unmaterialized) tensors by device - these are tensors that need to be computed
     /// Only tensors explicitly marked for materialization are added here
@@ -370,13 +378,9 @@ public final class TensorRegistry: @unchecked Sendable {
 
     private init() {}
 
-    /// Generate a new unique tensor ID
+    /// Generate a new unique tensor ID (lock-free).
     public func nextTensorId() -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        let id = nextId
-        nextId += 1
-        return id
+        nextIdCounter.wrappingAdd(1, ordering: .relaxed).oldValue
     }
 
     /// Register a pending tensor (for internal tracking - doesn't mark for output)
