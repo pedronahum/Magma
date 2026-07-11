@@ -47,10 +47,23 @@ public protocol Module {
     /// Override this method for modules with custom parameter collection.
     func parameters() -> [Parameter]
 
+    /// Returns non-trained persistent buffers of this module (e.g. BatchNorm
+    /// running statistics). Buffers are excluded from `parameters()` so they
+    /// never reach the optimizer, but they are serialized by `stateDict()`.
+    ///
+    /// Override for modules that own buffers; default is empty.
+    func buffers() -> [Parameter]
+
     /// Move all parameters to the specified device.
     ///
     /// - Parameter device: The target device.
     mutating func to(device: Device)
+
+    /// Set training vs. inference mode, propagating to sub-modules.
+    ///
+    /// Layers whose behavior depends on the mode (Dropout, BatchNorm) override
+    /// this; containers propagate it to their children. Default is a no-op.
+    mutating func setTraining(_ training: Bool)
 }
 
 extension Module {
@@ -59,9 +72,29 @@ extension Module {
         return []
     }
 
+    /// Default implementation: no buffers.
+    public func buffers() -> [Parameter] {
+        return []
+    }
+
     /// Default implementation: no-op for modules without parameters.
     public mutating func to(device: Device) {
         // Override in modules with parameters
+    }
+
+    /// Default implementation: no-op for modules without mode-dependent behavior.
+    public mutating func setTraining(_ training: Bool) {
+        // Override in Dropout / BatchNorm / containers
+    }
+
+    /// Put the module (and its sub-modules) in training mode.
+    public mutating func train() {
+        setTraining(true)
+    }
+
+    /// Put the module (and its sub-modules) in evaluation/inference mode.
+    public mutating func eval() {
+        setTraining(false)
     }
 
     /// Callable syntax for forward pass.
@@ -691,6 +724,10 @@ extension nn {
             let scaleT = Tensor<Float>.full(input.shape, scale, on: input.device)
 
             return input * mask * scaleT
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
     }
 }
@@ -1756,36 +1793,65 @@ extension nn {
                 "BatchNorm2d: channel count mismatch. Layer expects \(numFeatures) channels, " +
                 "got \(input.shape[3]) in input shape \(input.shape).")
 
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: input.shape,
-                dtype: input.dtype,
-                device: input.device
-            )
+            // Reduce over N, H, W; the channel axis (3) is kept per-feature.
+            let reduceDims = [0, 1, 2]
+            let statShape = [1, 1, 1, numFeatures]
 
-            // Use batchNorm operation
-            handle.irNode = .operation(
-                op: .batchNorm,
-                inputs: [
-                    input.handle,
-                    weight.value.handle,
-                    bias.value.handle,
-                    runningMean.value.handle,
-                    runningVar.value.handle
-                ],
-                attributes: [
-                    "epsilon": eps,
-                    "featureIndex": 3  // NHWC format, channels at index 3
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
+            let mean: Tensor<Float>
+            let variance: Tensor<Float>
+            if training {
+                // Normalize with batch statistics.
+                mean = input.mean(dims: reduceDims, keepDims: true)
+                variance = input.variance(dims: reduceDims, keepDims: true, unbiased: false)
+                if trackRunningStats {
+                    updateRunningStats(input: input, batchMean: mean, reduceDims: reduceDims)
+                }
+            } else {
+                // Inference: use the tracked running statistics.
+                mean = runningMean.value.reshape(statShape)
+                variance = runningVar.value.reshape(statShape)
+            }
 
-            return Tensor<Float>(handle: handle)
+            let centered = input - mean.broadcast(to: input.shape)
+            let epsT = Tensor<Float>.full(variance.shape, eps, on: input.device)
+            let stddev = (variance + epsT).sqrt()
+            var normalized = centered / stddev.broadcast(to: input.shape)
+
+            if affine {
+                normalized = normalized * weight.value.reshape(statShape).broadcast(to: input.shape)
+                normalized = normalized + bias.value.reshape(statShape).broadcast(to: input.shape)
+            }
+            return normalized
+        }
+
+        /// Update running mean/variance with an exponential moving average of the
+        /// batch statistics (PyTorch uses unbiased variance for the running
+        /// estimate). The updated buffers are marked for materialization so they
+        /// flush to concrete leaves at the next barrier, bounding graph growth.
+        private func updateRunningStats(input: Tensor<Float>, batchMean: Tensor<Float>, reduceDims: [Int]) {
+            let device = input.device
+            let meanFlat = batchMean.reshape([numFeatures])
+            let varUnbiased = input.variance(dims: reduceDims, keepDims: false, unbiased: true)
+            let keep = Tensor<Float>.full([numFeatures], 1 - momentum, on: device)
+            let mT = Tensor<Float>.full([numFeatures], momentum, on: device)
+            let newMean = runningMean.value * keep + meanFlat * mT
+            let newVar = runningVar.value * keep + varUnbiased * mT
+            runningMean.value = newMean
+            runningVar.value = newVar
+            newMean.markForMaterialization()
+            newVar.markForMaterialization()
         }
 
         public func parameters() -> [Parameter] {
             affine ? [weight, bias] : []
+        }
+
+        public func buffers() -> [Parameter] {
+            trackRunningStats ? [runningMean, runningVar] : []
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
 
         public mutating func to(device: Device) {
@@ -1844,39 +1910,59 @@ extension nn {
                 "BatchNorm1d: feature count mismatch. Layer expects \(numFeatures) features, " +
                 "got \(input.shape[1]) in input shape \(input.shape).")
 
-            // Expand to 4D, apply batchnorm, squeeze back
-            let expanded = input.reshape([input.shape[0], 1, 1, numFeatures])
+            // Reduce over the batch axis (0); features (axis 1) are per-feature.
+            let reduceDims = [0]
+            let statShape = [1, numFeatures]
 
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: expanded.shape,
-                dtype: input.dtype,
-                device: input.device
-            )
+            let mean: Tensor<Float>
+            let variance: Tensor<Float>
+            if training {
+                mean = input.mean(dims: reduceDims, keepDims: true)
+                variance = input.variance(dims: reduceDims, keepDims: true, unbiased: false)
+                updateRunningStats(input: input, batchMean: mean, reduceDims: reduceDims)
+            } else {
+                mean = runningMean.value.reshape(statShape)
+                variance = runningVar.value.reshape(statShape)
+            }
 
-            handle.irNode = .operation(
-                op: .batchNorm,
-                inputs: [
-                    expanded.handle,
-                    weight.value.handle,
-                    bias.value.handle,
-                    runningMean.value.handle,
-                    runningVar.value.handle
-                ],
-                attributes: [
-                    "epsilon": eps,
-                    "featureIndex": 3
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
+            let centered = input - mean.broadcast(to: input.shape)
+            let epsT = Tensor<Float>.full(variance.shape, eps, on: input.device)
+            let stddev = (variance + epsT).sqrt()
+            var normalized = centered / stddev.broadcast(to: input.shape)
 
-            let normalized = Tensor<Float>(handle: handle)
-            return normalized.reshape(input.shape)
+            normalized = normalized * weight.value.reshape(statShape).broadcast(to: input.shape)
+            normalized = normalized + bias.value.reshape(statShape).broadcast(to: input.shape)
+            return normalized
+        }
+
+        /// Fixed 0.1 momentum EMA of the batch statistics (BatchNorm1d exposes no
+        /// momentum knob). Uses unbiased variance for the running estimate and
+        /// marks the buffers for materialization to bound graph growth.
+        private func updateRunningStats(input: Tensor<Float>, batchMean: Tensor<Float>, reduceDims: [Int]) {
+            let device = input.device
+            let momentum: Float = 0.1
+            let meanFlat = batchMean.reshape([numFeatures])
+            let varUnbiased = input.variance(dims: reduceDims, keepDims: false, unbiased: true)
+            let keep = Tensor<Float>.full([numFeatures], 1 - momentum, on: device)
+            let mT = Tensor<Float>.full([numFeatures], momentum, on: device)
+            let newMean = runningMean.value * keep + meanFlat * mT
+            let newVar = runningVar.value * keep + varUnbiased * mT
+            runningMean.value = newMean
+            runningVar.value = newVar
+            newMean.markForMaterialization()
+            newVar.markForMaterialization()
         }
 
         public func parameters() -> [Parameter] {
             [weight, bias]
+        }
+
+        public func buffers() -> [Parameter] {
+            [runningMean, runningVar]
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
     }
 }
@@ -2182,6 +2268,16 @@ extension nn {
         public func parameters() -> [Parameter] {
             layers.flatMap { $0.parameters() }
         }
+
+        public func buffers() -> [Parameter] {
+            layers.flatMap { $0.buffers() }
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            for layer in layers {
+                layer.setTraining(training)
+            }
+        }
     }
 
     /// Type-erased layer wrapper for heterogeneous sequential containers
@@ -2191,11 +2287,17 @@ extension nn {
 
         private let _forward: (Tensor<Float>) -> Tensor<Float>
         private let _parameters: () -> [Parameter]
+        private let _buffers: () -> [Parameter]
+        private let _setTraining: (Bool) -> Void
 
         public init<L: Module>(_ layer: L) where L.Input == Tensor<Float>, L.Output == Tensor<Float> {
+            // All four closures capture the same boxed `mutableLayer`, so
+            // `_setTraining` mutations are visible to later `_forward` calls.
             var mutableLayer = layer
             self._forward = { mutableLayer.forward($0) }
             self._parameters = { mutableLayer.parameters() }
+            self._buffers = { mutableLayer.buffers() }
+            self._setTraining = { mutableLayer.setTraining($0) }
         }
 
         public func forward(_ input: Tensor<Float>) -> Tensor<Float> {
@@ -2204,6 +2306,15 @@ extension nn {
 
         public func parameters() -> [Parameter] {
             _parameters()
+        }
+
+        public func buffers() -> [Parameter] {
+            _buffers()
+        }
+
+        // Non-mutating: mutates the shared captured layer box, not `self`.
+        public func setTraining(_ training: Bool) {
+            _setTraining(training)
         }
     }
 }
@@ -4364,6 +4475,12 @@ extension Module {
         "\(index).\(name ?? "param")"
     }
 
+    /// Key for a persistent buffer (e.g. BatchNorm running stats). Namespaced
+    /// with a "buffer." prefix so buffers never collide with parameters.
+    static func bufferKey(index: Int, name: String?) -> String {
+        "buffer.\(index).\(name ?? "buffer")"
+    }
+
     /// Returns a dictionary containing all module parameters.
     ///
     /// Similar to PyTorch's `state_dict()`.
@@ -4382,6 +4499,13 @@ extension Module {
         for (index, param) in parameters().enumerated() {
             let key = Self.stateDictKey(index: index, name: param.name)
             dict[key] = param.value
+        }
+        // Persistent buffers (e.g. BatchNorm running stats) are serialized too,
+        // under the "buffer." namespace, so inference statistics survive a
+        // save/load round-trip.
+        for (index, buffer) in buffers().enumerated() {
+            let key = Self.bufferKey(index: index, name: buffer.name)
+            dict[key] = buffer.value
         }
         return dict
     }
@@ -4403,11 +4527,16 @@ extension Module {
     public mutating func loadStateDict(_ stateDict: StateDict, strict: Bool = true) throws {
         let params = parameters()
 
-        // Build mapping from name to parameter
+        // Build mapping from name to parameter (and buffers, so running stats
+        // are restored alongside trained weights).
         var nameToParam: [String: Parameter] = [:]
         for (index, param) in params.enumerated() {
             let key = Self.stateDictKey(index: index, name: param.name)
             nameToParam[key] = param
+        }
+        for (index, buffer) in buffers().enumerated() {
+            let key = Self.bufferKey(index: index, name: buffer.name)
+            nameToParam[key] = buffer
         }
 
         if strict {
