@@ -82,12 +82,24 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             device: device
         )
 
-        // Convert data to Float array
+        // Convert data to the underlying Float storage. Use numeric conversion
+        // per element (the TensorScalar conformers are all numeric); never
+        // stringify-and-reparse, which is slow and crashes on force-unwrap.
         let floatData: [Float]
         if Scalar.self == Float.self {
             floatData = data as! [Float]
         } else {
-            floatData = data.map { Float("\($0)")! }
+            floatData = data.map { element -> Float in
+                switch element {
+                case let v as Float: return v
+                case let v as Double: return Float(v)
+                case let v as Int: return Float(v)
+                case let v as Int32: return Float(v)
+                case let v as Int64: return Float(v)
+                case let v as Bool: return v ? 1 : 0
+                default: return 0
+                }
+            }
         }
 
         // Store as constant - the constant promotion system will convert these
@@ -668,6 +680,8 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             return values.map { Int32($0) as! Scalar }
         } else if Scalar.self == Int64.self {
             return values.map { Int64($0) as! Scalar }
+        } else if Scalar.self == Int.self {
+            return values.map { Int($0) as! Scalar }
         } else if Scalar.self == Bool.self {
             return values.map { ($0 != 0) as! Scalar }
         } else {
