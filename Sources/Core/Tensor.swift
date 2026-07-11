@@ -1231,6 +1231,33 @@ extension Tensor {
         TensorRegistry.shared.registerPending(handle)
         return Tensor(handle: handle)
     }
+
+    /// Maximum along the given dimensions.
+    public func max(dims: [Int], keepDims: Bool = false) -> Tensor {
+        let normalizedDims = dims.map { $0 < 0 ? rank + $0 : $0 }
+
+        var resultShape: [Int]
+        if keepDims {
+            resultShape = shape
+            for dim in normalizedDims {
+                resultShape[dim] = 1
+            }
+        } else {
+            resultShape = shape.enumerated()
+                .filter { !normalizedDims.contains($0.offset) }
+                .map { $0.element }
+        }
+
+        let id = TensorRegistry.shared.nextTensorId()
+        let handle = LazyTensorHandle(id: id, shape: resultShape, dtype: dtype, device: device)
+        handle.irNode = .operation(
+            op: .reduceMax,
+            inputs: [self.handle],
+            attributes: ["axes": normalizedDims, "keepDims": keepDims]
+        )
+        TensorRegistry.shared.registerPending(handle)
+        return Tensor(handle: handle)
+    }
 }
 
 // MARK: - Activations
@@ -1307,10 +1334,33 @@ extension Tensor {
         return Tensor(handle: handle)
     }
 
-    /// Log softmax along the last dimension
+    /// Log softmax along the given dimension.
+    ///
+    /// Computed as the numerically stable `x - logsumexp(x)` rather than
+    /// `log(softmax(x))`, which underflows to `-inf` when a probability rounds
+    /// to zero. `logsumexp(x) = m + log(sum(exp(x - m)))` with `m = max(x)`,
+    /// so `logSoftmax(x) = (x - m) - log(sum(exp(x - m)))`.
     public func logSoftmax(dim: Int = -1) -> Tensor {
-        // log(softmax(x)) = x - log(sum(exp(x)))
-        softmax(dim: dim).log()
+        let axis = dim < 0 ? rank + dim : dim
+        let m = self.max(dims: [axis], keepDims: true)
+        let shifted = self - m.broadcast(to: shape)
+
+        // sum(exp(shifted)) over `axis`, keepDims. Built inline because the
+        // sum(dims:) convenience is constrained to BinaryFloatingPoint while
+        // this extension is generic.
+        var reducedShape = shape
+        reducedShape[axis] = 1
+        let sumId = TensorRegistry.shared.nextTensorId()
+        let sumHandle = LazyTensorHandle(id: sumId, shape: reducedShape, dtype: dtype, device: device)
+        sumHandle.irNode = .operation(
+            op: .reduceSum,
+            inputs: [shifted.exp().handle],
+            attributes: ["axes": [axis], "keepDims": true]
+        )
+        TensorRegistry.shared.registerPending(sumHandle)
+
+        let logSum = Tensor(handle: sumHandle).log()
+        return shifted - logSum.broadcast(to: shape)
     }
 
     /// Element-wise natural logarithm
