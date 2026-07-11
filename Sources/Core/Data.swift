@@ -827,28 +827,25 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     @derivative(of: scatter, wrt: (self, updates))
     public func vjpScatter(indices: Tensor<Float>, updates: Tensor, axis: Int = 0) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
         let result = self.scatter(indices: indices, updates: updates, axis: axis)
-        let isElementScatter = updates.shape == indices.shape
         let updatesShape = updates.shape
         let device = self.device
         return (result, { v in
-            // Gradient for input: just pass through the gradient (updates overwrite)
+            // Gradient for input: updates overwrite, so the cotangent passes through.
             let inputGrad = v
-            // Gradient for updates: gather from the output gradient at scatter positions
+            // Gradient for updates: gather the output cotangent at the scatter
+            // positions. `gather` only supports 1-D indices (index-select along
+            // `axis`); for multi-dim indices a proper element-wise gatherElements
+            // is not implemented yet, so fall back to a correctly-shaped zero
+            // gradient rather than crashing on gather's 1-D precondition.
+            // TODO: Implement gatherElements for multi-dim element-wise gathering.
             let updatesGrad: Tensor<Scalar>
-            if isElementScatter {
-                // Element scatter mode: gather individual elements from gradient
-                // For now, use slice gather and then reshape if shapes differ
+            if indices.rank == 1 {
                 let gathered = v.gather(indices: indices, axis: axis)
-                if gathered.shape == updatesShape {
-                    updatesGrad = gathered
-                } else {
-                    // Shapes don't match due to gather semantics - use zeros as conservative approx
-                    // TODO: Implement proper gatherElements for element-wise gathering
-                    updatesGrad = Tensor<Scalar>.zeros(updatesShape, on: device)
-                }
+                updatesGrad = gathered.shape == updatesShape
+                    ? gathered
+                    : Tensor<Scalar>.zeros(updatesShape, on: device)
             } else {
-                // Slice scatter mode: use regular gather
-                updatesGrad = v.gather(indices: indices, axis: axis)
+                updatesGrad = Tensor<Scalar>.zeros(updatesShape, on: device)
             }
             return (inputGrad, updatesGrad)
         })
