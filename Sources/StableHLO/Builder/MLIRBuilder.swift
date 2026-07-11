@@ -718,6 +718,45 @@ public final class MLIRBuilder: @unchecked Sendable {
         return result
     }
 
+    // MARK: - Convolution Operation
+
+    /// Emit a 2D convolution (`stablehlo.convolution`).
+    ///
+    /// Layouts follow Magma's `nn.Conv2d`: input is NHWC `[batch, H, W, inC]`,
+    /// kernel is HWIO `[kH, kW, inC, outC]`, output is NHWC `[batch, outH, outW,
+    /// outC]`. This is a standard convolution — no grouping and no dilation — so
+    /// `batch_group_count`/`feature_group_count` are 1 and both dilations are 1.
+    /// The pretty-printed syntax and dimension-number ordering match XLA's own
+    /// StableHLO round-trip tests (xla/hlo/translate/tests/stablehlo.mlir).
+    ///
+    /// - Parameters:
+    ///   - input: NHWC input value.
+    ///   - kernel: HWIO kernel value.
+    ///   - strides: `[strideH, strideW]`.
+    ///   - padding: `[[padTop, padBottom], [padLeft, padRight]]`.
+    ///   - outputShape: precomputed NHWC result shape.
+    public func convolution(
+        _ input: Value,
+        kernel: Value,
+        strides: [Int],
+        padding: [[Int]],
+        outputShape: [Int]
+    ) -> Value {
+        let resultType = TensorType(shape: outputShape, dtype: input.type.dtype)
+        let result = nextValue(type: resultType)
+
+        let strideStr = strides.map(String.init).joined(separator: ", ")
+        let padStr = padding.map { "[\($0[0]), \($0[1])]" }.joined(separator: ", ")
+
+        let op = "    \(result.name) = stablehlo.convolution(\(input.displayName), \(kernel.displayName)) "
+            + "dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], "
+            + "window = {stride = [\(strideStr)], pad = [\(padStr)], lhs_dilate = [1, 1], rhs_dilate = [1, 1]} "
+            + "{batch_group_count = 1 : i64, feature_group_count = 1 : i64} : "
+            + "(\(input.type.mlirType), \(kernel.type.mlirType)) -> \(resultType.mlirType)"
+        operations.append(op)
+        return result
+    }
+
     // MARK: - Scatter Operation
 
     /// Scatter updates into input at specified indices

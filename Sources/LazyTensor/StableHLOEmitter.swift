@@ -853,8 +853,20 @@ public final class StableHLOEmitter {
             // inputValues[0] = mean, inputValues[1] = stddev
             return builder.rngNormal(inputValues[0], inputValues[1], shape: output.shape)
 
+        // 2D convolution (NHWC input, HWIO kernel — see nn.Conv2d)
+        case .conv2d:
+            let strides = (attributes["strides"] as? [Int]) ?? [1, 1]
+            let padding = (attributes["padding"] as? [[Int]]) ?? [[0, 0], [0, 0]]
+            return builder.convolution(
+                inputValues[0],
+                kernel: inputValues[1],
+                strides: strides,
+                padding: padding,
+                outputShape: output.shape
+            )
+
         // Not yet implemented
-        case .conv1d, .conv2d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm:
+        case .conv1d, .convTranspose2d, .maxPool2d, .avgPool2d, .batchNorm, .layerNorm:
             fatalError("Operation \(op) not yet implemented in StableHLOEmitter")
         }
     }
