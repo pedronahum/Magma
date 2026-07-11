@@ -243,6 +243,13 @@ SW_PJRT_Error_Code PJRT_GetBufferDimensions(
     size_t* out_num_dims
 );
 
+/// Get a buffer's element type (device -> host query).
+/// out_type receives the simplified element type on success.
+SW_PJRT_Error_Code PJRT_GetBufferElementType(
+    void* buffer,
+    SW_PJRT_Buffer_Type* out_type
+);
+
 /// Get buffer size in bytes on device
 SW_PJRT_Error_Code PJRT_GetBufferOnDeviceSizeInBytes(
     void* buffer,

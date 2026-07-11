@@ -283,6 +283,28 @@ public enum ElementType: Sendable {
         }
     }
 
+    /// Construct from the C API type (device -> host query path).
+    init(cType: SW_PJRT_Buffer_Type) {
+        switch cType {
+        case SW_PJRT_Buffer_Type_PRED: self = .bool
+        case SW_PJRT_Buffer_Type_S8:   self = .int8
+        case SW_PJRT_Buffer_Type_S16:  self = .int16
+        case SW_PJRT_Buffer_Type_S32:  self = .int32
+        case SW_PJRT_Buffer_Type_S64:  self = .int64
+        case SW_PJRT_Buffer_Type_U8:   self = .uint8
+        case SW_PJRT_Buffer_Type_U16:  self = .uint16
+        case SW_PJRT_Buffer_Type_U32:  self = .uint32
+        case SW_PJRT_Buffer_Type_U64:  self = .uint64
+        case SW_PJRT_Buffer_Type_F16:  self = .float16
+        case SW_PJRT_Buffer_Type_F32:  self = .float32
+        case SW_PJRT_Buffer_Type_F64:  self = .float64
+        case SW_PJRT_Buffer_Type_BF16: self = .bfloat16
+        case SW_PJRT_Buffer_Type_C64:  self = .complex64
+        case SW_PJRT_Buffer_Type_C128: self = .complex128
+        default: self = .float32
+        }
+    }
+
     /// Convert to C API type
     var toCType: SW_PJRT_Buffer_Type {
         switch self {
@@ -629,10 +651,18 @@ public final class PJRTExecutable: @unchecked Sendable {
                         }
                     }
 
+                    // Query the real output element type; fall back to .float32
+                    // only if the query fails (preserves prior behavior on error).
+                    var elementType: ElementType = .float32
+                    var cType = SW_PJRT_Buffer_Type_F32
+                    if PJRT_GetBufferElementType(outputHandle, &cType) == SW_PJRT_Error_OK {
+                        elementType = ElementType(cType: cType)
+                    }
+
                     let buffer = PJRTBuffer(
                         handle: outputHandle,
                         shape: shape,
-                        elementType: .float32, // Default assumption
+                        elementType: elementType,
                         device: device
                     )
                     outputs.append(buffer)

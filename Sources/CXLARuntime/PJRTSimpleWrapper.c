@@ -317,6 +317,28 @@ static PJRT_Buffer_Type MapToPJRTElementType(SW_PJRT_Buffer_Type type) {
     }
 }
 
+// Reverse mapping: PJRT element type -> simplified type (for query paths).
+static SW_PJRT_Buffer_Type MapFromPJRTElementType(PJRT_Buffer_Type type) {
+    switch (type) {
+        case PJRT_Buffer_Type_PRED: return SW_PJRT_Buffer_Type_PRED;
+        case PJRT_Buffer_Type_S8:   return SW_PJRT_Buffer_Type_S8;
+        case PJRT_Buffer_Type_S16:  return SW_PJRT_Buffer_Type_S16;
+        case PJRT_Buffer_Type_S32:  return SW_PJRT_Buffer_Type_S32;
+        case PJRT_Buffer_Type_S64:  return SW_PJRT_Buffer_Type_S64;
+        case PJRT_Buffer_Type_U8:   return SW_PJRT_Buffer_Type_U8;
+        case PJRT_Buffer_Type_U16:  return SW_PJRT_Buffer_Type_U16;
+        case PJRT_Buffer_Type_U32:  return SW_PJRT_Buffer_Type_U32;
+        case PJRT_Buffer_Type_U64:  return SW_PJRT_Buffer_Type_U64;
+        case PJRT_Buffer_Type_F16:  return SW_PJRT_Buffer_Type_F16;
+        case PJRT_Buffer_Type_F32:  return SW_PJRT_Buffer_Type_F32;
+        case PJRT_Buffer_Type_F64:  return SW_PJRT_Buffer_Type_F64;
+        case PJRT_Buffer_Type_BF16: return SW_PJRT_Buffer_Type_BF16;
+        case PJRT_Buffer_Type_C64:  return SW_PJRT_Buffer_Type_C64;
+        case PJRT_Buffer_Type_C128: return SW_PJRT_Buffer_Type_C128;
+        default: return SW_PJRT_Buffer_Type_F32; // Default to F32
+    }
+}
+
 // Map simplified semantics to PJRT host buffer semantics
 static PJRT_HostBufferSemantics MapToHostBufferSemantics(SW_PJRT_HostBufferSemantics semantics) {
     switch (semantics) {
@@ -764,6 +786,31 @@ SW_PJRT_Error_Code PJRT_GetBufferDimensions(
     *out_dims = args.dims;
     *out_num_dims = args.num_dims;
 
+    return SW_PJRT_Error_OK;
+}
+
+SW_PJRT_Error_Code PJRT_GetBufferElementType(
+    void* buffer,
+    SW_PJRT_Buffer_Type* out_type
+) {
+    if (g_api == NULL || buffer == NULL || out_type == NULL) {
+        return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    PJRT_Buffer_ElementType_Args args;
+    memset(&args, 0, sizeof(args));
+    args.struct_size = sizeof(args);
+    args.buffer = (PJRT_Buffer*)buffer;
+
+    PJRT_Error* error = g_api->PJRT_Buffer_ElementType(&args);
+
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        PJRT_DestroyError(error);
+        return code;
+    }
+
+    *out_type = MapFromPJRTElementType(args.type);
     return SW_PJRT_Error_OK;
 }
 
