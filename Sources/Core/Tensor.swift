@@ -1677,35 +1677,30 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
     // MARK: - Boolean Masking
 
-    /// Apply a boolean mask to select elements.
+    /// Flatten the tensor and zero out elements where the mask is zero.
     ///
-    /// Returns a 1D tensor containing only the elements where mask is non-zero.
-    /// Similar to NumPy's `tensor[mask]` boolean indexing.
+    /// NOTE: this is NOT PyTorch `masked_select` / NumPy `x[mask]`. XLA requires
+    /// static output shapes, so a true variable-length boolean selection is not
+    /// expressible. This returns a 1-D tensor the *same length* as the input
+    /// (`elementCount`), with non-selected elements set to 0 — i.e.
+    /// `flatten(x) * flatten(mask)`. It is useful with sum/mean for masked
+    /// aggregation, where the zeroed slots drop out of the reduction.
     ///
-    /// - Parameter mask: Boolean-like mask tensor with same shape.
-    /// - Returns: 1D tensor containing selected elements.
+    /// - Parameter mask: mask tensor with the same shape as `self` (0 = drop).
+    /// - Returns: 1-D tensor of length `elementCount` with non-selected slots zeroed.
     ///
     /// Example:
     /// ```swift
     /// let x = Tensor<Float>([1, 2, 3, 4, 5], shape: [5])
-    /// let mask = x.greaterThan(2.0)  // [0, 0, 1, 1, 1]
-    /// let result = x.maskedSelect(mask)  // [3, 4, 5]
+    /// let mask = x.greaterThan(2.0)      // [0, 0, 1, 1, 1]
+    /// let result = x.maskedSelect(mask)  // [0, 0, 3, 4, 5], shape [5]
     /// ```
     public func maskedSelect(_ mask: Tensor) -> Tensor {
         precondition(shape == mask.shape,
             "maskedSelect: mask shape \(mask.shape) must match tensor shape \(shape).")
 
-        // Flatten both tensors
         let flatSelf = self.reshape([elementCount])
         let flatMask = mask.reshape([elementCount])
-
-        // For static compilation with XLA, we can't dynamically determine output size.
-        // This simplified version zeros out non-selected elements while preserving shape.
-        // For true dynamic masking (variable output size), use CPU fallback or dynamic shapes.
-        //
-        // Use cases:
-        // - Zeroing out invalid values: result = x.maskedSelect(mask)
-        // - Combined with sum/mean for masked aggregation
         return flatSelf * flatMask
     }
 

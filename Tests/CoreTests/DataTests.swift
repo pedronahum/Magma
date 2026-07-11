@@ -1093,13 +1093,14 @@ struct ComparisonTests {
 @Suite("Boolean Masking Tests")
 struct BooleanMaskingTests {
 
-    @Test("Masked select")
+    @Test("Masked select zeroes non-selected and flattens")
     func maskedSelect() {
-        let x = Tensor<Float>.randn([4, 8])
-        let mask = x.greaterThan(0.0)
+        let x = Tensor<Float>([1, 2, 3, 4, 5], shape: [5])
+        let mask = x.greaterThan(2.0)          // [0, 0, 1, 1, 1]
         let result = x.maskedSelect(mask)
-        // Result is flattened with zeros where mask is false
-        #expect(result.shape == [32])
+        // Same length as input, non-selected zeroed (NOT variable-length select).
+        #expect(result.shape == [5])
+        #expect(result.scalars() == [0, 0, 3, 4, 5])
     }
 
     @Test("Where function")
