@@ -313,3 +313,61 @@ enumeration + CPU multi-device emulation**: expose `client.devices` publicly, ad
 a client-create option to request N CPU devices, and add a test that enumerates 8
 virtual CPU devices. That unlocks test-driven development of everything above with
 no GPU and no OOM exposure — before any FFI execute rework.
+
+---
+
+## 9. Porting map: `SwiftIRShardingLite` → Magma (Phase 2 detail)
+
+Verified against `pedronahum/SwiftIR` and Magma's `Sources/StableHLO/Builder/MLIRBuilder.swift`.
+Magma's `MLIRBuilder` is a text builder — it accumulates op strings in
+`operations: [String]` and `build(name:outputs:)` (MLIRBuilder.swift:1162) wraps
+them in `module @name { func.func @main(args) -> (types) { … } }`. That is
+structurally identical to SwiftIR's `ShardedModuleBuilder`, so the `sdy`
+vocabulary ports cleanly and the only new work is three small hooks.
+
+### 9.1 Port verbatim — pure-Swift data types (Foundation only, no native deps)
+
+| SwiftIR file → type | Emits | Port target |
+|---------------------|-------|-------------|
+| `SwiftIRShardingLite/DeviceMesh.swift` → `MeshAxis`, `DeviceMesh` (`.linear`/`.grid`/`.cube`, `totalDevices`, `mlirText`) | `sdy.mesh @mesh = <["x"=4, "y"=2]>` | `Sources/Sharding/DeviceMesh.swift` |
+| `SwiftIRShardingLite/TensorSharding.swift` → `DimensionSharding` (`.replicated`, `.sharded(on:)`), `TensorSharding` (`.replicated(meshName:rank:)`, `mlirAttributeText`) | `#sdy.sharding<@mesh, [{"x"}, {}]>` | `Sources/Sharding/TensorSharding.swift` |
+
+Both are `Equatable`/`Hashable`, `import Foundation` only.
+**Caveat:** the Lite `DimensionSharding` uses `axes: [String]` and drops the full
+variant's `AxisRef`/`SubAxisInfo`, so hierarchical *sub-axis* splitting isn't
+expressible. Fine for a data/tensor-parallel MVP; add `AxisRef`/`SubAxisInfo`
+later if sub-axis sharding is needed.
+
+### 9.2 Do NOT port
+
+- **`StableHLOSharding.swift` / `ShardedModuleBuilder`** — SwiftIR's own text
+  builder. Magma has `MLIRBuilder`; lift only the *techniques* (§9.3), not a
+  second builder.
+- **`SdyOptRunner.swift`** — optional offline propagation/inspection tool, not the
+  execution path.
+- **`SdyCAPIWrapper.c` / full `SwiftIRSharding/DeviceMesh`** — native MLIR C-API,
+  incomplete; unnecessary for the in-XLA model.
+
+### 9.3 Add to `MLIRBuilder` — three hooks (the real new work)
+
+1. **Mesh op in the module header.** `build(name:outputs:)` (line 1162): accept a
+   `mesh: DeviceMesh?` and inject `mesh.mlirText` between `module @name {` and
+   `func.func`.
+2. **Argument shardings.** `argument(_:)` (line 44): add an optional
+   `TensorSharding?`; in `build()`, append `{sdy.sharding = <attr>}` to each arg
+   in `argDefs` (line 1163).
+3. **Result / intermediate shardings.** Add a `shardingConstraint(_:_:)` method
+   that appends `%r = sdy.sharding_constraint %v <#sdy.sharding<…>> : type` via the
+   existing `addRawOperation` (line 82) — no need to touch every op emitter.
+
+### 9.4 One compile-options change (reuses existing machinery)
+
+Set `use_shardy_partitioner` + `use_spmd_partitioning` + `num_partitions = N` + a
+`device_assignment` in `PJRTProtoHelper.cpp`. The flags go through the **same
+`env_option_overrides` map** the file already writes for
+`xla_backend_optimization_level` — an extension of existing code, not new proto
+plumbing.
+
+**Net:** the `sdy` vocabulary (~2 pure-Swift files) ports directly; the new work
+is (9.3) the `MLIRBuilder` hooks, (9.4) the compile flags, and — the part SwiftIR
+never reached — letting PJRT partition and execute across devices.
