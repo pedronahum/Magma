@@ -856,14 +856,19 @@ public func getMetalHLOClient() throws -> MetalHLOClient {
 /// far cheaper than the optimize+emit+compile it skips.)
 ///
 /// Returns `nil` when the graph contains a traced while-loop: its body is not
-/// captured by this key, so such graphs must not be fast-path cached.
-func computePJRTTraceKey(outputs: [LazyTensorHandle]) -> UInt64? {
+/// captured by this key, so such graphs must not be fast-path cached. Otherwise
+/// returns the key together with the `.data` input handles in the order the
+/// executable expects them (same DFS), so the caller needs only this one walk.
+func computePJRTTraceKey(
+    outputs: [LazyTensorHandle]
+) -> (key: UInt64, dataInputs: [LazyTensorHandle])? {
     var hasher = Hasher()
     hasher.combine(outputs.count)
     var indexOf: [UInt64: Int] = [:]
     var next = 0
     var visited = Set<UInt64>()
     var hasWhileLoop = false
+    var dataInputs: [LazyTensorHandle] = []
 
     func visit(_ handle: LazyTensorHandle) {
         guard visited.insert(handle.id).inserted else { return }
@@ -898,6 +903,7 @@ func computePJRTTraceKey(outputs: [LazyTensorHandle]) -> UInt64? {
             hasher.combine(0); hasher.combine(shape); hasher.combine(handle.dtype); hasher.combine(values)
         case .data:
             hasher.combine(1); hasher.combine(handle.shape); hasher.combine(handle.dtype)
+            dataInputs.append(handle)
         case .operation(let op, let inputs, let attributes):
             hasher.combine(2); hasher.combine(op.rawValue)
             hasher.combine(handle.shape); hasher.combine(handle.dtype)
@@ -921,38 +927,7 @@ func computePJRTTraceKey(outputs: [LazyTensorHandle]) -> UInt64? {
     for output in outputs { hasher.combine(indexOf[output.id] ?? -1) }
 
     if hasWhileLoop { return nil }
-    return UInt64(hasher.finalize().magnitude)
-}
-
-/// Collect the `.data` (on-device buffer) input handles reachable from `outputs`,
-/// in post-order DFS (topological) order — the order the compiled executable
-/// expects its data arguments. Used by the fast path; the slow path validates
-/// that this order matches the optimized graph before caching a trace entry.
-func collectDataInputsForTrace(outputs: [LazyTensorHandle]) -> [LazyTensorHandle] {
-    var dataInputs: [LazyTensorHandle] = []
-    var visited = Set<UInt64>()
-
-    func visit(_ handle: LazyTensorHandle) {
-        guard visited.insert(handle.id).inserted else { return }
-        guard let node = handle.irNode else { return }
-        switch node {
-        case .data:
-            dataInputs.append(handle)
-        case .constant:
-            break
-        case .operation(_, let inputs, _):
-            for input in inputs { visit(input) }
-        case .whileLoopTraced(_, let initialValues, _, _, _):
-            for input in initialValues { visit(input) }
-        #if os(macOS) && canImport(MetalHLO)
-        case .metalData:
-            dataInputs.append(handle)
-        #endif
-        }
-    }
-
-    for output in outputs { visit(output) }
-    return dataInputs
+    return (key: UInt64(hasher.finalize().magnitude), dataInputs: dataInputs)
 }
 
 public func LazyTensorBarrier(on device: Device = .default) {
@@ -988,8 +963,8 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // Fast path (trace cache): skip graph build + optimization + emission +
     // compilation for a repeated graph structure. `fastKey` folds in constant
     // values (nil ⇒ contains a while-loop ⇒ ineligible).
-    let fastKey = traceCacheDisabled ? nil : computePJRTTraceKey(outputs: outputs)
-    if let fastKey, let entry = cache.getFast(hash: fastKey) {
+    let traceKeyResult = traceCacheDisabled ? nil : computePJRTTraceKey(outputs: outputs)
+    if let (fastKey, dataInputs) = traceKeyResult, let entry = cache.getFast(hash: fastKey) {
         if verifyTraceCache {
             // Rebuild + optimize + hash the slow way and assert the fast key maps
             // to the same structural graph (catches a fast-key collision). Read-only
@@ -1005,7 +980,6 @@ public func LazyTensorBarrier(on device: Device = .default) {
                     + "structuralHash \(vHash) != cached \(entry.structuralHash)")
             }
         }
-        let dataInputs = collectDataInputsForTrace(outputs: outputs)
         if dataInputs.count == entry.dataInputCount {
             var ok = true
             var inputBuffers: [PJRTBuffer] = []
@@ -1135,14 +1109,17 @@ public func LazyTensorBarrier(on device: Device = .default) {
         }
     }
 
-    // The fast path collects data inputs by walking the RAW graph from outputs.
-    // Only cache a trace entry when that raw order matches the optimized graph's
-    // data order the executable was compiled against — otherwise a future fast
-    // hit would feed buffers in the wrong slots. Compute the raw order now, while
-    // the outputs are still operation nodes (execution below rewrites them to
-    // .data, which would then be miscollected as inputs).
-    let rawDataOrder = collectDataInputsForTrace(outputs: outputs).map { $0.id }
-    let traceOrderMatches = (rawDataOrder == optimizedDataOrder)
+    // The fast path collects data inputs by walking the RAW graph from outputs
+    // (the `dataInputs` returned by computePJRTTraceKey). Only cache a trace entry
+    // when that raw order matches the optimized graph's data order the executable
+    // was compiled against — otherwise a future fast hit would feed buffers in the
+    // wrong slots. (Reordering/DCE of data leaves ⇒ mismatch ⇒ no caching.)
+    let traceOrderMatches: Bool
+    if let rawDataInputs = traceKeyResult?.dataInputs {
+        traceOrderMatches = rawDataInputs.map { $0.id } == optimizedDataOrder
+    } else {
+        traceOrderMatches = false
+    }
 
     // Second: promoted constants (need to create buffers for their values).
     // Capture them so the trace entry can reuse them on future fast hits.
@@ -1173,7 +1150,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
         // 9.5 Store a fast-path (trace) entry so a repeated barrier can skip the
         // whole pipeline. Only when the key is eligible (no while-loop) and the
         // raw/optimized data-input orders match (fast-path input assembly is sound).
-        if let fastKey, traceOrderMatches {
+        if let fastKey = traceKeyResult?.key, traceOrderMatches {
             cache.putFast(hash: fastKey, entry: PJRTTraceCacheEntry(
                 executable: executable,
                 dataInputCount: optimizedDataOrder.count,
