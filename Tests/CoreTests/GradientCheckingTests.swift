@@ -105,6 +105,16 @@ struct GradcheckActivationTests {
         #expect(result.passed, "Gradcheck failed for sigmoid. MaxAbsDiff: \(result.maxAbsDiff)")
     }
 
+    @Test("Gradcheck GELU")
+    func gradcheckGelu() {
+        // Guards that vjpGelu is the derivative of the tanh approximation the
+        // forward actually emits (the old sigmoid-approx pullback failed this).
+        let x = Tensor<Float>.randn([2, 3])
+        let result = gradcheck({ $0.gelu().sum() }, input: x, atol: atol, rtol: rtol)
+
+        #expect(result.passed, "Gradcheck failed for GELU. MaxAbsDiff: \(result.maxAbsDiff)")
+    }
+
     @Test("Gradcheck tanh")
     func gradcheckTanh() {
         let x = Tensor<Float>.randn([2, 3])

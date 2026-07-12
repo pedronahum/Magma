@@ -384,17 +384,29 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
 extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
 
-    /// VJP for gelu using sigmoid approximation
-    /// gelu(x) ≈ x * sigmoid(1.702 * x)
-    /// gelu'(x) ≈ sig + 1.702 * x * sig * (1 - sig)  where sig = sigmoid(1.702 * x)
+    /// VJP for gelu, matching the tanh approximation the forward op emits:
+    ///   g(x) = 0.5·x·(1 + tanh(u)),  u = c·(x + a·x³),  c = √(2/π), a = 0.044715
+    /// so the exact pullback is
+    ///   g'(x) = 0.5·(1 + tanh u) + 0.5·x·(1 − tanh²u)·u',   u' = c·(1 + 3a·x²)
+    /// The previous pullback used the derivative of the *sigmoid* approximation
+    /// (x·sigmoid(1.702x)), which is not the derivative of the value the forward
+    /// actually computes — gradients were systematically off in the transition
+    /// region.
     @derivative(of: gelu)
     public func vjpGelu() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
         let result = self.gelu()
-        return (result, { [selfCaptured = self] v in
-            let alpha = Tensor.full(selfCaptured.shape, Scalar(1.702), on: selfCaptured.device)
-            let one = Tensor.ones(selfCaptured.shape, on: selfCaptured.device)
-            let sig = (alpha * selfCaptured).sigmoid()
-            let geluGrad = sig + alpha * selfCaptured * sig * (one - sig)
+        return (result, { [x = self] v in
+            let shape = x.shape, device = x.device
+            let c = Tensor.full(shape, Scalar(0.7978845608), on: device)   // √(2/π)
+            let a = Tensor.full(shape, Scalar(0.044715), on: device)
+            let three = Tensor.full(shape, Scalar(3), on: device)
+            let half = Tensor.full(shape, Scalar(0.5), on: device)
+            let one = Tensor.ones(shape, on: device)
+            let x2 = x * x
+            let u = c * (x + a * (x2 * x))
+            let t = u.tanh()
+            let uPrime = c * (one + three * a * x2)
+            let geluGrad = half * (one + t) + half * x * (one - t * t) * uPrime
             return v * geluGrad
         })
     }
