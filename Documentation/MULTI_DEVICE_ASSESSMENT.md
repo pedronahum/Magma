@@ -264,6 +264,21 @@ Effort: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ multiple weeks (one eng
 Phases 0–1 are the critical path and prove the architecture. 2–4 are largely
 independent follow-ons.
 
+**High-level multi-device barrier (done).** `executeGraphReplicated(_:numReplicas:
+distribution:client:)` compiles a traced `IRGraph` for N replicas and runs it
+across N devices, distributing each `.data` input as `.replicated` (parameters) or
+`.perReplica` (data shards) and returning per-replica outputs. It's additive — the
+single-device barrier is untouched — and verified on emulated CPU devices. This is
+the seam DDP and SPMD plug into from the high level.
+
+**Remaining bridge for transparent DDP:** collectives must be expressible *inside*
+the high-level graph (an `all_reduce`/`allReduceMean` `OpKind` + emitter support),
+so a traced training step can sync gradients in-graph. That touches every
+exhaustive `switch op` in the emitter and the optimization passes, so it's a
+focused change tracked alongside graph-sharding (#19). Until then, the collective
+primitives (#12/#13) run as standalone executables over the barrier's per-replica
+outputs.
+
 ---
 
 ## 6. Testing strategy (important on this hardware)

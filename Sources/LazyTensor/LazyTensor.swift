@@ -1600,6 +1600,86 @@ public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws 
     return try executable.execute(inputBuffers)
 }
 
+/// How a graph input (`.data` node) is provided to each replica when running
+/// data-parallel.
+public enum ReplicaInputDistribution: Sendable {
+    /// Same value on every replica (e.g. a model parameter). The input's baked
+    /// host value is copied to each device.
+    case replicated
+    /// A distinct value per replica (e.g. this replica's data batch). Provide one
+    /// float array per replica, each matching the input's shape.
+    case perReplica([[Float]])
+}
+
+/// The high-level multi-device barrier: compile a traced graph for `numReplicas`
+/// data-parallel replicas and execute it across that many devices of `client`,
+/// returning each replica's outputs.
+///
+/// Each `.data` input node is distributed per `distribution` (keyed by the input
+/// buffer's identity); inputs not listed default to `.replicated`. The graph is
+/// traced once with the per-replica shapes, so cross-replica collectives in the
+/// graph (e.g. `all_reduce`) reduce across the replicas. This is the primitive
+/// DDP builds on: replicate parameters, provide each replica its data shard, and
+/// sync gradients with an all-reduce in the graph.
+///
+/// Currently supports float32 inputs. Does not use the single-device compilation
+/// cache, so it never disturbs the ordinary barrier.
+public func executeGraphReplicated(
+    _ graph: IRGraph,
+    numReplicas: Int,
+    distribution: [ObjectIdentifier: ReplicaInputDistribution] = [:],
+    client: PJRTClient
+) throws -> [[PJRTBuffer]] {
+    precondition(numReplicas > 0, "numReplicas must be positive")
+    guard client.deviceCount >= numReplicas else {
+        throw XLAError.executionFailed(
+            "client has \(client.deviceCount) device(s), need \(numReplicas) for \(numReplicas) replicas")
+    }
+
+    graph.buildTopologicalOrder()
+    let optimizedGraph: IRGraph
+    if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
+        optimizedGraph = PassManager.shared.run(on: graph)
+    } else {
+        optimizedGraph = graph
+    }
+
+    let emitter = StableHLOEmitter(graph: optimizedGraph)
+    let mlir = emitter.emit(name: "replicated_graph_\(optimizedGraph.computeHash().prefix(8))")
+
+    let executable = try client.compile(mlir, numReplicas: numReplicas, useSPMDPartitioning: false)
+
+    // Collect .data inputs in the same order the emitter used for func args.
+    var dataBuffers: [PJRTBuffer] = []
+    for node in optimizedGraph.nodes {
+        if case .data(let buffer) = node.irNode { dataBuffers.append(buffer) }
+    }
+
+    // Build per-replica input buffers, each resident on its replica's device.
+    var perReplica: [[PJRTBuffer]] = Array(repeating: [], count: numReplicas)
+    for buf in dataBuffers {
+        switch distribution[ObjectIdentifier(buf)] ?? .replicated {
+        case .replicated:
+            let host = try buf.toFloatArray()
+            for d in 0..<numReplicas {
+                perReplica[d].append(try client.createBuffer(
+                    host, shape: buf.shape, elementType: .float32, device: client.devices[d]))
+            }
+        case .perReplica(let datas):
+            guard datas.count == numReplicas else {
+                throw XLAError.executionFailed(
+                    "perReplica data count \(datas.count) != numReplicas \(numReplicas)")
+            }
+            for d in 0..<numReplicas {
+                perReplica[d].append(try client.createBuffer(
+                    datas[d], shape: buf.shape, elementType: .float32, device: client.devices[d]))
+            }
+        }
+    }
+
+    return try executable.executeMultiDevice(inputsPerDevice: perReplica)
+}
+
 // MARK: - While Loop Tracing
 
 /// Context for tracing a function body for while loop emission
