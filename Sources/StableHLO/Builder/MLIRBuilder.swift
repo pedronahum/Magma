@@ -898,6 +898,20 @@ public final class MLIRBuilder: @unchecked Sendable {
         return result
     }
 
+    /// Cross-replica mean: `all_reduce(add)` then scale by 1/group_size.
+    ///
+    /// This is the DDP gradient-averaging primitive — after it, every replica in
+    /// a group holds the mean of the group's per-replica inputs. Because the mean
+    /// is identical on all replicas, applying it as a gradient keeps replicated
+    /// parameters in sync. Assumes float inputs and equal-sized groups.
+    public func allReduceMean(_ input: Value, replicaGroups: [[Int]]) -> Value {
+        let summed = allReduce(input, reduction: "add", replicaGroups: replicaGroups)
+        let n = replicaGroups.first?.count ?? 1
+        guard n > 1 else { return summed }
+        let scale = constant([1.0 / Double(n)], shape: input.type.shape, dtype: input.type.dtype)
+        return multiply(summed, scale)
+    }
+
     // MARK: - Scatter Operation
 
     /// Scatter updates into input at specified indices

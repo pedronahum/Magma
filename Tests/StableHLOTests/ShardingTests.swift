@@ -220,4 +220,27 @@ struct CollectiveEmissionTests {
         #expect(mlir.contains("replica_groups = dense<[[0, 1, 2, 3]]> : tensor<1x4xi64>"))
         #expect(mlir.contains("stablehlo.maximum %ar_a, %ar_b"))
     }
+
+    @Test("allReduceMean is all_reduce(add) scaled by 1/N")
+    func allReduceMeanEmission() {
+        let builder = MLIRBuilder()
+        let g = builder.argument(TensorType(shape: [4], dtype: .float32))
+        let m = builder.allReduceMean(g, replicaGroups: [[0, 1, 2, 3]])
+        let mlir = builder.build(name: "mean", outputs: [m])
+        // Sum reduction across the group, then a 1/4 = 0.25 scale.
+        #expect(mlir.contains("stablehlo.add %ar_a, %ar_b"))
+        #expect(mlir.contains("dense<0.25> : tensor<4xf32>"))
+        #expect(mlir.contains("stablehlo.multiply"))
+    }
+
+    @Test("allReduceMean with a single replica is a no-op scale")
+    func allReduceMeanSingle() {
+        let builder = MLIRBuilder()
+        let g = builder.argument(TensorType(shape: [4], dtype: .float32))
+        let m = builder.allReduceMean(g, replicaGroups: [[0]])
+        let mlir = builder.build(name: "mean", outputs: [m])
+        // 1/1: no scaling multiply is emitted.
+        #expect(mlir.contains("stablehlo.all_reduce"))
+        #expect(!mlir.contains("stablehlo.multiply"))
+    }
 }
