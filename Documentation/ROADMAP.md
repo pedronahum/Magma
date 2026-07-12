@@ -327,7 +327,7 @@ Phase 6: Ecosystem                 [Ongoing]
 
 #### Device Management (Partially Done)
 - [x] TPU support (via libtpu.so on Cloud TPU VMs)
-- [ ] GPU support (CUDA plugin)
+- [x] GPU support (CUDA plugin) — single-device execution verified (NVIDIA GB10)
 - [ ] Multi-GPU data parallel
 - [ ] `DistributedDataParallel` (basic)
 
@@ -343,7 +343,7 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] TransformerEncoderLayer works ✅
 - [x] TransformerDecoderLayer works ✅
 - [x] RNN/LSTM/GRU works with bidirectional support ✅
-- [ ] GPU execution works
+- [x] GPU execution works ✅ (single-device CUDA, verified on NVIDIA GB10)
 - [x] Mixed precision training works ✅
 
 ---
@@ -1041,7 +1041,7 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | **Schedulers** | StepLR, ExponentialLR, CosineAnnealingLR, WarmupLR, WarmupCosine |
 | **Data** | Dataset protocol, SimpleBatchLoader (shuffle, dropLast) |
 | **Transforms** | Compose, Normalize, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomCrop, Pad, Grayscale, Lambda |
-| **Backends** | CPU (via PJRT), TPU (Cloud TPU VMs), GPU (planned) |
+| **Backends** | CPU (via PJRT), TPU (Cloud TPU VMs), GPU (CUDA, single-device), Metal (macOS) |
 | **Distributed** | Shardy integration planned (DeviceMesh, TensorSharding, SPMD, DDP, FSDP) |
 | **Checkpointing** | JSON format, Binary format, state_dict API |
 | **Control Flow** | select, while_loop, cond, scan (with autodiff) |

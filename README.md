@@ -88,9 +88,14 @@ for (images, labels) in dataLoader {
 | **CPU** | ✅ Supported | Full functionality via PJRT CPU plugin |
 | **TPU** | ✅ Supported | On Google Cloud TPU VMs with `libtpu.so` |
 | **Metal** | ✅ Supported | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) |
-| **GPU** | 🚧 Planned | CUDA support planned for future release |
+| **GPU (CUDA)** | ✅ Experimental | Single-device execution verified via the CUDA PJRT plugin |
 
-> **Note:** GPU/CUDA support requires the PJRT GPU plugin which is not yet fully integrated. CPU and TPU backends are production-ready for v0.1.0.
+> **Note:** Single-device CUDA GPU execution is working — the CUDA PJRT plugin
+> loads, compiles StableHLO, and executes (buffer transfers, elementwise ops, and
+> cuBLAS GEMM verified on an NVIDIA GB10). It requires the CUDA PJRT plugin
+> (`pjrt_c_api_gpu_plugin.so`, e.g. JAX's `xla_cuda_plugin.so`) on `MAGMA_XLA_PATH`.
+> Multi-GPU / sharding is **not** yet available (single device only). CPU and TPU
+> backends remain the most thoroughly tested paths for v0.1.0.
 
 ### Metal Backend Benchmarking
 
@@ -131,7 +136,11 @@ Magma uses [OpenXLA's PJRT](https://openxla.org/xla) (Portable JAX Runtime) for 
 
 **Option 1: Build XLA from source**
 
-> **Tested Version**: Magma has been tested with XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (compatible with jaxlib 0.9.0). Using this specific version is recommended for compatibility.
+> **Tested Versions**:
+> - **CPU** — plugin built from XLA commit `9b635916ecc6df6efee62d8e4b0c7ef87ef84d69` (jaxlib 0.10.1, PJRT C-API 0.108); this is the recommended pin and runs the full test suite.
+> - **GPU (CUDA)** — verified with JAX's bundled CUDA plugin (`xla_cuda_plugin.so`, CUDA 13 build) on an NVIDIA GB10. Matching the CPU pin's PJRT C-API version is recommended to avoid ABI skew.
+>
+> The framework was originally validated against XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (jaxlib 0.9.0); newer pins compatible with the PJRT C-API above also work.
 
 ```bash
 # Clone XLA
