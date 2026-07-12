@@ -397,8 +397,13 @@ public final class PJRTClient: @unchecked Sendable {
         Self.acceleratorLock.unlock()
     }
 
-    /// Create a client for the specified backend
-    public static func create(backend: Backend = .cpu) throws -> PJRTClient {
+    /// Create a client for the specified backend.
+    ///
+    /// - Parameter cpuDeviceCount: when set (CPU backend only), the CPU plugin is
+    ///   asked to expose this many virtual devices via its `cpu_device_count`
+    ///   create option. This lets multi-device code be developed and tested on
+    ///   CPU without physical accelerators. Ignored/unset for other backends.
+    public static func create(backend: Backend = .cpu, cpuDeviceCount: Int? = nil) throws -> PJRTClient {
         let client = PJRTClient(backend: backend)
 
         // Reserve an accelerator slot before touching the plugin, refusing a
@@ -433,9 +438,14 @@ public final class PJRTClient: @unchecked Sendable {
             throw XLAError.clientCreationFailed("Failed to load plugin '\(pluginPath)': error code \(errorCode.rawValue)")
         }
 
-        // Create the client
+        // Create the client, optionally requesting several virtual CPU devices.
         var clientHandle: UnsafeMutableRawPointer?
-        let createError = PJRT_CreateClient(&clientHandle)
+        let createError: SW_PJRT_Error_Code
+        if let cpuDeviceCount {
+            createError = PJRT_CreateClientWithCpuDeviceCount(Int64(cpuDeviceCount), &clientHandle)
+        } else {
+            createError = PJRT_CreateClient(&clientHandle)
+        }
 
         if createError != SW_PJRT_Error_OK {
             throw XLAError.clientCreationFailed("PJRT_CreateClient failed with code \(createError.rawValue)")

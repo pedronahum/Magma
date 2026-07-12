@@ -175,6 +175,45 @@ SW_PJRT_Error_Code PJRT_CreateClient(void** out_client) {
     return SW_PJRT_Error_OK;
 }
 
+SW_PJRT_Error_Code PJRT_CreateClientWithCpuDeviceCount(
+    int64_t cpu_device_count,
+    void** out_client
+) {
+    if (g_api == NULL) {
+        return SW_PJRT_Error_INTERNAL;
+    }
+
+    PJRT_Client_Create_Args args;
+    memset(&args, 0, sizeof(args));
+    args.struct_size = sizeof(args);
+
+    // The CPU PJRT plugin exposes the number of (virtual) devices via the
+    // "cpu_device_count" int64 create option. Only pass it when > 0; otherwise
+    // this behaves exactly like PJRT_CreateClient.
+    PJRT_NamedValue option;
+    memset(&option, 0, sizeof(option));
+    if (cpu_device_count > 0) {
+        option.struct_size = sizeof(option);
+        option.name = "cpu_device_count";
+        option.name_size = strlen("cpu_device_count");
+        option.type = PJRT_NamedValue_kInt64;
+        option.int64_value = cpu_device_count;
+        option.value_size = 1;
+        args.create_options = &option;
+        args.num_options = 1;
+    }
+
+    PJRT_Error* error = g_api->PJRT_Client_Create(&args);
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        PJRT_DestroyError(error);
+        return code;
+    }
+
+    *out_client = (void*)args.client;
+    return SW_PJRT_Error_OK;
+}
+
 void PJRT_DestroyClient(void* client) {
     if (client == NULL || g_api == NULL) {
         return;

@@ -271,12 +271,12 @@ independent follow-ons.
 - **Real multi-GPU is not testable on the single-GPU GB10.** Do not attempt to
   fake it by spinning up multiple CUDA clients — that is exactly the OOM-freeze
   the accelerator guard now prevents.
-- **Emulate multiple devices on the CPU plugin.** XLA's CPU backend can expose N
-  virtual devices (e.g. `xla_force_host_platform_device_count` / a PJRT CPU
-  `create_options` device count). This lets mesh, sharding, collectives, and DDP
-  grad-sync be developed and tested **on CPU with 8+ virtual devices, no GPU, no
-  OOM risk, ~100× faster**. The wrapper currently creates the client with *no*
-  options, so enabling this is itself Phase-0 work.
+- **Emulate multiple devices on the CPU plugin.** ✅ **Available now (task #7).**
+  `PJRTClient.create(backend: .cpu, cpuDeviceCount: N)` passes the CPU plugin's
+  `cpu_device_count` int64 create option, so one CPU client exposes N virtual
+  devices (verified: `deviceCount == 8`). Mesh, sharding, collectives, and DDP
+  grad-sync can now be developed and tested **on CPU with 8+ virtual devices, no
+  GPU, no OOM risk, ~100× faster**.
 - Reserve real multi-GPU / multi-TPU validation for a genuinely multi-device host
   (a multi-GPU node or a TPU board/pod). Keep those runs `--no-parallel` and
   single-controller so one client owns all devices.

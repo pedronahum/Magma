@@ -102,6 +102,15 @@ void PJRT_DestroyError(void* error);
 /// Returns SW_PJRT_Error_OK on success, out_client contains the client
 SW_PJRT_Error_Code PJRT_CreateClient(void** out_client);
 
+/// Create a client passing the CPU plugin's "cpu_device_count" create option,
+/// so a single CPU client exposes several (virtual) devices — used to develop
+/// and test multi-device code without physical accelerators. Only the CPU plugin
+/// honors this option. cpu_device_count <= 0 behaves like PJRT_CreateClient.
+SW_PJRT_Error_Code PJRT_CreateClientWithCpuDeviceCount(
+    int64_t cpu_device_count,
+    void** out_client
+);
+
 /// Destroy a PJRT client
 void PJRT_DestroyClient(void* client);
 
