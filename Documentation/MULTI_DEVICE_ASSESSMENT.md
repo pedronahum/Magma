@@ -329,8 +329,16 @@ vocabulary ports cleanly and the only new work is three small hooks.
 
 | SwiftIR file → type | Emits | Port target |
 |---------------------|-------|-------------|
-| `SwiftIRShardingLite/DeviceMesh.swift` → `MeshAxis`, `DeviceMesh` (`.linear`/`.grid`/`.cube`, `totalDevices`, `mlirText`) | `sdy.mesh @mesh = <["x"=4, "y"=2]>` | `Sources/Sharding/DeviceMesh.swift` |
-| `SwiftIRShardingLite/TensorSharding.swift` → `DimensionSharding` (`.replicated`, `.sharded(on:)`), `TensorSharding` (`.replicated(meshName:rank:)`, `mlirAttributeText`) | `#sdy.sharding<@mesh, [{"x"}, {}]>` | `Sources/Sharding/TensorSharding.swift` |
+| `SwiftIRShardingLite/DeviceMesh.swift` → `MeshAxis`, `DeviceMesh` (`.linear`/`.grid`/`.cube`, `deviceCount`, `mlirText`) | `sdy.mesh @mesh = <["x"=4, "y"=2]>` | `Sources/StableHLO/Sharding/DeviceMesh.swift` ✅ done |
+| `SwiftIRShardingLite/TensorSharding.swift` → `DimensionSharding` (`.replicated`, `.sharded(on:)`, `.open(on:)`), `TensorSharding` (`.replicated(meshName:rank:)`, `mlirAttributeText`, `validate(against:rank:)`) | `#sdy.sharding<@mesh, [{"x"}, {}]>` | `Sources/StableHLO/Sharding/TensorSharding.swift` ✅ done |
+
+> **Placement note:** these live in the **StableHLO module**, not a standalone
+> `Sources/Sharding/` target — co-located with their consumer `MLIRBuilder` and
+> already reachable up the stack (LazyTensor → Core depend on StableHLO), so they
+> are integrated rather than an isolated target. `DeviceMesh` is already wired
+> into `MLIRBuilder.declareMesh(_:)` / `build()` (emits `sdy.mesh` in the header);
+> `TensorSharding` is validated against `DeviceMesh` and its `MLIRBuilder`
+> consumer (argument shardings + `sdy.sharding_constraint`) is task **#17**.
 
 Both are `Equatable`/`Hashable`, `import Foundation` only.
 **Caveat:** the Lite `DimensionSharding` uses `axes: [String]` and drops the full

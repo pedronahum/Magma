@@ -26,7 +26,11 @@ public final class MLIRBuilder: @unchecked Sendable {
     
     /// Operations (in order)
     private var operations: [String] = []
-    
+
+    /// Shardy meshes to emit in the module header (for Shardy/SPMD partitioning).
+    /// Empty by default, so single-device modules are byte-for-byte unchanged.
+    private var meshes: [DeviceMesh] = []
+
     /// Next value ID
     private var nextValueId: Int = 0
     
@@ -81,6 +85,21 @@ public final class MLIRBuilder: @unchecked Sendable {
     /// Add a raw operation string (used for complex control flow)
     public func addRawOperation(_ op: String) {
         operations.append(op)
+    }
+
+    // MARK: - Sharding (Shardy)
+
+    /// Declare an `sdy.mesh` to emit in the module header. Meshes are referenced
+    /// by name from `TensorSharding` attributes; declaring one is the first step
+    /// toward Shardy/SPMD partitioning. No-op on the single-device path unless a
+    /// mesh is declared.
+    public func declareMesh(_ mesh: DeviceMesh) {
+        meshes.append(mesh)
+    }
+
+    /// Meshes declared so far (for inspection/tests).
+    public func declaredMeshes() -> [DeviceMesh] {
+        meshes
     }
 
     /// Set the next value ID (used to avoid conflicts with block args)
@@ -1165,10 +1184,15 @@ public final class MLIRBuilder: @unchecked Sendable {
         let returnValues = outputs.map { $0.displayName }.joined(separator: ", ")
         
         let body = operations.joined(separator: "\n")
-        
+
+        // Emit any declared sdy meshes in the module header. When no mesh is
+        // declared this is the empty string, so the single-device module text is
+        // byte-for-byte identical to before.
+        let meshBlock = meshes.map { "  \($0.mlirText)\n" }.joined()
+
         return """
         module @\(name) {
-          func.func @main(\(argDefs)) -> (\(outputTypes)) {
+        \(meshBlock)  func.func @main(\(argDefs)) -> (\(outputTypes)) {
         \(body)
             return \(returnValues) : \(outputTypes)
           }
