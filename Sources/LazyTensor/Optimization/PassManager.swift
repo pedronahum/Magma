@@ -43,8 +43,10 @@ public final class PassMetrics: @unchecked Sendable {
 
     private let lock = NSLock()
 
-    /// Timing data per pass
-    private var timings: [String: [TimeInterval]] = [:]
+    /// Running timing aggregate per pass. Stored as (sum, count) rather than every
+    /// sample so a long-running program (a barrier fires these on every step) does
+    /// not grow an unbounded array — total/average/count are all derivable from it.
+    private var timings: [String: (total: TimeInterval, count: Int)] = [:]
 
     /// Transformation counts per pass
     private var transformCounts: [String: Int] = [:]
@@ -56,10 +58,10 @@ public final class PassMetrics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        if timings[pass] == nil {
-            timings[pass] = []
-        }
-        timings[pass]!.append(time)
+        var entry = timings[pass] ?? (total: 0, count: 0)
+        entry.total += time
+        entry.count += 1
+        timings[pass] = entry
 
         if transformations > 0 {
             transformCounts[pass, default: 0] += transformations
@@ -70,15 +72,15 @@ public final class PassMetrics: @unchecked Sendable {
     public func totalTime(for pass: String) -> TimeInterval {
         lock.lock()
         defer { lock.unlock() }
-        return timings[pass]?.reduce(0, +) ?? 0
+        return timings[pass]?.total ?? 0
     }
 
     /// Get average time per invocation
     public func averageTime(for pass: String) -> TimeInterval {
         lock.lock()
         defer { lock.unlock() }
-        guard let times = timings[pass], !times.isEmpty else { return 0 }
-        return times.reduce(0, +) / Double(times.count)
+        guard let entry = timings[pass], entry.count > 0 else { return 0 }
+        return entry.total / Double(entry.count)
     }
 
     /// Get invocation count
@@ -141,8 +143,11 @@ public final class PassManager: @unchecked Sendable {
     private var enabled: Set<String> = []
     private let lock = NSLock()
 
-    /// Whether to collect detailed metrics
-    public var collectMetrics: Bool = true
+    /// Whether to collect per-pass timing metrics. Opt-in: the pass pipeline runs
+    /// on every barrier, so leaving this on by default would take the metrics lock
+    /// on every pass of every step for data nobody asked for. Enable it explicitly
+    /// when profiling, then read PassMetrics.shared.
+    public var collectMetrics: Bool = false
 
     /// Whether to print debug info during optimization
     public var verbose: Bool = false
