@@ -178,6 +178,20 @@ export MAGMA_XLA_PATH=/opt/xla/lib
 export MAGMA_ENABLE_XLA=1
 ```
 
+Optional overrides:
+
+```bash
+# Force a specific backend regardless of the requested one (cpu/gpu/tpu/metal),
+# when that plugin is available.
+export MAGMA_DEFAULT_BACKEND=gpu
+
+# Override the safety guard that refuses a second concurrent accelerator
+# (GPU/TPU) client. Each accelerator client reserves most of device memory, so
+# on a unified-memory machine a second client can exhaust memory and freeze the
+# box; the guard prevents that. Set to 1 only if you know the machine has room.
+export MAGMA_ALLOW_CONCURRENT_ACCEL_CLIENTS=1
+```
+
 ## Quick Start
 
 ### Development Mode (No XLA)

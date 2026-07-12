@@ -8,6 +8,7 @@
 // - PJRTExecutable: Compiled XLA programs
 
 import CXLARuntime
+import Foundation
 #if os(Linux)
 import Glibc
 #else
@@ -116,6 +117,17 @@ public enum Backend: String, Sendable {
         #endif
         if Backend.gpu.isAvailable { return .gpu }
         return .cpu
+    }
+
+    /// Whether a PJRT client for this backend reserves a large fraction of device
+    /// memory at creation. CUDA GPU and TPU clients do (e.g. ~75-80% of a unified
+    /// pool on an NVIDIA GB10), so more than one concurrent client can exhaust
+    /// memory and freeze the machine; CPU and Metal do not.
+    public var reservesLargeMemory: Bool {
+        switch self {
+        case .gpu, .tpu: return true
+        case .cpu, .metal: return false
+        }
     }
 }
 
@@ -344,6 +356,27 @@ public final class PJRTClient: @unchecked Sendable {
     /// Platform name
     public private(set) var platformName: String = ""
 
+    // MARK: Concurrent-accelerator-client guard
+    //
+    // Accelerator PJRT plugins (CUDA GPU, TPU) reserve a large fraction of device
+    // memory per client. On a unified-memory machine there is no separate VRAM to
+    // fail into, so a second concurrent client exhausts memory and freezes the
+    // whole box. We refuse to create more than one live accelerator client at a
+    // time unless explicitly opted out. Slots are counted here and released in
+    // deinit, so a client that goes out of scope frees its slot automatically.
+    nonisolated(unsafe) private static var liveAcceleratorClients = 0
+    private static let acceleratorLock = NSLock()
+
+    /// Whether this instance holds an accelerator-slot reservation to release.
+    private var holdsAcceleratorSlot = false
+
+    /// Env opt-out for the concurrent-accelerator-client guard.
+    private static var concurrentAcceleratorClientsAllowed: Bool {
+        guard let raw = getenv("MAGMA_ALLOW_CONCURRENT_ACCEL_CLIENTS") else { return false }
+        let value = String(cString: raw).lowercased()
+        return value == "1" || value == "true" || value == "yes"
+    }
+
     private init(backend: Backend) {
         self.backend = backend
     }
@@ -352,11 +385,42 @@ public final class PJRTClient: @unchecked Sendable {
         if let handle = handle {
             PJRT_DestroyClient(handle)
         }
+        releaseAcceleratorSlot()
+    }
+
+    /// Release this client's accelerator-slot reservation, if it holds one.
+    private func releaseAcceleratorSlot() {
+        guard holdsAcceleratorSlot else { return }
+        Self.acceleratorLock.lock()
+        Self.liveAcceleratorClients -= 1
+        holdsAcceleratorSlot = false
+        Self.acceleratorLock.unlock()
     }
 
     /// Create a client for the specified backend
     public static func create(backend: Backend = .cpu) throws -> PJRTClient {
         let client = PJRTClient(backend: backend)
+
+        // Reserve an accelerator slot before touching the plugin, refusing a
+        // second concurrent client that would over-commit device memory. The
+        // reservation is released by `client`'s deinit — including when creation
+        // throws below and the client is discarded — so counts stay balanced.
+        if backend.reservesLargeMemory {
+            acceleratorLock.lock()
+            if liveAcceleratorClients > 0 && !concurrentAcceleratorClientsAllowed {
+                let live = liveAcceleratorClients
+                acceleratorLock.unlock()
+                throw XLAError.clientCreationFailed(
+                    "refusing to create a second concurrent \(backend) client: " +
+                    "\(live) accelerator client(s) already live. Each reserves most of " +
+                    "device memory, so concurrent clients can exhaust it and freeze the " +
+                    "machine. Release the existing client first, or set " +
+                    "MAGMA_ALLOW_CONCURRENT_ACCEL_CLIENTS=1 to override.")
+            }
+            liveAcceleratorClients += 1
+            client.holdsAcceleratorSlot = true
+            acceleratorLock.unlock()
+        }
 
         // Load the PJRT plugin
         let pluginPath = backend.pluginPath()
