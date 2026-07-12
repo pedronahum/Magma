@@ -15,19 +15,20 @@
 extern "C" {
 #endif
 
-/// Create a CompileOptionsProto with the specified parameters
-/// Returns a malloc'd buffer containing the serialized protobuf
-/// Caller must free the returned buffer with PJRT_FreeCompileOptions
-char* PJRT_CreateCompileOptions(int64_t num_replicas, int64_t num_partitions, size_t* out_size);
-
-/// Create a CompileOptionsProto with optimization level
+/// Create a serialized CompileOptionsProto with an optimization level.
+///
+/// num_replicas / num_partitions describe the device partitioning; Magma is
+/// currently single-device and the sole caller passes (1, 1). Multi-device
+/// SPMD is future work (see Documentation/ROADMAP.md).
+///
 /// xla_opt_level: XLA backend optimization level (0-3)
 ///   0 = No optimization (fastest compile, slowest execution)
 ///   1 = Basic optimization
 ///   2 = Standard optimization (recommended, GPU requires >= 2)
 ///   3 = Maximum optimization (slowest compile, best execution)
-/// Returns a malloc'd buffer containing the serialized protobuf
-/// Caller must free the returned buffer with PJRT_FreeCompileOptions
+///  -1 = Use XLA's default optimization level
+/// Returns a malloc'd buffer containing the serialized protobuf.
+/// Caller must free the returned buffer with PJRT_FreeCompileOptions.
 char* PJRT_CreateCompileOptionsWithOptLevel(
     int64_t num_replicas,
     int64_t num_partitions,

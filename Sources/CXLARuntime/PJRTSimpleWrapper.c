@@ -940,7 +940,9 @@ SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
     program.format_size = strlen("mlir");
 
     // Create CompileOptionsProto using C++ helper that properly constructs
-    // the protobuf message with XLA's protobuf library
+    // the protobuf message with XLA's protobuf library.
+    // (1, 1) = one replica, one partition: Magma is single-device today.
+    // Multi-device SPMD is future work (see Documentation/ROADMAP.md).
     size_t compile_opts_size = 0;
     char* compile_opts = PJRT_CreateCompileOptionsWithOptLevel(1, 1, (int32_t)xla_opt_level, &compile_opts_size);
     if (compile_opts == NULL) {

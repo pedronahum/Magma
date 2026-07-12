@@ -35,9 +35,15 @@ static void writeString(std::vector<uint8_t>& buf, const char* str) {
 
 extern "C" {
 
-// Create a minimal CompileOptionsProto with num_replicas and num_partitions
-// Returns a malloc'd buffer containing the serialized protobuf
-// Caller must free the returned buffer with PJRT_FreeCompileOptions
+// Create a serialized CompileOptionsProto.
+// Returns a malloc'd buffer containing the serialized protobuf.
+// Caller must free the returned buffer with PJRT_FreeCompileOptions.
+//
+// num_replicas / num_partitions describe the device partitioning. Magma is
+// currently single-device: the sole caller passes (1, 1). Multi-device
+// replication/partitioning (SPMD) is future work — see the Shardy/SPMD phase in
+// Documentation/ROADMAP.md — and will also require device assignment, sharded
+// inputs, and collectives on the execution side, not just these two fields.
 //
 // CompileOptionsProto structure (from xla/pjrt/proto/compile_options.proto):
 //   message CompileOptionsProto {
@@ -56,11 +62,6 @@ extern "C" {
 //       double double_field = 4;
 //     }
 //   }
-char* PJRT_CreateCompileOptions(int64_t num_replicas, int64_t num_partitions, size_t* out_size) {
-    // Delegate to the version with default optimization level (-1 means use XLA default)
-    return PJRT_CreateCompileOptionsWithOptLevel(num_replicas, num_partitions, -1, out_size);
-}
-
 char* PJRT_CreateCompileOptionsWithOptLevel(
     int64_t num_replicas,
     int64_t num_partitions,
