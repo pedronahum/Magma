@@ -630,12 +630,16 @@ public struct PromotedConstantSlot: Sendable {
 
 /// Fast-path (trace) cache entry for the PJRT backend: everything needed to
 /// re-execute a repeated graph structure without rebuilding/optimizing it.
-public struct PJRTTraceCacheEntry: Sendable {
+public struct PJRTTraceCacheEntry: @unchecked Sendable {
     public let executable: PJRTExecutable
-    public let metadata: CachedGraphMetadata
-    /// Promoted constant values, in input order. Reused directly on a hit — the
-    /// fast key folds in constant values, so a hit guarantees these still match.
-    public let promotedConstantValues: [[Float]]
+    /// Number of `.data` inputs the executable expects (a sanity check on a hit).
+    public let dataInputCount: Int
+    /// Device buffers for the promoted constants, in input order. Created once on
+    /// the compiling miss and reused on every hit: the fast key folds in constant
+    /// values, so a hit guarantees they still match — no host→device re-upload.
+    /// PJRT does not donate/consume input buffers (data inputs are likewise reused
+    /// across barriers), so sharing these is safe.
+    public let promotedConstantBuffers: [PJRTBuffer]
     /// The optimized-graph structural hash, kept for the self-verify mode.
     public let structuralHash: String
 }
@@ -1002,10 +1006,10 @@ public func LazyTensorBarrier(on device: Device = .default) {
             }
         }
         let dataInputs = collectDataInputsForTrace(outputs: outputs)
-        if dataInputs.count == entry.metadata.dataInputCount {
+        if dataInputs.count == entry.dataInputCount {
             var ok = true
             var inputBuffers: [PJRTBuffer] = []
-            inputBuffers.reserveCapacity(dataInputs.count + entry.promotedConstantValues.count)
+            inputBuffers.reserveCapacity(dataInputs.count + entry.promotedConstantBuffers.count)
             for handle in dataInputs {
                 if case .data(let buffer) = handle.irNode {
                     inputBuffers.append(buffer)
@@ -1014,13 +1018,10 @@ public func LazyTensorBarrier(on device: Device = .default) {
                 }
             }
             if ok {
+                // Promoted constants: reuse the buffers created at compile time —
+                // no client call, no host→device upload.
+                inputBuffers.append(contentsOf: entry.promotedConstantBuffers)
                 do {
-                    let client = try getGlobalClient(backend: device.backend)
-                    for (i, values) in entry.promotedConstantValues.enumerated() {
-                        let slot = entry.metadata.promotedConstantSlots[i]
-                        inputBuffers.append(try client.createBuffer(
-                            values, shape: slot.shape, elementType: .float32, device: nil))
-                    }
                     let outputBuffers = try entry.executable.execute(inputBuffers)
                     for (i, output) in outputs.enumerated() where i < outputBuffers.count {
                         output.materializedBuffer = outputBuffers[i]
@@ -1029,8 +1030,8 @@ public func LazyTensorBarrier(on device: Device = .default) {
                     cache.fastHitCount += 1
                     return  // Fast path succeeded
                 } catch {
-                    // Any failure (e.g. client/buffer error) falls through to the
-                    // slow path below, which rebuilds everything from scratch.
+                    // Any failure falls through to the slow path below, which
+                    // rebuilds everything from scratch.
                     print("Magma: trace-cache fast path failed, using slow path: \(error)")
                 }
             }
@@ -1143,7 +1144,9 @@ public func LazyTensorBarrier(on device: Device = .default) {
     let rawDataOrder = collectDataInputsForTrace(outputs: outputs).map { $0.id }
     let traceOrderMatches = (rawDataOrder == optimizedDataOrder)
 
-    // Second: promoted constants (need to create buffers for their values)
+    // Second: promoted constants (need to create buffers for their values).
+    // Capture them so the trace entry can reuse them on future fast hits.
+    var promotedConstantBuffers: [PJRTBuffer] = []
     if promotionResult.wasPromoted {
         do {
             let client = try getGlobalClient(backend: device.backend)
@@ -1155,6 +1158,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
                     device: nil
                 )
                 inputBuffers.append(buffer)
+                promotedConstantBuffers.append(buffer)
             }
         } catch {
             print("Magma: Failed to create buffers for promoted constants: \(error)")
@@ -1170,16 +1174,10 @@ public func LazyTensorBarrier(on device: Device = .default) {
         // whole pipeline. Only when the key is eligible (no while-loop) and the
         // raw/optimized data-input orders match (fast-path input assembly is sound).
         if let fastKey, traceOrderMatches {
-            let sortedPromoted = promotionResult.promotedConstants.sorted { $0.inputIndex < $1.inputIndex }
-            let metadata = CachedGraphMetadata(
-                dataInputCount: optimizedDataOrder.count,
-                promotedConstantSlots: sortedPromoted.map { PromotedConstantSlot(shape: $0.shape, dtype: $0.dtype) },
-                outputCount: outputs.count
-            )
             cache.putFast(hash: fastKey, entry: PJRTTraceCacheEntry(
                 executable: executable,
-                metadata: metadata,
-                promotedConstantValues: sortedPromoted.map { $0.values },
+                dataInputCount: optimizedDataOrder.count,
+                promotedConstantBuffers: promotedConstantBuffers,
                 structuralHash: structuralHash
             ))
         }
