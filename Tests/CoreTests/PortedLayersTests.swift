@@ -518,7 +518,7 @@ struct PortedNormalizationTests {
         let inorm = nn.InstanceNorm2d(numFeatures: 64)
 
         #expect(inorm.numFeatures == 64)
-        #expect(inorm.affine)
+        #expect(!inorm.affine)   // InstanceNorm2d follows PyTorch: affine defaults to false
     }
 
     @Test("InstanceNorm2d forward")

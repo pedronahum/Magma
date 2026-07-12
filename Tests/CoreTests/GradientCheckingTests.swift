@@ -51,7 +51,11 @@ struct GradcheckBasicTests {
 
     @Test("Gradcheck multiplication")
     func gradcheckMultiplication() {
-        let x = Tensor<Float>.randn([2, 3]) + Tensor<Float>.full([2, 3], 1.0, on: .default)
+        // d(sum(x^2))/dx = 2x. Use deterministic inputs bounded away from 0:
+        // near x=0 the analytic gradient is ~0, so finite-difference relative
+        // error blows up (a numerical artifact, not a VJP error) and randn
+        // occasionally drew such a value, making this test flaky.
+        let x = Tensor<Float>([1.5, 2.0, -1.8, 2.2, -2.5, 1.3], shape: [2, 3])
         let result = gradcheck({ ($0 * $0).sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for multiplication. MaxAbsDiff: \(result.maxAbsDiff)")
