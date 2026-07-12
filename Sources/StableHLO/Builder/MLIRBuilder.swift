@@ -864,6 +864,40 @@ public final class MLIRBuilder: @unchecked Sendable {
         return result
     }
 
+    // MARK: - Collectives
+
+    /// Emit a cross-replica `stablehlo.all_reduce` over `input`, reducing with
+    /// `reduction` (e.g. "add", "maximum", "minimum") across each replica group.
+    ///
+    /// Each group in `replicaGroups` is a list of replica ids that reduce
+    /// together; on return every replica in a group holds the reduction over that
+    /// group's inputs. For an all-reduce across N replicas, pass a single group
+    /// `[[0, 1, …, N-1]]`. The executable must be compiled with a matching
+    /// `numReplicas` (see `PJRTClient.compile(_:numReplicas:…)`).
+    public func allReduce(_ input: Value, reduction: String, replicaGroups: [[Int]]) -> Value {
+        let result = nextValue(type: input.type)
+        let scalar = TensorType(shape: [], dtype: input.type.dtype).mlirType
+        let numGroups = replicaGroups.count
+        let groupSize = replicaGroups.first?.count ?? 0
+        let groupsStr = replicaGroups
+            .map { "[\($0.map(String.init).joined(separator: ", "))]" }
+            .joined(separator: ", ")
+        // Generic op form with a reduction region (mirrors reduce_window's style,
+        // which this plugin accepts). Block-local %ar_* names are region-scoped,
+        // so repeated all_reduce ops don't collide.
+        let op = """
+            \(result.name) = "stablehlo.all_reduce"(\(input.displayName)) <{
+              replica_groups = dense<[\(groupsStr)]> : tensor<\(numGroups)x\(groupSize)xi64>
+            }> ({
+            ^bb0(%ar_a: \(scalar), %ar_b: \(scalar)):
+              %ar_r = stablehlo.\(reduction) %ar_a, %ar_b : \(scalar)
+              stablehlo.return %ar_r : \(scalar)
+            }) : (\(input.type.mlirType)) -> \(input.type.mlirType)
+        """
+        operations.append(op)
+        return result
+    }
+
     // MARK: - Scatter Operation
 
     /// Scatter updates into input at specified indices

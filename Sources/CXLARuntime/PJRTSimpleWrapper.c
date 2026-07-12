@@ -1023,6 +1023,7 @@ SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
 SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
     void* client,
     const char* mlir_module,
+    int64_t num_replicas,
     int64_t num_partitions,
     int use_spmd_partitioning,
     int use_shardy_partitioner,
@@ -1032,11 +1033,12 @@ SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
-    // One replica, num_partitions partitions, with SPMD / Shardy toggles. XLA
-    // uses its default (iota) device assignment.
+    // num_replicas x num_partitions devices, with SPMD / Shardy toggles. XLA
+    // uses its default (iota) device assignment. num_replicas > 1 is data
+    // parallelism (cross-replica collectives); num_partitions > 1 is SPMD.
     size_t compile_opts_size = 0;
     char* compile_opts = PJRT_CreateCompileOptionsSPMD(
-        1, num_partitions, SW_XLA_OPT_DEFAULT,
+        num_replicas, num_partitions, SW_XLA_OPT_DEFAULT,
         use_spmd_partitioning, use_shardy_partitioner, &compile_opts_size);
     if (compile_opts == NULL) {
         return SW_PJRT_Error_INTERNAL;

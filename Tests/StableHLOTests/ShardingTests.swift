@@ -193,3 +193,31 @@ struct MLIRBuilderShardingTests {
         #expect(mlir.contains("func.func @main(%arg0: tensor<2x3xf32>)"))
     }
 }
+
+@Suite("Collective Emission Tests")
+struct CollectiveEmissionTests {
+
+    @Test("all_reduce emits a reduction region and replica_groups")
+    func allReduceEmission() {
+        let builder = MLIRBuilder()
+        let x = builder.argument(TensorType(shape: [4], dtype: .float32))
+        let r = builder.allReduce(x, reduction: "add", replicaGroups: [[0, 1]])
+        let mlir = builder.build(name: "ar", outputs: [r])
+
+        #expect(mlir.contains("\"stablehlo.all_reduce\"(%arg0)"))
+        #expect(mlir.contains("replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>"))
+        #expect(mlir.contains("stablehlo.add %ar_a, %ar_b : tensor<f32>"))
+        #expect(mlir.contains("stablehlo.return %ar_r : tensor<f32>"))
+        #expect(mlir.contains("(tensor<4xf32>) -> tensor<4xf32>"))
+    }
+
+    @Test("all_reduce reduction op and groups are parametric")
+    func allReduceParametric() {
+        let builder = MLIRBuilder()
+        let x = builder.argument(TensorType(shape: [2], dtype: .float32))
+        let r = builder.allReduce(x, reduction: "maximum", replicaGroups: [[0, 1, 2, 3]])
+        let mlir = builder.build(name: "ar", outputs: [r])
+        #expect(mlir.contains("replica_groups = dense<[[0, 1, 2, 3]]> : tensor<1x4xi64>"))
+        #expect(mlir.contains("stablehlo.maximum %ar_a, %ar_b"))
+    }
+}

@@ -301,15 +301,17 @@ SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
     void** out_executable
 );
 
-/// Compile an MLIR module with SPMD / Shardy partitioning options.
+/// Compile an MLIR module with replication / SPMD / Shardy options.
 ///
-/// num_partitions > 1 requires a client with that many devices;
-/// use_spmd_partitioning enables XLA's SPMD partitioner; use_shardy_partitioner
-/// runs the Shardy propagation + partitioning pipeline. Passing
-/// (num_partitions=1, 0, 0) is equivalent to the single-device compile.
+/// The executable targets num_replicas * num_partitions devices. num_replicas > 1
+/// is data parallelism (cross-replica collectives such as all_reduce);
+/// num_partitions > 1 is SPMD; use_shardy_partitioner runs the Shardy pipeline.
+/// Passing (num_replicas=1, num_partitions=1, 0, 0) is equivalent to the
+/// single-device compile.
 SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
     void* client,
     const char* mlir_module,
+    int64_t num_replicas,
     int64_t num_partitions,
     int use_spmd_partitioning,
     int use_shardy_partitioner,

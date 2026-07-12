@@ -582,21 +582,25 @@ public final class PJRTClient: @unchecked Sendable {
         )
     }
 
-    /// Compile StableHLO MLIR with SPMD / Shardy partitioning options.
+    /// Compile StableHLO MLIR with replication / SPMD / Shardy options.
     ///
     /// - Parameters:
-    ///   - numPartitions: number of partitions to partition across. Values > 1
-    ///     require a client with at least that many devices.
+    ///   - numReplicas: number of data-parallel replicas. Values > 1 make a
+    ///     multi-device executable whose cross-replica collectives (e.g.
+    ///     `all_reduce`) reduce across replicas.
+    ///   - numPartitions: number of SPMD partitions. Values > 1 require a client
+    ///     with at least `numReplicas * numPartitions` devices.
     ///   - useSPMDPartitioning: enable XLA's SPMD partitioner.
     ///   - useShardyPartitioner: run the Shardy propagation + partitioning
     ///     pipeline (consumes `sdy.mesh` / `sdy.sharding` annotations in the
     ///     module). Requires the plugin to have been built with Shardy.
     ///
-    /// With `numPartitions: 1, useSPMDPartitioning: false, useShardyPartitioner:
-    /// false` this is equivalent to `compile(_:)`.
+    /// With `numReplicas: 1, numPartitions: 1, useSPMDPartitioning: false,
+    /// useShardyPartitioner: false` this is equivalent to `compile(_:)`.
     public func compile(
         _ mlir: String,
-        numPartitions: Int,
+        numReplicas: Int = 1,
+        numPartitions: Int = 1,
         useSPMDPartitioning: Bool = true,
         useShardyPartitioner: Bool = false
     ) throws -> PJRTExecutable {
@@ -608,6 +612,7 @@ public final class PJRTClient: @unchecked Sendable {
         let errorCode = PJRT_CompileWrapperSPMD(
             clientHandle,
             mlir,
+            Int64(numReplicas),
             Int64(numPartitions),
             useSPMDPartitioning ? 1 : 0,
             useShardyPartitioner ? 1 : 0,
