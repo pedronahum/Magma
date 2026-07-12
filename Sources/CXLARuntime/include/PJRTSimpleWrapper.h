@@ -328,6 +328,26 @@ SW_PJRT_Error_Code PJRT_ExecuteWrapper(
     size_t* out_num_outputs
 );
 
+/// Multi-device execute: drive PJRT_LoadedExecutable_Execute with num_devices=N.
+///
+/// inputs_flat is a row-major [num_devices][num_args] array of buffer handles;
+/// device d's args are inputs_flat[d*num_args ...]. On success *out_outputs_flat
+/// is a malloc'd row-major [num_devices][num_outputs] array of buffer handles the
+/// caller must free with PJRT_FreeOutputList (the buffer handles themselves are
+/// owned by the caller and destroyed with PJRT_DestroyBuffer). The executable
+/// must have been compiled for num_devices devices.
+SW_PJRT_Error_Code PJRT_ExecuteMultiDevice(
+    void* executable,
+    void** inputs_flat,
+    size_t num_devices,
+    size_t num_args,
+    void*** out_outputs_flat,
+    size_t* out_num_outputs
+);
+
+/// Free the flat output array from PJRT_ExecuteMultiDevice (not the buffers).
+void PJRT_FreeOutputList(void** outputs_flat);
+
 /// Execute with buffer donation support
 /// non_donatable_indices: array of input indices that should NOT be donated (NULL = donate all eligible)
 /// num_non_donatable: number of indices in non_donatable_indices array

@@ -807,6 +807,80 @@ public final class PJRTExecutable: @unchecked Sendable {
 
         return outputs
     }
+
+    /// Build a PJRTBuffer around a raw output handle, querying its shape and
+    /// element type. Shared by single- and multi-device execute.
+    private func makeOutputBuffer(_ handle: UnsafeMutableRawPointer, device: PJRTDevice) -> PJRTBuffer {
+        var dimsPtr: UnsafePointer<Int64>?
+        var numDims = 0
+        PJRT_GetBufferDimensions(handle, &dimsPtr, &numDims)
+        var shape: [Int] = []
+        if let dims = dimsPtr {
+            for j in 0..<numDims { shape.append(Int(dims[j])) }
+        }
+        var elementType: ElementType = .float32
+        var cType = SW_PJRT_Buffer_Type_F32
+        if PJRT_GetBufferElementType(handle, &cType) == SW_PJRT_Error_OK {
+            elementType = ElementType(cType: cType)
+        }
+        return PJRTBuffer(handle: handle, shape: shape, elementType: elementType, device: device)
+    }
+
+    /// Execute across multiple devices.
+    ///
+    /// `inputsPerDevice[d]` are the arguments for device `d`; every device must
+    /// supply the same number of arguments, and each buffer must be resident on
+    /// the corresponding device (see `PJRTClient.createBuffer(_:…, device:)`).
+    /// Returns per-device outputs. The executable must have been compiled for
+    /// `inputsPerDevice.count` devices (e.g. `numReplicas`/`numPartitions = N`).
+    public func executeMultiDevice(inputsPerDevice: [[PJRTBuffer]]) throws -> [[PJRTBuffer]] {
+        guard let execHandle = handle else {
+            throw XLAError.executionFailed("Executable handle not available")
+        }
+        guard !devices.isEmpty else { throw XLAError.noDeviceAvailable }
+
+        let numDevices = inputsPerDevice.count
+        guard numDevices > 0 else { return [] }
+        let numArgs = inputsPerDevice[0].count
+        for devInputs in inputsPerDevice where devInputs.count != numArgs {
+            throw XLAError.executionFailed("Every device must supply the same number of arguments")
+        }
+
+        // Flatten input handles row-major: [dev0 args…, dev1 args…, …].
+        var inputHandles: [UnsafeMutableRawPointer?] = []
+        inputHandles.reserveCapacity(numDevices * numArgs)
+        for devInputs in inputsPerDevice {
+            for buf in devInputs { inputHandles.append(buf.handle) }
+        }
+
+        var outputsFlat: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+        var numOutputs = 0
+        let errorCode = inputHandles.withUnsafeMutableBufferPointer { ptr in
+            PJRT_ExecuteMultiDevice(
+                execHandle, ptr.baseAddress, numDevices, numArgs, &outputsFlat, &numOutputs)
+        }
+        if errorCode != SW_PJRT_Error_OK {
+            throw XLAError.executionFailed("Multi-device execution failed with code \(errorCode.rawValue)")
+        }
+        executionCount += 1
+        defer { if let outputsFlat { PJRT_FreeOutputList(outputsFlat) } }
+
+        var result: [[PJRTBuffer]] = []
+        result.reserveCapacity(numDevices)
+        for d in 0..<numDevices {
+            let device = devices.indices.contains(d) ? devices[d] : devices[0]
+            var devOutputs: [PJRTBuffer] = []
+            if let flat = outputsFlat {
+                for o in 0..<numOutputs {
+                    if let h = flat[d * numOutputs + o] {
+                        devOutputs.append(makeOutputBuffer(h, device: device))
+                    }
+                }
+            }
+            result.append(devOutputs)
+        }
+        return result
+    }
 }
 
 // MARK: - Execution Timing

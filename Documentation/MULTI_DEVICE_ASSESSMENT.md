@@ -255,7 +255,7 @@ Effort: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ multiple weeks (one eng
 
 | Phase | Deliverable | Effort |
 |-------|-------------|--------|
-| **0. Foundations** | Surface all devices on `PJRTClient`; multi-device execute in the FFI (`num_devices=N`, nested arg/output lists, events) and Swift `execute` returning `[[PJRTBuffer]]`; buffer scatter/replicate/gather | **L** |
+| **0. Foundations** | ✅ Surface all devices (#6); ✅ CPU N-device emulation (#7); ✅ multi-device execute in the FFI `num_devices=N` + Swift `executeMultiDevice` returning `[[PJRTBuffer]]` (#8/#9); ⬜ buffer scatter/replicate/gather (#10) | **L** |
 | **1. DDP MVP (single host)** | `all_reduce` StableHLO op + runtime; `DeviceMesh` (1-D); replicate params; gradient all-reduce hook; `DistributedSampler`; CPU-emulated multi-device tests | **M–L** |
 | **2. SPMD / Shardy** | Port the pure-Swift sdy-annotation types from `SwiftIRShardingLite` (`DeviceMesh`, `TensorSharding`/`DimensionSharding`/`AxisRef`/`SubAxisInfo`, `StableHLOSharding` — §3.9); emit `sdy.mesh` + `{sdy.sharding=…}` (+ `sdy.sharding_constraint`) into Magma's StableHLO; add `use_shardy_partitioner` + `use_spmd_partitioning` + `num_partitions` + `device_assignment` to compile options (reusing the `env_option_overrides` path); track sharding on graph nodes. **New vs SwiftIR:** the partition→collectives→multi-device-execute closure (via PJRT in-XLA) that SwiftIR never did | **L** |
 | **3. FSDP / tensor parallel** | Sharded parameter & optimizer state, all-gather/reduce-scatter integration, sharded checkpointing | **L** |

@@ -1202,6 +1202,163 @@ SW_PJRT_Error_Code PJRT_ExecuteWrapper(
     return SW_PJRT_Error_OK;
 }
 
+// Query the number of outputs an executable produces per device (uses the cache).
+static SW_PJRT_Error_Code QueryNumOutputs(void* executable, size_t* out_num_outputs) {
+    size_t cached = GetCachedNumOutputs(executable);
+    if (cached != (size_t)-1) {
+        *out_num_outputs = cached;
+        return SW_PJRT_Error_OK;
+    }
+
+    PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
+        .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
+        .loaded_executable = (PJRT_LoadedExecutable*)executable
+    };
+    PJRT_Error* error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
+    if (error != NULL) {
+        PJRT_DestroyError(error);
+        return SW_PJRT_Error_INTERNAL;
+    }
+
+    PJRT_Executable_NumOutputs_Args num_outputs_args = {
+        .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
+        .executable = get_exec_args.executable
+    };
+    error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
+    if (error != NULL) {
+        PJRT_DestroyError(error);
+        return SW_PJRT_Error_INTERNAL;
+    }
+
+    *out_num_outputs = num_outputs_args.num_outputs;
+    SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
+    return SW_PJRT_Error_OK;
+}
+
+// Multi-device execute. Drives PJRT_LoadedExecutable_Execute with num_devices=N.
+//
+// inputs_flat is a row-major [num_devices][num_args] array of PJRT_Buffer*: the
+// arguments for device d live at inputs_flat[d*num_args .. d*num_args+num_args).
+// Each device's buffers must be resident on that device.
+//
+// On success, *out_outputs_flat is a malloc'd row-major [num_devices][num_outputs]
+// array of PJRT_Buffer* that the caller must free with PJRT_FreeOutputList. The
+// PJRT_Buffer* handles inside are owned by the caller (destroy with
+// PJRT_DestroyBuffer). The executable must have been compiled for num_devices
+// devices (e.g. num_replicas or num_partitions = N).
+SW_PJRT_Error_Code PJRT_ExecuteMultiDevice(
+    void* executable,
+    void** inputs_flat,
+    size_t num_devices,
+    size_t num_args,
+    void*** out_outputs_flat,
+    size_t* out_num_outputs
+) {
+    if (g_api == NULL || executable == NULL || num_devices == 0 ||
+        out_outputs_flat == NULL || out_num_outputs == NULL) {
+        return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    size_t num_outputs = 0;
+    SW_PJRT_Error_Code qc = QueryNumOutputs(executable, &num_outputs);
+    if (qc != SW_PJRT_Error_OK) {
+        return qc;
+    }
+
+    // argument_lists[d] points into the caller's flat input array (no copy).
+    PJRT_Buffer*** argument_lists =
+        (PJRT_Buffer***)malloc(num_devices * sizeof(PJRT_Buffer**));
+    if (argument_lists == NULL) {
+        return SW_PJRT_Error_INTERNAL;
+    }
+    for (size_t d = 0; d < num_devices; d++) {
+        argument_lists[d] = (num_args > 0 && inputs_flat != NULL)
+            ? (PJRT_Buffer**)&inputs_flat[d * num_args]
+            : NULL;
+    }
+
+    // output_lists[d][o] are caller-allocated per the PJRT contract; PJRT fills
+    // in the PJRT_Buffer* handles.
+    PJRT_Buffer*** output_lists =
+        (PJRT_Buffer***)malloc(num_devices * sizeof(PJRT_Buffer**));
+    if (output_lists == NULL) {
+        free(argument_lists);
+        return SW_PJRT_Error_INTERNAL;
+    }
+    for (size_t d = 0; d < num_devices; d++) {
+        output_lists[d] = (PJRT_Buffer**)calloc(num_outputs, sizeof(PJRT_Buffer*));
+        if (output_lists[d] == NULL && num_outputs > 0) {
+            for (size_t k = 0; k < d; k++) free(output_lists[k]);
+            free(output_lists);
+            free(argument_lists);
+            return SW_PJRT_Error_INTERNAL;
+        }
+    }
+
+    PJRT_ExecuteOptions execute_options = {
+        .struct_size = sizeof(PJRT_ExecuteOptions),
+        .num_send_ops = 0,
+        .num_recv_ops = 0,
+        .launch_id = 0
+    };
+
+    PJRT_LoadedExecutable_Execute_Args args = {
+        .struct_size = sizeof(PJRT_LoadedExecutable_Execute_Args),
+        .executable = (PJRT_LoadedExecutable*)executable,
+        .options = &execute_options,
+        .argument_lists = (PJRT_Buffer* const* const*)argument_lists,
+        .num_devices = num_devices,
+        .num_args = num_args,
+        .output_lists = (PJRT_Buffer** const*)output_lists,
+        .device_complete_events = NULL,
+        .execute_device = NULL
+    };
+
+    PJRT_Error* error = g_api->PJRT_LoadedExecutable_Execute(&args);
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        PJRT_DestroyError(error);
+        for (size_t d = 0; d < num_devices; d++) free(output_lists[d]);
+        free(output_lists);
+        free(argument_lists);
+        return code;
+    }
+
+    // Flatten output_lists -> a single malloc'd [num_devices*num_outputs] array.
+    size_t total = num_devices * num_outputs;
+    void** flat = (void**)malloc((total > 0 ? total : 1) * sizeof(void*));
+    if (flat == NULL) {
+        // Destroy the produced buffers so they don't leak, then bail.
+        for (size_t d = 0; d < num_devices; d++) {
+            for (size_t o = 0; o < num_outputs; o++) {
+                if (output_lists[d][o]) PJRT_DestroyBuffer(output_lists[d][o]);
+            }
+            free(output_lists[d]);
+        }
+        free(output_lists);
+        free(argument_lists);
+        return SW_PJRT_Error_INTERNAL;
+    }
+    for (size_t d = 0; d < num_devices; d++) {
+        for (size_t o = 0; o < num_outputs; o++) {
+            flat[d * num_outputs + o] = (void*)output_lists[d][o];
+        }
+        free(output_lists[d]);
+    }
+    free(output_lists);
+    free(argument_lists);
+
+    *out_outputs_flat = flat;
+    *out_num_outputs = num_outputs;
+    return SW_PJRT_Error_OK;
+}
+
+// Free the flat output array returned by PJRT_ExecuteMultiDevice. Does NOT
+// destroy the PJRT_Buffer* handles it held — those are owned by the caller.
+void PJRT_FreeOutputList(void** outputs_flat) {
+    free(outputs_flat);
+}
+
 SW_PJRT_Error_Code PJRT_ExecuteWithDonation(
     void* executable,
     void** inputs,
