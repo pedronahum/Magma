@@ -36,6 +36,25 @@ char* PJRT_CreateCompileOptionsWithOptLevel(
     size_t* out_size
 );
 
+/// Create a serialized CompileOptionsProto with SPMD / Shardy options.
+///
+/// use_spmd_partitioning enables XLA's SPMD partitioner (ExecutableBuildOptions
+/// field 6); use_shardy_partitioner runs the Shardy propagation + partitioning
+/// pipeline (field 19). Both are bools passed as int (0/1) and are omitted from
+/// the proto when 0, so passing (…, 0, 0, …) yields the same bytes as
+/// PJRT_CreateCompileOptionsWithOptLevel.
+///
+/// num_partitions > 1 requires a client with that many devices. A device
+/// assignment is not set here — XLA uses its default (iota) assignment.
+char* PJRT_CreateCompileOptionsSPMD(
+    int64_t num_replicas,
+    int64_t num_partitions,
+    int32_t xla_opt_level,
+    int use_spmd_partitioning,
+    int use_shardy_partitioner,
+    size_t* out_size
+);
+
 /// Free a buffer allocated by PJRT_CreateCompileOptions
 void PJRT_FreeCompileOptions(char* buffer);
 

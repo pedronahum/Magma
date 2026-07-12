@@ -560,6 +560,56 @@ public final class PJRTClient: @unchecked Sendable {
             devices: devices
         )
     }
+
+    /// Compile StableHLO MLIR with SPMD / Shardy partitioning options.
+    ///
+    /// - Parameters:
+    ///   - numPartitions: number of partitions to partition across. Values > 1
+    ///     require a client with at least that many devices.
+    ///   - useSPMDPartitioning: enable XLA's SPMD partitioner.
+    ///   - useShardyPartitioner: run the Shardy propagation + partitioning
+    ///     pipeline (consumes `sdy.mesh` / `sdy.sharding` annotations in the
+    ///     module). Requires the plugin to have been built with Shardy.
+    ///
+    /// With `numPartitions: 1, useSPMDPartitioning: false, useShardyPartitioner:
+    /// false` this is equivalent to `compile(_:)`.
+    public func compile(
+        _ mlir: String,
+        numPartitions: Int,
+        useSPMDPartitioning: Bool = true,
+        useShardyPartitioner: Bool = false
+    ) throws -> PJRTExecutable {
+        guard let clientHandle = handle else {
+            throw XLAError.compilationFailed("Client not initialized")
+        }
+
+        var executableHandle: UnsafeMutableRawPointer?
+        let errorCode = PJRT_CompileWrapperSPMD(
+            clientHandle,
+            mlir,
+            Int64(numPartitions),
+            useSPMDPartitioning ? 1 : 0,
+            useShardyPartitioner ? 1 : 0,
+            &executableHandle
+        )
+
+        if errorCode != SW_PJRT_Error_OK {
+            if let errorMsg = PJRT_GetLastError() {
+                throw XLAError.compilationFailed("SPMD compilation failed: \(String(cString: errorMsg))")
+            }
+            throw XLAError.compilationFailed("SPMD compilation failed with code \(errorCode.rawValue)")
+        }
+
+        guard let executable = executableHandle else {
+            throw XLAError.compilationFailed("PJRT_CompileWrapperSPMD returned NULL")
+        }
+
+        return PJRTExecutable(
+            handle: executable,
+            client: self,
+            devices: devices
+        )
+    }
 }
 
 // MARK: - PJRTDevice

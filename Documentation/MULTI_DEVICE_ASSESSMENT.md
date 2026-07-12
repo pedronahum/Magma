@@ -372,13 +372,25 @@ exact `sdy` syntax differs by context — dict attributes use the full
 sourced from `TensorSharding.shardingBody` so the P2 SPMD test can validate/adjust
 in one place.
 
-### 9.4 One compile-options change (reuses existing machinery)
+### 9.4 Compile-options change ✅ done (task #18)
 
-Set `use_shardy_partitioner` + `use_spmd_partitioning` + `num_partitions = N` + a
-`device_assignment` in `PJRTProtoHelper.cpp`. The flags go through the **same
-`env_option_overrides` map** the file already writes for
-`xla_backend_optimization_level` — an extension of existing code, not new proto
-plumbing.
+`PJRTProtoHelper.cpp` now emits `use_spmd_partitioning` (ExecutableBuildOptions
+field 6) and `use_shardy_partitioner` (field 19) as direct bool build options —
+cleaner than the env-override route, and gated so single-device bytes are
+unchanged. `PJRT_CompileWrapperSPMD` + `PJRTClient.compile(_:numPartitions:
+useSPMDPartitioning:useShardyPartitioner:)` thread these through, sharing the
+compile flow with the default path via one internal helper.
+
+`device_assignment` (field 9) is intentionally **not** set — XLA uses its default
+(iota) assignment, which suffices until explicit topologies are needed.
+
+**Confirmed on this machine:** the CPU plugin (jaxlib 0.10.1 pin) accepts
+`use_shardy_partitioner`, and a module carrying the `sdy.mesh` + `#sdy.sharding`
+annotations that §9.3's `MLIRBuilder` emits compiles under the Shardy partitioner
+and executes correctly (single partition). So the emit side (§9.3) and the flag
+(§9.4) are validated together against the real Shardy pipeline. The remaining gap
+to real multi-device SPMD is runtime-side: CPU multi-device emulation (#7) and
+multi-device execute (#8/#9), then the end-to-end partition test (#20).
 
 **Net:** the `sdy` vocabulary (~2 pure-Swift files) ports directly; the new work
 is (9.3) the `MLIRBuilder` hooks, (9.4) the compile flags, and — the part SwiftIR

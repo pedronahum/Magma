@@ -920,6 +920,44 @@ SW_PJRT_Error_Code PJRT_CompileWrapper(
     return PJRT_CompileWrapperWithOptLevel(client, mlir_module, SW_XLA_OPT_DEFAULT, out_executable);
 }
 
+// Internal: compile an MLIR module with an already-serialized
+// CompileOptionsProto. Shared by the opt-level and SPMD compile entry points so
+// the program-setup + PJRT_Client_Compile flow lives in one place.
+static SW_PJRT_Error_Code compile_with_options(
+    void* client,
+    const char* mlir_module,
+    char* compile_opts,
+    size_t compile_opts_size,
+    void** out_executable
+) {
+    PJRT_Program program;
+    memset(&program, 0, sizeof(program));
+    program.struct_size = sizeof(program);  // Required for API versioning
+    program.code = (char*)mlir_module;  // Cast away const for PJRT API
+    program.code_size = strlen(mlir_module);
+    program.format = (char*)"mlir";  // or "hlo" for HLO text format
+    program.format_size = strlen("mlir");
+
+    PJRT_Client_Compile_Args args;
+    memset(&args, 0, sizeof(args));
+    args.struct_size = sizeof(args);
+    args.client = (PJRT_Client*)client;
+    args.program = &program;
+    args.compile_options = compile_opts;
+    args.compile_options_size = compile_opts_size;
+
+    PJRT_Error* error = g_api->PJRT_Client_Compile(&args);
+
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        PJRT_DestroyError(error);
+        return code;
+    }
+
+    *out_executable = (void*)args.executable;
+    return SW_PJRT_Error_OK;
+}
+
 SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
     void* client,
     const char* mlir_module,
@@ -930,48 +968,45 @@ SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
-    // Set up compilation options
-    PJRT_Program program;
-    memset(&program, 0, sizeof(program));
-    program.struct_size = sizeof(program);  // Required for API versioning
-    program.code = (char*)mlir_module;  // Cast away const for PJRT API
-    program.code_size = strlen(mlir_module);
-    program.format = (char*)"mlir";  // or "hlo" for HLO text format
-    program.format_size = strlen("mlir");
-
-    // Create CompileOptionsProto using C++ helper that properly constructs
-    // the protobuf message with XLA's protobuf library.
-    // (1, 1) = one replica, one partition: Magma is single-device today.
-    // Multi-device SPMD is future work (see Documentation/ROADMAP.md).
+    // (1, 1) = one replica, one partition: the default single-device path.
     size_t compile_opts_size = 0;
     char* compile_opts = PJRT_CreateCompileOptionsWithOptLevel(1, 1, (int32_t)xla_opt_level, &compile_opts_size);
     if (compile_opts == NULL) {
         return SW_PJRT_Error_INTERNAL;
     }
 
-    // Prepare compilation args
-    PJRT_Client_Compile_Args args;
-    memset(&args, 0, sizeof(args));
-    args.struct_size = sizeof(args);
-    args.client = (PJRT_Client*)client;
-    args.program = &program;
-    args.compile_options = compile_opts;
-    args.compile_options_size = compile_opts_size;
-
-    // Compile the program
-    PJRT_Error* error = g_api->PJRT_Client_Compile(&args);
-
-    // Free the compile options buffer (no longer needed after compile call)
+    SW_PJRT_Error_Code code = compile_with_options(
+        client, mlir_module, compile_opts, compile_opts_size, out_executable);
     PJRT_FreeCompileOptions(compile_opts);
+    return code;
+}
 
-    if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
-        PJRT_DestroyError(error);
-        return code;
+SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
+    void* client,
+    const char* mlir_module,
+    int64_t num_partitions,
+    int use_spmd_partitioning,
+    int use_shardy_partitioner,
+    void** out_executable
+) {
+    if (g_api == NULL || client == NULL || mlir_module == NULL) {
+        return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
-    *out_executable = (void*)args.executable;
-    return SW_PJRT_Error_OK;
+    // One replica, num_partitions partitions, with SPMD / Shardy toggles. XLA
+    // uses its default (iota) device assignment.
+    size_t compile_opts_size = 0;
+    char* compile_opts = PJRT_CreateCompileOptionsSPMD(
+        1, num_partitions, SW_XLA_OPT_DEFAULT,
+        use_spmd_partitioning, use_shardy_partitioner, &compile_opts_size);
+    if (compile_opts == NULL) {
+        return SW_PJRT_Error_INTERNAL;
+    }
+
+    SW_PJRT_Error_Code code = compile_with_options(
+        client, mlir_module, compile_opts, compile_opts_size, out_executable);
+    PJRT_FreeCompileOptions(compile_opts);
+    return code;
 }
 
 void PJRT_DestroyExecutable(void* executable) {

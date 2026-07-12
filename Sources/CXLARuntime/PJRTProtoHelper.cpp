@@ -68,6 +68,21 @@ char* PJRT_CreateCompileOptionsWithOptLevel(
     int32_t xla_opt_level,
     size_t* out_size
 ) {
+    // Single-device default: SPMD partitioning and Shardy off, so the emitted
+    // bytes are byte-for-byte unchanged from before those options existed.
+    return PJRT_CreateCompileOptionsSPMD(
+        num_replicas, num_partitions, xla_opt_level,
+        /*use_spmd_partitioning=*/0, /*use_shardy_partitioner=*/0, out_size);
+}
+
+char* PJRT_CreateCompileOptionsSPMD(
+    int64_t num_replicas,
+    int64_t num_partitions,
+    int32_t xla_opt_level,
+    int use_spmd_partitioning,
+    int use_shardy_partitioner,
+    size_t* out_size
+) {
     std::vector<uint8_t> buf;
 
     // First build ExecutableBuildOptionsProto content
@@ -83,6 +98,20 @@ char* PJRT_CreateCompileOptionsWithOptLevel(
     if (num_partitions != 0) {
         writeTag(execBuildOpts, 5, 0);  // field 5, wire type 0 (varint)
         writeVarint(execBuildOpts, num_partitions);
+    }
+
+    // Field 6: use_spmd_partitioning (bool). Omitted when false so single-device
+    // options remain byte-identical.
+    if (use_spmd_partitioning) {
+        writeTag(execBuildOpts, 6, 0);
+        writeVarint(execBuildOpts, 1);
+    }
+
+    // Field 19: use_shardy_partitioner (bool). Runs the Shardy propagation +
+    // partitioning pipeline; omitted when false.
+    if (use_shardy_partitioner) {
+        writeTag(execBuildOpts, 19, 0);
+        writeVarint(execBuildOpts, 1);
     }
 
     // Now build CompileOptionsProto
