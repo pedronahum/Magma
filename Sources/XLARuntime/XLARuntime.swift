@@ -488,6 +488,17 @@ public final class PJRTClient: @unchecked Sendable {
         devices.first
     }
 
+    /// Number of addressable devices on this client. 1 for a normal CPU/GPU
+    /// client; more when the client was created with several devices (e.g. a
+    /// CPU client with `cpuDeviceCount`, or a multi-GPU/TPU host).
+    public var deviceCount: Int { devices.count }
+
+    /// The addressable device at a logical index (0-based), or nil if out of
+    /// range. `client.devices` remains available for the full list.
+    public func device(at index: Int) -> PJRTDevice? {
+        devices.indices.contains(index) ? devices[index] : nil
+    }
+
     /// Create a buffer from host data
     public func createBuffer<T>(
         _ data: [T],
