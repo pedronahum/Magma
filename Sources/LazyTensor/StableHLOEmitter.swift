@@ -44,6 +44,12 @@ public final class StableHLOEmitter {
         // Track which constants are promoted
         promotedConstantIds = Set(promotedConstants.map { $0.originalNodeId })
 
+        // Declare the Shardy mesh (if any) so node shardings can reference it.
+        let hasMesh = graph.mesh != nil
+        if let mesh = graph.mesh {
+            builder.declareMesh(mesh)
+        }
+
         // First, collect all input handles (data nodes and promoted constants)
         var inputHandles: [LazyTensorHandle] = []
 
@@ -63,10 +69,10 @@ public final class StableHLOEmitter {
             }
         }
 
-        // Create function arguments for data inputs
+        // Create function arguments for data inputs, attaching any sharding.
         for handle in inputHandles {
             let tensorType = TensorType(shape: handle.shape, dtype: handle.dtype)
-            let arg = builder.argument(tensorType)
+            let arg = builder.argument(tensorType, sharding: hasMesh ? handle.sharding : nil)
             valueMap[handle.id] = arg
         }
 
@@ -92,7 +98,12 @@ public final class StableHLOEmitter {
             }
 
             let value = emitNode(handle: handle, node: node)
-            valueMap[handle.id] = value
+            // Pin an intermediate value's sharding with a sdy.sharding_constraint.
+            if hasMesh, let sharding = handle.sharding {
+                valueMap[handle.id] = builder.shardingConstraint(value, sharding)
+            } else {
+                valueMap[handle.id] = value
+            }
         }
 
         // Collect outputs

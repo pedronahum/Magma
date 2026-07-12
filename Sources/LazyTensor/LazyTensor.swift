@@ -81,6 +81,12 @@ public final class LazyTensorHandle: @unchecked Sendable {
     /// Inspired by TensorFlow Swift's lazy tensor design.
     public var isLive: Bool = false
 
+    /// Optional Shardy sharding for this tensor. When set (and the graph declares
+    /// a `mesh`), the emitter attaches it: as a `{sdy.sharding=…}` attribute on a
+    /// data-input argument, or as a `sdy.sharding_constraint` on an intermediate
+    /// value. Referenced axes must exist in the graph's mesh.
+    public var sharding: TensorSharding?
+
     /// Create a new lazy tensor handle
     public init(id: UInt64, shape: [Int], dtype: DType, device: Device) {
         self.id = id
@@ -251,12 +257,36 @@ public final class IRGraph: @unchecked Sendable {
     /// Output handles
     public var outputs: [LazyTensorHandle] = []
 
+    /// Optional Shardy device mesh for this graph. When set, it is emitted as an
+    /// `sdy.mesh` in the module header and is the mesh that node shardings refer
+    /// to. Required for the emitter to attach any node `sharding`.
+    public var mesh: DeviceMesh?
+
     /// Create an empty graph
     public init() {}
 
     /// Add an output to the graph
     public func addOutput(_ handle: LazyTensorHandle) {
         outputs.append(handle)
+    }
+
+    /// Validate every node sharding against the graph's mesh (name, rank, axes).
+    /// Throws the first `ShardingError` found; no-op when there is no mesh or no
+    /// shardings.
+    public func validateShardings() throws {
+        guard let mesh else {
+            // If any node is sharded, a mesh is required.
+            for node in nodes where node.sharding != nil {
+                throw ShardingError.meshNameMismatch(expected: "<graph.mesh not set>",
+                                                     got: node.sharding!.meshName)
+            }
+            return
+        }
+        for node in nodes {
+            if let sharding = node.sharding {
+                try sharding.validate(against: mesh, rank: node.shape.count)
+            }
+        }
     }
 
     /// Emit StableHLO MLIR for this graph
