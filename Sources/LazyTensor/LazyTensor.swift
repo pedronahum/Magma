@@ -756,9 +756,22 @@ public final class MetalCompilationCache: @unchecked Sendable {
 
 // MARK: - Lazy Tensor Barrier
 
-/// Global XLA client (lazily initialized)
+/// Global XLA clients, cached per *resolved* backend (lazily initialized).
+///
+/// Keyed by the resolved backend (see `resolveExecutionBackend`) rather than a
+/// single slot, so two requests that resolve to the same physical backend share
+/// one client, while a request for a genuinely different backend gets its own
+/// client instead of silently receiving the first-created one.
+///
+/// Note: PJRT plugins register process-global state and the C shim loads a
+/// single plugin per process (see `PJRT_LoadPlugin`), so in practice only one
+/// accelerator backend can be live per process today. Requesting a second,
+/// different backend therefore surfaces the plugin-mismatch error loudly rather
+/// than silently running on the wrong device — the per-backend cache is what
+/// makes that failure explicit and lets true multi-plugin support drop in later.
+///
 /// Access is protected by _clientLock
-nonisolated(unsafe) private var _globalClient: PJRTClient?
+nonisolated(unsafe) private var _globalClients: [Backend: PJRTClient] = [:]
 private let _clientLock = NSLock()
 
 /// Resolve which backend to actually execute on.
@@ -789,18 +802,25 @@ public func resolveExecutionBackend(requested: Backend) -> Backend {
     return Backend.bestAvailable
 }
 
-/// Get or create the global XLA client
+/// Get or create the global XLA client for a backend.
+///
+/// The requested backend is first resolved (env override / availability /
+/// fallback) and the client is cached under that resolved backend, so repeated
+/// calls for the same physical device reuse one client.
 public func getGlobalClient(backend: Backend = .cpu) throws -> PJRTClient {
+    // Resolve outside the lock: it only reads process environment and plugin
+    // availability, and keeps the critical section to the cache lookup/insert.
+    let resolved = resolveExecutionBackend(requested: backend)
+
     _clientLock.lock()
     defer { _clientLock.unlock() }
 
-    if let client = _globalClient {
+    if let client = _globalClients[resolved] {
         return client
     }
 
-    let resolved = resolveExecutionBackend(requested: backend)
     let client = try PJRTClient.create(backend: resolved)
-    _globalClient = client
+    _globalClients[resolved] = client
     return client
 }
 
