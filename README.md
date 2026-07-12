@@ -200,11 +200,13 @@ export MAGMA_ENABLE_XLA=1
 # Build with XLA
 swift build
 
-# Run all tests. Use --no-parallel: many suites materialize tensors, and each
-# GPU PJRT client reserves ~75-80% of memory. On a unified-memory box (e.g.
-# NVIDIA GB10) a parallel run spins up several clients at once and OOM-freezes
-# the machine. One client at a time is the only safe way.
-swift test --no-parallel
+# Run all tests. Prefer a CPU PJRT plugin ($MAGMA_XLA_PATH/pjrt_c_api_cpu_plugin.so):
+# it runs the whole suite in seconds with no accelerator memory reserved. Keep
+# --no-parallel — the GPU smoke suites each spin up a PJRT client, and on a
+# unified-memory box (e.g. NVIDIA GB10) each CUDA client reserves ~75-80% of
+# memory, so a parallel run can OOM-freeze the machine. Note: one process can
+# only load one plugin, so run the GPU-only suites in a separate invocation.
+swift test --no-parallel --filter MagmaTests   # CoreTests, runs on CPU
 
 # Run MNIST example
 swift run MNISTExample
