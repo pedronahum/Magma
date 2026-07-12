@@ -77,7 +77,7 @@ public struct GradcheckDetail {
 public func gradcheck(
     _ f: @differentiable(reverse) (Tensor<Float>) -> Tensor<Float>,
     input: Tensor<Float>,
-    eps: Float = 1e-4,
+    eps: Float = 1e-2,
     atol: Float = 1e-5,
     rtol: Float = 1e-3,
     verbose: Bool = false
@@ -114,7 +114,7 @@ public func gradcheck(
     _ f: @differentiable(reverse) (Tensor<Float>, Tensor<Float>) -> Tensor<Float>,
     input1: Tensor<Float>,
     input2: Tensor<Float>,
-    eps: Float = 1e-4,
+    eps: Float = 1e-2,
     atol: Float = 1e-5,
     rtol: Float = 1e-3
 ) -> (GradcheckResult, GradcheckResult) {
@@ -147,7 +147,7 @@ public func gradcheck(
 public func numericalGradient(
     of f: (Tensor<Float>) -> Tensor<Float>,
     at x: Tensor<Float>,
-    eps: Float = 1e-4
+    eps: Float = 1e-2
 ) -> Tensor<Float> {
     // Get input values (scalars() triggers barrier internally)
     let xValues = x.scalars()
@@ -189,7 +189,7 @@ public func numericalGradient(
 public func numericalGradientForward(
     of f: (Tensor<Float>) -> Tensor<Float>,
     at x: Tensor<Float>,
-    eps: Float = 1e-4
+    eps: Float = 1e-2
 ) -> Tensor<Float> {
     // Get input values and base function value
     let xValues = x.scalars()
@@ -300,7 +300,7 @@ private func linearToMultiIndex(_ linear: Int, shape: [Int]) -> [Int] {
 public func gradcheckPasses(
     _ f: @differentiable(reverse) (Tensor<Float>) -> Tensor<Float>,
     input: Tensor<Float>,
-    eps: Float = 1e-4,
+    eps: Float = 1e-2,
     atol: Float = 1e-5,
     rtol: Float = 1e-3
 ) -> Bool {
@@ -316,7 +316,7 @@ public func gradcheckPasses(
 public func assertGradcheck(
     _ f: @differentiable(reverse) (Tensor<Float>) -> Tensor<Float>,
     input: Tensor<Float>,
-    eps: Float = 1e-4,
+    eps: Float = 1e-2,
     atol: Float = 1e-5,
     rtol: Float = 1e-3,
     file: StaticString = #file,
@@ -371,7 +371,7 @@ public enum GradcheckError: Error, CustomStringConvertible {
 public func numericalJacobian(
     of f: (Tensor<Float>) -> Tensor<Float>,
     at x: Tensor<Float>,
-    eps: Float = 1e-4
+    eps: Float = 1e-2
 ) -> Tensor<Float> {
     let xValues = x.scalars()
     let n = xValues.count  // input dimension
