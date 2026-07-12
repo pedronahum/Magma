@@ -356,17 +356,21 @@ later if sub-axis sharding is needed.
 - **`SdyCAPIWrapper.c` / full `SwiftIRSharding/DeviceMesh`** — native MLIR C-API,
   incomplete; unnecessary for the in-XLA model.
 
-### 9.3 Add to `MLIRBuilder` — three hooks (the real new work)
+### 9.3 Add to `MLIRBuilder` — three hooks (the real new work) ✅ done (task #17)
 
-1. **Mesh op in the module header.** `build(name:outputs:)` (line 1162): accept a
-   `mesh: DeviceMesh?` and inject `mesh.mlirText` between `module @name {` and
-   `func.func`.
-2. **Argument shardings.** `argument(_:)` (line 44): add an optional
-   `TensorSharding?`; in `build()`, append `{sdy.sharding = <attr>}` to each arg
-   in `argDefs` (line 1163).
-3. **Result / intermediate shardings.** Add a `shardingConstraint(_:_:)` method
-   that appends `%r = sdy.sharding_constraint %v <#sdy.sharding<…>> : type` via the
-   existing `addRawOperation` (line 82) — no need to touch every op emitter.
+1. **Mesh op in the module header.** `declareMesh(_:)` + `build()` emit each
+   declared `sdy.mesh` between `module @name {` and `func.func`.
+2. **Argument shardings.** `argument(_:sharding:)` records an optional
+   `TensorSharding`; `build()` appends `{sdy.sharding = #sdy.sharding<…>}` to that
+   argument.
+3. **Intermediate shardings.** `shardingConstraint(_:_:)` emits
+   `%r = sdy.sharding_constraint %v <@mesh, [...]> : type` (bare sharding form).
+
+All three are gated so single-device output is byte-for-byte unchanged. Note the
+exact `sdy` syntax differs by context — dict attributes use the full
+`#sdy.sharding<…>` form, in-op shardings use the bare `<@mesh, […]>` form — both
+sourced from `TensorSharding.shardingBody` so the P2 SPMD test can validate/adjust
+in one place.
 
 ### 9.4 One compile-options change (reuses existing machinery)
 

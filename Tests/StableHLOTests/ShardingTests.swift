@@ -151,4 +151,45 @@ struct MLIRBuilderShardingTests {
         // Header is the plain single-device form.
         #expect(mlir.contains("module @m {\n  func.func @main"))
     }
+
+    @Test("argument sharding renders as an arg attribute (full #sdy.sharding form)")
+    func argumentSharding() {
+        let builder = MLIRBuilder()
+        builder.declareMesh(.grid(name: "mesh", rows: 2, cols: 4))
+        // Shard %arg0's rows on "x"; leave %arg1 unsharded.
+        let x = builder.argument(
+            TensorType(shape: [2, 3], dtype: .float32),
+            sharding: TensorSharding(meshName: "mesh", axisNames: ["x", nil])
+        )
+        let y = builder.argument(TensorType(shape: [2, 3], dtype: .float32))
+        let z = builder.add(x, y)
+        let mlir = builder.build(name: "m", outputs: [z])
+
+        #expect(mlir.contains("%arg0: tensor<2x3xf32> {sdy.sharding = #sdy.sharding<@mesh, [{\"x\"}, {}]>}"))
+        // The unsharded arg keeps the plain form.
+        #expect(mlir.contains("%arg1: tensor<2x3xf32>,") || mlir.contains("%arg1: tensor<2x3xf32>)"))
+    }
+
+    @Test("sharding_constraint emits an in-graph op with the bare sharding form")
+    func shardingConstraintOp() {
+        let builder = MLIRBuilder()
+        builder.declareMesh(.linear(name: "mesh", axisName: "x", size: 4))
+        let x = builder.argument(TensorType(shape: [4, 8], dtype: .float32))
+        let c = builder.shardingConstraint(x, TensorSharding(meshName: "mesh", axisNames: ["x", nil]))
+        let mlir = builder.build(name: "m", outputs: [c])
+
+        // Bare form inside the op (no #sdy.sharding wrapper).
+        #expect(mlir.contains("= sdy.sharding_constraint %arg0 <@mesh, [{\"x\"}, {}]> : tensor<4x8xf32>"))
+        #expect(!mlir.contains("sdy.sharding_constraint %arg0 <#sdy.sharding"))
+    }
+
+    @Test("no sharding leaves the argument signature unchanged")
+    func noArgShardingUnchanged() {
+        let builder = MLIRBuilder()
+        let x = builder.argument(TensorType(shape: [2, 3], dtype: .float32))
+        let y = builder.add(x, x)
+        let mlir = builder.build(name: "m", outputs: [y])
+        #expect(!mlir.contains("sdy.sharding"))
+        #expect(mlir.contains("func.func @main(%arg0: tensor<2x3xf32>)"))
+    }
 }

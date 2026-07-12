@@ -31,6 +31,10 @@ public final class MLIRBuilder: @unchecked Sendable {
     /// Empty by default, so single-device modules are byte-for-byte unchanged.
     private var meshes: [DeviceMesh] = []
 
+    /// Optional Shardy sharding per function-argument index. Empty by default, so
+    /// single-device signatures are byte-for-byte unchanged.
+    private var argumentShardings: [Int: TensorSharding] = [:]
+
     /// Next value ID
     private var nextValueId: Int = 0
     
@@ -43,11 +47,14 @@ public final class MLIRBuilder: @unchecked Sendable {
     
     // MARK: - Arguments
     
-    /// Add a function argument
+    /// Add a function argument, optionally with a Shardy sharding that will be
+    /// emitted as a `{sdy.sharding = ...}` attribute on the argument.
     @discardableResult
-    public func argument(_ type: TensorType) -> Value {
-        let arg = Argument(index: arguments.count, type: type)
+    public func argument(_ type: TensorType, sharding: TensorSharding? = nil) -> Value {
+        let index = arguments.count
+        let arg = Argument(index: index, type: type)
         arguments.append(arg)
+        if let sharding { argumentShardings[index] = sharding }
         return arg.asValue
     }
     
@@ -100,6 +107,19 @@ public final class MLIRBuilder: @unchecked Sendable {
     /// Meshes declared so far (for inspection/tests).
     public func declaredMeshes() -> [DeviceMesh] {
         meshes
+    }
+
+    /// Emit an `sdy.sharding_constraint`, pinning `input` to `sharding` and
+    /// returning the constrained value (same type). This is the in-graph way to
+    /// tell Shardy how an intermediate tensor should be partitioned.
+    @discardableResult
+    public func shardingConstraint(_ input: Value, _ sharding: TensorSharding) -> Value {
+        let result = nextValue(type: input.type)
+        // sdy assembly: `sdy.sharding_constraint $input $sharding : type`
+        // where $sharding is the bare `<@mesh, [...]>` form.
+        let op = "    \(result.name) = sdy.sharding_constraint \(input.displayName) <\(sharding.shardingBody)> : \(input.type.mlirType)"
+        operations.append(op)
+        return result
     }
 
     /// Set the next value ID (used to avoid conflicts with block args)
@@ -1179,7 +1199,15 @@ public final class MLIRBuilder: @unchecked Sendable {
 
     /// Build the final MLIR module
     public func build(name: String, outputs: [Value]) -> String {
-        let argDefs = arguments.map { "\($0.name): \($0.type.mlirType)" }.joined(separator: ", ")
+        // Append a `{sdy.sharding = ...}` attribute only when an argument has a
+        // sharding, so single-device signatures are byte-for-byte unchanged.
+        let argDefs = arguments.map { arg -> String in
+            let base = "\(arg.name): \(arg.type.mlirType)"
+            if let sharding = argumentShardings[arg.index] {
+                return "\(base) {sdy.sharding = \(sharding.mlirAttributeText)}"
+            }
+            return base
+        }.joined(separator: ", ")
         let outputTypes = outputs.map { $0.type.mlirType }.joined(separator: ", ")
         let returnValues = outputs.map { $0.displayName }.joined(separator: ", ")
         

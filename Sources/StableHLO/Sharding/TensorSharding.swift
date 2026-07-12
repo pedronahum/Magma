@@ -94,16 +94,25 @@ public struct TensorSharding: Equatable, Hashable, Sendable, CustomStringConvert
 
     public var rank: Int { dimShardings.count }
 
-    /// The full `#sdy.sharding<@mesh, [...]>` attribute text.
-    public var mlirAttributeText: String {
+    /// The mesh + dim-shardings body, e.g. `@mesh, [{"x"}, {}]` — the content
+    /// inside the `<...>` of an `sdy` sharding. Used bare by
+    /// `sdy.sharding_constraint` (`... <@mesh, [...]> : type`) and wrapped by
+    /// `mlirAttributeText` for dict attributes. Single source of truth for the
+    /// exact syntax so the P2 SPMD test can validate/adjust it in one place.
+    public var shardingBody: String {
         let dimStr = dimShardings.map(\.mlirText).joined(separator: ", ")
-        var result = "#sdy.sharding<@\(meshName), [\(dimStr)]"
+        var result = "@\(meshName), [\(dimStr)]"
         if !replicatedAxes.isEmpty {
             let rep = replicatedAxes.map { "\"\($0)\"" }.joined(separator: ", ")
             result += ", replicated={\(rep)}"
         }
-        result += ">"
         return result
+    }
+
+    /// The full `#sdy.sharding<@mesh, [...]>` attribute text (for dict attributes,
+    /// e.g. a function-argument sharding).
+    public var mlirAttributeText: String {
+        "#sdy.sharding<\(shardingBody)>"
     }
 
     public var description: String { mlirAttributeText }
