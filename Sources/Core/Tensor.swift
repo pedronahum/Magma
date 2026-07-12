@@ -867,6 +867,11 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
 ///   - rhs: Second shape
 /// - Returns: The broadcast result shape, or nil if shapes are incompatible
 public func computeBroadcastShape(_ lhs: [Int], _ rhs: [Int]) -> [Int]? {
+    // Fast path: identical shapes (the common case for elementwise ops —
+    // activations, residual adds, etc.) need no padding/rebuild. Avoids three
+    // array allocations per binary op on the graph-construction hot path.
+    if lhs == rhs { return lhs }
+
     let maxRank = max(lhs.count, rhs.count)
 
     // Pad shapes to same rank by prepending 1s
