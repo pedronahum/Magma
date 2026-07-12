@@ -132,6 +132,100 @@ extension Dataset where Element == (input: Tensor<Float>, target: Tensor<Float>)
 ///     // ...
 /// }
 /// ```
+/// A small deterministic RNG (SplitMix64) so every data-parallel replica draws
+/// the *same* shuffle permutation for a given seed and epoch — the property
+/// `DistributedSampler` relies on to produce disjoint, covering shards.
+public struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+
+    public init(seed: UInt64) { self.state = seed }
+
+    public mutating func next() -> UInt64 {
+        state = state &+ 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// Shards a dataset's indices across data-parallel replicas so each replica sees
+/// a distinct, equal-sized subset. Mirrors PyTorch's `DistributedSampler`.
+///
+/// With `shuffle`, all replicas use the same `seed &+ epoch` permutation, so the
+/// per-replica strided shards are disjoint and together cover the dataset. When
+/// the dataset isn't evenly divisible, `dropLast` truncates the tail; otherwise
+/// the tail is padded (by repeating from the front) so every replica sees the
+/// same number of samples — important so replicas stay in step during training.
+public struct DistributedSampler: Sendable {
+    public let count: Int
+    public let numReplicas: Int
+    public let rank: Int
+    public let shuffle: Bool
+    public let seed: UInt64
+    public let dropLast: Bool
+
+    public init(
+        count: Int,
+        numReplicas: Int,
+        rank: Int,
+        shuffle: Bool = true,
+        seed: UInt64 = 0,
+        dropLast: Bool = false
+    ) {
+        precondition(count >= 0, "DistributedSampler: count must be non-negative")
+        precondition(numReplicas > 0, "DistributedSampler: numReplicas must be positive")
+        precondition(rank >= 0 && rank < numReplicas,
+                     "DistributedSampler: rank \(rank) out of range [0, \(numReplicas))")
+        self.count = count
+        self.numReplicas = numReplicas
+        self.rank = rank
+        self.shuffle = shuffle
+        self.seed = seed
+        self.dropLast = dropLast
+    }
+
+    /// Number of samples this replica iterates per epoch (equal across replicas).
+    public var numSamples: Int {
+        dropLast ? count / numReplicas : (count + numReplicas - 1) / numReplicas
+    }
+
+    /// Total number of (possibly padded/truncated) indices across all replicas.
+    public var totalSize: Int { numSamples * numReplicas }
+
+    /// The dataset indices this replica should iterate for `epoch`.
+    public func indices(epoch: Int = 0) -> [Int] {
+        guard count > 0 else { return [] }
+        var idx = Array(0..<count)
+        if shuffle {
+            var rng = SeededGenerator(seed: seed &+ UInt64(bitPattern: Int64(epoch)))
+            idx.shuffle(using: &rng)
+        }
+
+        let total = totalSize
+        if dropLast {
+            idx = Array(idx.prefix(total))
+        } else if total > idx.count {
+            // Pad by repeating from the front to reach an even multiple.
+            var i = 0
+            while idx.count < total { idx.append(idx[i % count]); i += 1 }
+        }
+
+        // This replica takes every numReplicas-th index starting at `rank`.
+        var shard: [Int] = []
+        shard.reserveCapacity(numSamples)
+        var i = rank
+        while i < total { shard.append(idx[i]); i += numReplicas }
+        return shard
+    }
+
+    /// Convenience: per-replica batch size for a desired global batch size.
+    public static func perReplicaBatchSize(globalBatchSize: Int, numReplicas: Int) -> Int {
+        precondition(numReplicas > 0, "numReplicas must be positive")
+        return max(1, globalBatchSize / numReplicas)
+    }
+}
+
 public struct DataLoader<D: Dataset>: Sequence where D.Element == (input: Tensor<Float>, target: Tensor<Float>) {
     /// The underlying dataset
     public let dataset: D
@@ -144,6 +238,11 @@ public struct DataLoader<D: Dataset>: Sequence where D.Element == (input: Tensor
 
     /// Whether to drop the last incomplete batch
     public let dropLast: Bool
+
+    /// When non-nil, iterate exactly these dataset indices (in order) instead of
+    /// `0..<dataset.count`. Set by the distributed initializer so a loader yields
+    /// only this replica's shard.
+    public let overrideIndices: [Int]?
 
     /// Creates a data loader.
     ///
@@ -163,14 +262,43 @@ public struct DataLoader<D: Dataset>: Sequence where D.Element == (input: Tensor
         self.batchSize = batchSize
         self.shuffle = shuffle
         self.dropLast = dropLast
+        self.overrideIndices = nil
+    }
+
+    /// Creates a data loader over one replica's shard of the dataset.
+    ///
+    /// The `sampler` selects this replica's indices for `epoch`; the loader then
+    /// batches them with `batchSize` (the *per-replica* batch size — see
+    /// `DistributedSampler.perReplicaBatchSize`). Shuffling is owned by the
+    /// sampler, so the loader does not re-shuffle.
+    public init(
+        dataset: D,
+        batchSize: Int,
+        sampler: DistributedSampler,
+        epoch: Int = 0,
+        dropLast: Bool = false
+    ) {
+        precondition(batchSize > 0, "Batch size must be positive")
+        precondition(sampler.count == dataset.count,
+                     "DistributedSampler.count (\(sampler.count)) must match dataset.count (\(dataset.count))")
+        self.dataset = dataset
+        self.batchSize = batchSize
+        self.shuffle = false
+        self.dropLast = dropLast
+        self.overrideIndices = sampler.indices(epoch: epoch)
+    }
+
+    /// Number of samples iterated (the replica's shard when distributed).
+    private var effectiveSampleCount: Int {
+        overrideIndices?.count ?? dataset.count
     }
 
     /// Number of batches
     public var count: Int {
         if dropLast {
-            return dataset.count / batchSize
+            return effectiveSampleCount / batchSize
         } else {
-            return (dataset.count + batchSize - 1) / batchSize
+            return (effectiveSampleCount + batchSize - 1) / batchSize
         }
     }
 
@@ -187,9 +315,15 @@ public struct DataLoaderIterator<D: Dataset>: IteratorProtocol where D.Element =
 
     init(loader: DataLoader<D>) {
         self.loader = loader
-        self.indices = Array(0..<loader.dataset.count)
-        if loader.shuffle {
-            self.indices.shuffle()
+        if let override = loader.overrideIndices {
+            // A distributed sampler already selected and ordered this replica's
+            // indices; don't re-shuffle.
+            self.indices = override
+        } else {
+            self.indices = Array(0..<loader.dataset.count)
+            if loader.shuffle {
+                self.indices.shuffle()
+            }
         }
     }
 
