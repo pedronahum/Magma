@@ -50,10 +50,16 @@ public final class LazyTensorHandle: @unchecked Sendable {
                 structuralHash = IRNode.computeIncrementalHash(node: node, shape: shape, dtype: dtype)
             }
             #endif
-            // Invalidate persistent subgraph cache entry for this handle.
-            // Required when irNode changes (e.g., after materialization to .metalData),
-            // so stale subtrees are not replayed in subsequent barriers.
-            invalidateSubgraphCache(for: self)
+            // Invalidate the persistent subgraph cache entry for this handle when
+            // its node *changes* (e.g. after materialization to .metalData), so
+            // stale subtrees are not replayed in subsequent barriers. The common
+            // case — a freshly built op assigning irNode for the first time
+            // (oldValue == nil) — cannot have a cache entry yet (the handle was
+            // just allocated), so skip the lookup entirely. This keeps the per-op
+            // hot path off the cache lock and out of the dictionary.
+            if oldValue != nil {
+                invalidateSubgraphCache(for: self)
+            }
         }
     }
 
@@ -385,8 +391,13 @@ public final class TensorRegistry: @unchecked Sendable {
 
     /// Register a pending tensor (for internal tracking - doesn't mark for output)
     public func registerPending(_ handle: LazyTensorHandle) {
-        // Record to tracer if tracing is active (for while loop body capture)
-        WhileLoopTracer.shared.recordNode(handle)
+        // Record to the tracer only while a while-loop body is being traced.
+        // Gate on a global atomic count first (a relaxed load) so the common
+        // no-tracing path never touches thread-local storage — `shared` otherwise
+        // does a Thread.threadDictionary lookup + cast on every single op.
+        if _globalActiveTraceCount.load(ordering: .relaxed) > 0 {
+            WhileLoopTracer.shared.recordNode(handle)
+        }
 
         // This is otherwise a no-op for intermediate tensors
         // Only tensors marked via markForMaterialization will become outputs
@@ -1364,6 +1375,12 @@ public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws 
 /// During tracing, we create placeholder inputs that represent loop-carried variables.
 /// All operations performed using these placeholders are recorded, and the final
 /// outputs are captured. This traced graph can then be emitted as a stablehlo.while.
+/// Global count of threads currently tracing a while-loop body. `registerPending`
+/// checks this (a relaxed atomic load) on the per-op hot path to avoid the
+/// thread-local `WhileLoopTracer.shared` lookup when nobody is tracing — which is
+/// the overwhelmingly common case. Kept in sync by beginTrace/endTrace/abortTrace.
+nonisolated(unsafe) let _globalActiveTraceCount = Atomic<Int>(0)
+
 public final class WhileLoopTracer: @unchecked Sendable {
 
     /// Whether tracing is currently active
@@ -1406,6 +1423,7 @@ public final class WhileLoopTracer: @unchecked Sendable {
     public func beginTrace(initialShapes: [(shape: [Int], dtype: DType)]) -> [LazyTensorHandle] {
         precondition(!isTracing, "Cannot nest while loop traces")
         isTracing = true
+        _globalActiveTraceCount.wrappingAdd(1, ordering: .relaxed)
         bodyInputs = []
         tracedNodes = []
         tracedNodeIds = []
@@ -1451,6 +1469,7 @@ public final class WhileLoopTracer: @unchecked Sendable {
     ) {
         precondition(isTracing, "Not currently tracing")
         isTracing = false
+        _globalActiveTraceCount.wrappingSubtract(1, ordering: .relaxed)
 
         let result = (inputs: bodyInputs, outputs: bodyOutputs, nodes: tracedNodes)
 
@@ -1464,7 +1483,12 @@ public final class WhileLoopTracer: @unchecked Sendable {
 
     /// Abort tracing (for error recovery)
     public func abortTrace() {
-        isTracing = false
+        // Guard the decrement so a stray abort (when not tracing) can't underflow
+        // the global count.
+        if isTracing {
+            isTracing = false
+            _globalActiveTraceCount.wrappingSubtract(1, ordering: .relaxed)
+        }
         bodyInputs = []
         tracedNodes = []
         tracedNodeIds = []
