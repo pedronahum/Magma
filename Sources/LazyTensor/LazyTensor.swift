@@ -512,6 +512,14 @@ public final class CompilationCache: @unchecked Sendable {
     /// executable cache is cleared, re-compilation can skip re-emission entirely.
     private var mlirCache: [String: String] = [:]
 
+    /// Fast-path (trace) cache keyed by a hash of the *raw* graph structure plus
+    /// constant values. A hit lets a repeated barrier skip graph building,
+    /// optimization, analysis, emission, and compilation entirely — the single
+    /// biggest per-barrier cost (optimization alone is ~40-50%). Mirrors the
+    /// Metal backend's fast path.
+    private var fastCache: [UInt64: PJRTTraceCacheEntry] = [:]
+    private let fastCacheMaxEntries = 4096
+
     /// Lock for thread safety
     private let lock = NSLock()
 
@@ -550,16 +558,33 @@ public final class CompilationCache: @unchecked Sendable {
         mlirCache[hash] = mlir
     }
 
+    /// Look up a fast-path (trace) entry.
+    public func getFast(hash: UInt64) -> PJRTTraceCacheEntry? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fastCache[hash]
+    }
+
+    /// Store a fast-path (trace) entry (size-capped to bound memory).
+    public func putFast(hash: UInt64, entry: PJRTTraceCacheEntry) {
+        lock.lock()
+        defer { lock.unlock() }
+        if fastCache[hash] == nil && fastCache.count >= fastCacheMaxEntries { return }
+        fastCache[hash] = entry
+    }
+
     /// Clear all cached entries
     public func clear() {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
         mlirCache.removeAll()
+        fastCache.removeAll()
         hitCount = 0
         missCount = 0
         promotionHitCount = 0
         mlirHitCount = 0
+        fastHitCount = 0
     }
 
     /// Cache statistics
@@ -567,6 +592,7 @@ public final class CompilationCache: @unchecked Sendable {
     public var missCount: Int = 0
     public var promotionHitCount: Int = 0  // Hits due to constant promotion
     public var mlirHitCount: Int = 0       // Hits on MLIR text cache (skipped re-emission)
+    public var fastHitCount: Int = 0       // Fast-path (trace) hits (skipped the whole pipeline)
 
     /// Cache hit rate
     public var hitRate: Double {
@@ -600,6 +626,18 @@ public struct CachedGraphMetadata: Sendable {
 public struct PromotedConstantSlot: Sendable {
     public let shape: [Int]
     public let dtype: DType
+}
+
+/// Fast-path (trace) cache entry for the PJRT backend: everything needed to
+/// re-execute a repeated graph structure without rebuilding/optimizing it.
+public struct PJRTTraceCacheEntry: Sendable {
+    public let executable: PJRTExecutable
+    public let metadata: CachedGraphMetadata
+    /// Promoted constant values, in input order. Reused directly on a hit — the
+    /// fast key folds in constant values, so a hit guarantees these still match.
+    public let promotedConstantValues: [[Float]]
+    /// The optimized-graph structural hash, kept for the self-verify mode.
+    public let structuralHash: String
 }
 
 // MARK: - Metal Compilation Cache
@@ -803,6 +841,116 @@ public func getMetalHLOClient() throws -> MetalHLOClient {
 /// LazyTensorBarrier()          // Compile and execute everything
 /// print(y.scalars())           // Now we can read the results
 /// ```
+/// Compute the PJRT fast-path (trace) key for a set of output handles.
+///
+/// A single post-order DFS hashes the *raw* graph's full structure — op kinds,
+/// shapes, dtypes, relative input indices (so DAG sharing is captured), and
+/// attributes — AND constant VALUES. Two barriers with the same key therefore
+/// have an identical structure and identical constants, so a cached executable
+/// and cached promoted-constant values are safe to reuse. (`handle.structuralHash`
+/// is only maintained on macOS, so this recomputes structure from scratch — still
+/// far cheaper than the optimize+emit+compile it skips.)
+///
+/// Returns `nil` when the graph contains a traced while-loop: its body is not
+/// captured by this key, so such graphs must not be fast-path cached.
+func computePJRTTraceKey(outputs: [LazyTensorHandle]) -> UInt64? {
+    var hasher = Hasher()
+    hasher.combine(outputs.count)
+    var indexOf: [UInt64: Int] = [:]
+    var next = 0
+    var visited = Set<UInt64>()
+    var hasWhileLoop = false
+
+    func visit(_ handle: LazyTensorHandle) {
+        guard visited.insert(handle.id).inserted else { return }
+
+        if let node = handle.irNode {
+            switch node {
+            case .operation(_, let inputs, _):
+                for input in inputs { visit(input) }
+            case .whileLoopTraced(_, let initialValues, _, _, _):
+                hasWhileLoop = true
+                for input in initialValues { visit(input) }
+            case .constant, .data:
+                break
+            #if os(macOS) && canImport(MetalHLO)
+            case .metalData:
+                break
+            #endif
+            }
+        }
+
+        // Assign this node's structural index in post-order (topological) so that
+        // inputs are referenced by an already-assigned relative index.
+        indexOf[handle.id] = next
+        next += 1
+
+        guard let node = handle.irNode else {
+            hasher.combine(9); hasher.combine(handle.shape); hasher.combine(handle.dtype)
+            return
+        }
+        switch node {
+        case .constant(let values, let shape):
+            hasher.combine(0); hasher.combine(shape); hasher.combine(handle.dtype); hasher.combine(values)
+        case .data:
+            hasher.combine(1); hasher.combine(handle.shape); hasher.combine(handle.dtype)
+        case .operation(let op, let inputs, let attributes):
+            hasher.combine(2); hasher.combine(op.rawValue)
+            hasher.combine(handle.shape); hasher.combine(handle.dtype)
+            hasher.combine(inputs.count)
+            for input in inputs { hasher.combine(indexOf[input.id] ?? -1) }
+            for (k, v) in attributes.sorted(by: { $0.key < $1.key }) {
+                hasher.combine(k); hasher.combine(String(describing: v))
+            }
+        case .whileLoopTraced(let iterations, let initialValues, _, _, _):
+            hasher.combine(3); hasher.combine(iterations)
+            hasher.combine(handle.shape); hasher.combine(handle.dtype)
+            for input in initialValues { hasher.combine(indexOf[input.id] ?? -1) }
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            hasher.combine(1); hasher.combine(handle.shape); hasher.combine(handle.dtype)
+        #endif
+        }
+    }
+
+    for output in outputs { visit(output) }
+    for output in outputs { hasher.combine(indexOf[output.id] ?? -1) }
+
+    if hasWhileLoop { return nil }
+    return UInt64(hasher.finalize().magnitude)
+}
+
+/// Collect the `.data` (on-device buffer) input handles reachable from `outputs`,
+/// in post-order DFS (topological) order — the order the compiled executable
+/// expects its data arguments. Used by the fast path; the slow path validates
+/// that this order matches the optimized graph before caching a trace entry.
+func collectDataInputsForTrace(outputs: [LazyTensorHandle]) -> [LazyTensorHandle] {
+    var dataInputs: [LazyTensorHandle] = []
+    var visited = Set<UInt64>()
+
+    func visit(_ handle: LazyTensorHandle) {
+        guard visited.insert(handle.id).inserted else { return }
+        guard let node = handle.irNode else { return }
+        switch node {
+        case .data:
+            dataInputs.append(handle)
+        case .constant:
+            break
+        case .operation(_, let inputs, _):
+            for input in inputs { visit(input) }
+        case .whileLoopTraced(_, let initialValues, _, _, _):
+            for input in initialValues { visit(input) }
+        #if os(macOS) && canImport(MetalHLO)
+        case .metalData:
+            dataInputs.append(handle)
+        #endif
+        }
+    }
+
+    for output in outputs { visit(output) }
+    return dataInputs
+}
+
 public func LazyTensorBarrier(on device: Device = .default) {
     // Route to Metal-specific barrier if using Metal backend
     #if os(macOS) && canImport(MetalHLO)
@@ -827,6 +975,67 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // Mark outputs as live (for future memory optimization)
     for output in outputs {
         output.isLive = true
+    }
+
+    let cache = CompilationCache.shared
+    let traceCacheDisabled = ProcessInfo.processInfo.environment["MAGMA_NO_TRACE_CACHE"] == "1"
+    let verifyTraceCache = ProcessInfo.processInfo.environment["MAGMA_VERIFY_TRACE_CACHE"] == "1"
+
+    // Fast path (trace cache): skip graph build + optimization + emission +
+    // compilation for a repeated graph structure. `fastKey` folds in constant
+    // values (nil ⇒ contains a while-loop ⇒ ineligible).
+    let fastKey = traceCacheDisabled ? nil : computePJRTTraceKey(outputs: outputs)
+    if let fastKey, let entry = cache.getFast(hash: fastKey) {
+        if verifyTraceCache {
+            // Rebuild + optimize + hash the slow way and assert the fast key maps
+            // to the same structural graph (catches a fast-key collision). Read-only
+            // w.r.t. `outputs`. Only used on validation runs — it defeats the perf win.
+            let vg = IRGraph()
+            for output in outputs { vg.addOutput(output) }
+            vg.buildTopologicalOrder()
+            let vOpt = ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] == "1"
+                ? vg : PassManager.shared.run(on: vg)
+            let vHash = vOpt.analyzeForConstantPromotion().structuralHash
+            if vHash != entry.structuralHash {
+                print("Magma: TRACE-CACHE VERIFY FAILED (fastKey=\(fastKey)): "
+                    + "structuralHash \(vHash) != cached \(entry.structuralHash)")
+            }
+        }
+        let dataInputs = collectDataInputsForTrace(outputs: outputs)
+        if dataInputs.count == entry.metadata.dataInputCount {
+            var ok = true
+            var inputBuffers: [PJRTBuffer] = []
+            inputBuffers.reserveCapacity(dataInputs.count + entry.promotedConstantValues.count)
+            for handle in dataInputs {
+                if case .data(let buffer) = handle.irNode {
+                    inputBuffers.append(buffer)
+                } else {
+                    ok = false; break   // unexpected leaf kind — bail to slow path
+                }
+            }
+            if ok {
+                do {
+                    let client = try getGlobalClient(backend: device.backend)
+                    for (i, values) in entry.promotedConstantValues.enumerated() {
+                        let slot = entry.metadata.promotedConstantSlots[i]
+                        inputBuffers.append(try client.createBuffer(
+                            values, shape: slot.shape, elementType: .float32, device: nil))
+                    }
+                    let outputBuffers = try entry.executable.execute(inputBuffers)
+                    for (i, output) in outputs.enumerated() where i < outputBuffers.count {
+                        output.materializedBuffer = outputBuffers[i]
+                        output.irNode = .data(outputBuffers[i])
+                    }
+                    cache.fastHitCount += 1
+                    return  // Fast path succeeded
+                } catch {
+                    // Any failure (e.g. client/buffer error) falls through to the
+                    // slow path below, which rebuilds everything from scratch.
+                    print("Magma: trace-cache fast path failed, using slow path: \(error)")
+                }
+            }
+        }
+        // Count mismatch or bail: fall through to slow path (does not re-cache).
     }
 
     // 2. Build IR graph
@@ -866,7 +1075,6 @@ public func LazyTensorBarrier(on device: Device = .default) {
     let structuralHash = promotionResult.structuralHash
 
     // 5. Check compilation cache using structural hash
-    let cache = CompilationCache.shared
     var executable: PJRTExecutable
     if let cached = cache.get(hash: structuralHash) {
         cache.hitCount += 1
@@ -918,11 +1126,22 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // 8. Collect input buffers (use optimized graph)
     // First: data nodes (pre-materialized large tensors)
     var inputBuffers: [PJRTBuffer] = []
+    var optimizedDataOrder: [UInt64] = []
     for node in optimizedGraph.nodes {
         if case .data(let buffer) = node.irNode {
             inputBuffers.append(buffer)
+            optimizedDataOrder.append(node.id)
         }
     }
+
+    // The fast path collects data inputs by walking the RAW graph from outputs.
+    // Only cache a trace entry when that raw order matches the optimized graph's
+    // data order the executable was compiled against — otherwise a future fast
+    // hit would feed buffers in the wrong slots. Compute the raw order now, while
+    // the outputs are still operation nodes (execution below rewrites them to
+    // .data, which would then be miscollected as inputs).
+    let rawDataOrder = collectDataInputsForTrace(outputs: outputs).map { $0.id }
+    let traceOrderMatches = (rawDataOrder == optimizedDataOrder)
 
     // Second: promoted constants (need to create buffers for their values)
     if promotionResult.wasPromoted {
@@ -946,6 +1165,24 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // 9. Execute
     do {
         let outputBuffers = try executable.execute(inputBuffers)
+
+        // 9.5 Store a fast-path (trace) entry so a repeated barrier can skip the
+        // whole pipeline. Only when the key is eligible (no while-loop) and the
+        // raw/optimized data-input orders match (fast-path input assembly is sound).
+        if let fastKey, traceOrderMatches {
+            let sortedPromoted = promotionResult.promotedConstants.sorted { $0.inputIndex < $1.inputIndex }
+            let metadata = CachedGraphMetadata(
+                dataInputCount: optimizedDataOrder.count,
+                promotedConstantSlots: sortedPromoted.map { PromotedConstantSlot(shape: $0.shape, dtype: $0.dtype) },
+                outputCount: outputs.count
+            )
+            cache.putFast(hash: fastKey, entry: PJRTTraceCacheEntry(
+                executable: executable,
+                metadata: metadata,
+                promotedConstantValues: sortedPromoted.map { $0.values },
+                structuralHash: structuralHash
+            ))
+        }
 
         // 10. Update tensor handles with results
         for (i, output) in outputs.enumerated() {
