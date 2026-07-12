@@ -1,9 +1,26 @@
 // Magma - Gradient Checking Tests
 // Tests for numerical gradient verification
 
+import Foundation
 import Testing
 @testable import Magma
 @testable import LazyTensor
+
+/// Deterministic, well-conditioned input for gradient checks. float32
+/// finite-difference gradchecks occasionally grazed tolerance on unlucky
+/// `randn` draws — a tiny gradient inflates the relative error, and shifts such
+/// as `randn + 1` can drop a value into a non-differentiable neighbourhood
+/// (abs/relu at 0). These fixed values have magnitude in ~[0.7, 1.5], stay away
+/// from zero, and mix sign, so every gradcheck is deterministic (green once ⇒
+/// green always) while still exercising both branches of piecewise ops.
+private func detGradTensor(_ shape: [Int]) -> Tensor<Float> {
+    let count = shape.isEmpty ? 1 : shape.reduce(1, *)
+    let values = (0..<count).map { i -> Float in
+        let mag = 0.7 + 0.8 * Foundation.sin(Float(i) * 0.9 + 0.35).magnitude   // [0.7, 1.5]
+        return (i % 3 == 0) ? -mag : mag
+    }
+    return Tensor<Float>(values, shape: shape, on: .default)
+}
 
 // MARK: - Basic Gradient Check Tests
 
@@ -17,7 +34,7 @@ struct GradcheckBasicTests {
     @Test("Gradcheck sum")
     func gradcheckSum() {
         // Sum has gradient of all ones
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for sum. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -27,7 +44,7 @@ struct GradcheckBasicTests {
     @Test("Gradcheck mean")
     func gradcheckMean() {
         // Mean has gradient of 1/n for all elements
-        let x = Tensor<Float>.randn([3, 4])
+        let x = detGradTensor([3, 4])
         let result = gradcheck({ $0.mean() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for mean. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -35,7 +52,7 @@ struct GradcheckBasicTests {
 
     @Test("Gradcheck addition")
     func gradcheckAddition() {
-        let x = Tensor<Float>.randn([2, 2])
+        let x = detGradTensor([2, 2])
         let result = gradcheck({ ($0 + $0).sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for addition. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -43,7 +60,7 @@ struct GradcheckBasicTests {
 
     @Test("Gradcheck subtraction")
     func gradcheckSubtraction() {
-        let x = Tensor<Float>.randn([2, 2])
+        let x = detGradTensor([2, 2])
         let result = gradcheck({ ($0 - $0 * Tensor<Float>.full([2, 2], 0.5, on: .default)).sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for subtraction. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -64,7 +81,7 @@ struct GradcheckBasicTests {
     @Test("Gradcheck division")
     func gradcheckDivision() {
         // Use positive values to avoid division issues
-        let x = Tensor<Float>.randn([2, 3]).abs() + Tensor<Float>.full([2, 3], 1.0, on: .default)
+        let x = detGradTensor([2, 3]).abs() + Tensor<Float>.full([2, 3], 1.0, on: .default)
         let ones = Tensor<Float>.ones([2, 3])
         let result = gradcheck({ (ones / $0).sum() }, input: x, atol: atol, rtol: rtol)
 
@@ -73,7 +90,7 @@ struct GradcheckBasicTests {
 
     @Test("Gradcheck negation")
     func gradcheckNegation() {
-        let x = Tensor<Float>.randn([3, 3])
+        let x = detGradTensor([3, 3])
         let result = gradcheck({ (-$0).sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for negation. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -92,7 +109,7 @@ struct GradcheckActivationTests {
     @Test("Gradcheck ReLU")
     func gradcheckRelu() {
         // Use values away from 0 where ReLU is non-differentiable
-        let x = Tensor<Float>.randn([3, 4])
+        let x = detGradTensor([3, 4])
         // Shift to avoid values near zero
         let shifted = x + Tensor<Float>.full([3, 4], 0.5, on: .default)
 
@@ -103,7 +120,7 @@ struct GradcheckActivationTests {
 
     @Test("Gradcheck sigmoid")
     func gradcheckSigmoid() {
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let result = gradcheck({ $0.sigmoid().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for sigmoid. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -113,7 +130,7 @@ struct GradcheckActivationTests {
     func gradcheckGelu() {
         // Guards that vjpGelu is the derivative of the tanh approximation the
         // forward actually emits (the old sigmoid-approx pullback failed this).
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let result = gradcheck({ $0.gelu().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for GELU. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -121,7 +138,7 @@ struct GradcheckActivationTests {
 
     @Test("Gradcheck tanh")
     func gradcheckTanh() {
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let result = gradcheck({ $0.tanh().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for tanh. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -130,7 +147,7 @@ struct GradcheckActivationTests {
     @Test("Gradcheck exp")
     func gradcheckExp() {
         // Use small values to avoid exp overflow
-        let x = Tensor<Float>.randn([2, 3]) * Tensor<Float>.full([2, 3], 0.5, on: .default)
+        let x = detGradTensor([2, 3]) * Tensor<Float>.full([2, 3], 0.5, on: .default)
         let result = gradcheck({ $0.exp().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for exp. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -139,7 +156,7 @@ struct GradcheckActivationTests {
     @Test("Gradcheck log")
     func gradcheckLog() {
         // Use positive values for log
-        let x = Tensor<Float>.randn([2, 3]).abs() + Tensor<Float>.full([2, 3], 0.5, on: .default)
+        let x = detGradTensor([2, 3]).abs() + Tensor<Float>.full([2, 3], 0.5, on: .default)
         let result = gradcheck({ $0.log().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for log. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -147,8 +164,8 @@ struct GradcheckActivationTests {
 
     @Test("Gradcheck abs")
     func gradcheckAbs() {
-        // Avoid values near zero where abs is non-differentiable
-        let x = Tensor<Float>.randn([3, 3]) + Tensor<Float>.full([3, 3], 1.0, on: .default)
+        // Values clearly away from zero (|x| >= 1.2), where abs is differentiable.
+        let x = detGradTensor([3, 3]).abs() + Tensor<Float>.full([3, 3], 0.5, on: .default)
         let result = gradcheck({ $0.abs().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for abs. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -166,8 +183,8 @@ struct GradcheckMatrixTests {
 
     @Test("Gradcheck matmul")
     func gradcheckMatmul() {
-        let a = Tensor<Float>.randn([2, 3])
-        let b = Tensor<Float>.randn([3, 4])
+        let a = detGradTensor([2, 3])
+        let b = detGradTensor([3, 4])
 
         // Check gradient w.r.t. first input
         let result1 = gradcheck({ $0.matmul(b).sum() }, input: a, atol: atol, rtol: rtol)
@@ -180,7 +197,7 @@ struct GradcheckMatrixTests {
 
     @Test("Gradcheck transpose")
     func gradcheckTranspose() {
-        let x = Tensor<Float>.randn([3, 4])
+        let x = detGradTensor([3, 4])
         let result = gradcheck({ $0.transpose().sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for transpose. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -188,7 +205,7 @@ struct GradcheckMatrixTests {
 
     @Test("Gradcheck reshape")
     func gradcheckReshape() {
-        let x = Tensor<Float>.randn([2, 6])
+        let x = detGradTensor([2, 6])
         let result = gradcheck({ $0.reshape([3, 4]).sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for reshape. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -210,8 +227,8 @@ struct GradcheckMultiInputTests {
 
     @Test("Gradcheck two-input add")
     func gradcheckTwoInputAdd() {
-        let a = Tensor<Float>.randn([2, 3])
-        let b = Tensor<Float>.randn([2, 3])
+        let a = detGradTensor([2, 3])
+        let b = detGradTensor([2, 3])
 
         let (result1, result2) = gradcheck({ x, y in (x + y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
@@ -221,8 +238,8 @@ struct GradcheckMultiInputTests {
 
     @Test("Gradcheck two-input mul")
     func gradcheckTwoInputMul() {
-        let a = Tensor<Float>.randn([2, 3])
-        let b = Tensor<Float>.randn([2, 3])
+        let a = detGradTensor([2, 3])
+        let b = detGradTensor([2, 3])
 
         let (result1, result2) = gradcheck({ x, y in (x * y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
@@ -232,8 +249,8 @@ struct GradcheckMultiInputTests {
 
     @Test("Gradcheck two-input matmul")
     func gradcheckTwoInputMatmul() {
-        let a = Tensor<Float>.randn([2, 3])
-        let b = Tensor<Float>.randn([3, 2])
+        let a = detGradTensor([2, 3])
+        let b = detGradTensor([3, 2])
 
         let (result1, result2) = gradcheck({ x, y in x.matmul(y).sum() }, input1: a, input2: b, atol: atol, rtol: rtol)
 
@@ -294,7 +311,7 @@ struct JacobianTests {
 
     @Test("Jacobian identity")
     func jacobianIdentity() {
-        let x = Tensor<Float>.randn([3])
+        let x = detGradTensor([3])
         let jacobian = numericalJacobian(of: { $0 }, at: x)
 
         #expect(jacobian.shape == [3, 3])
@@ -315,7 +332,7 @@ struct JacobianTests {
         // f(x) = Ax where A is 2x3 matrix
         let aData: [Float] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         let A = Tensor<Float>(aData, shape: [2, 3], on: .default)
-        let x = Tensor<Float>.randn([3])
+        let x = detGradTensor([3])
 
         let jacobian = numericalJacobian(of: { input in
             A.matmul(input.reshape([3, 1])).reshape([2])
@@ -344,20 +361,20 @@ struct GradcheckConvenienceTests {
 
     @Test("Gradcheck passes")
     func testGradcheckPasses() {
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let passes = Magma.gradcheckPasses({ $0.sum() }, input: x, atol: atol, rtol: rtol)
         #expect(passes)
     }
 
     @Test("Assert gradcheck success")
     func assertGradcheckSuccess() throws {
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         try assertGradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
     }
 
     @Test("Gradcheck verbose")
     func gradcheckVerbose() {
-        let x = Tensor<Float>.randn([2, 2])
+        let x = detGradTensor([2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol, verbose: true)
 
         #expect(result.details != nil)
@@ -376,7 +393,7 @@ struct GradcheckComplexTests {
 
     @Test("Gradcheck chained operations")
     func gradcheckChainedOperations() {
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         // Chained operations need slightly higher tolerance due to error accumulation
         let result = gradcheck({
             let y = $0 * $0  // square
@@ -389,9 +406,9 @@ struct GradcheckComplexTests {
 
     @Test("Gradcheck matmul chain")
     func gradcheckMatmulChain() {
-        let x = Tensor<Float>.randn([2, 3])
-        let w1 = Tensor<Float>.randn([3, 4])
-        let w2 = Tensor<Float>.randn([4, 2])
+        let x = detGradTensor([2, 3])
+        let w1 = detGradTensor([3, 4])
+        let w2 = detGradTensor([4, 2])
 
         let result = gradcheck({
             let h = $0.matmul(w1).relu()
@@ -426,7 +443,7 @@ struct GradcheckEdgeCaseTests {
 
     @Test("Gradcheck 1D")
     func gradcheck1D() {
-        let x = Tensor<Float>.randn([5])
+        let x = detGradTensor([5])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for 1D. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -435,7 +452,7 @@ struct GradcheckEdgeCaseTests {
     @Test("Gradcheck 4D")
     func gradcheck4D() {
         // Smaller size for speed
-        let x = Tensor<Float>.randn([2, 2, 2, 2])
+        let x = detGradTensor([2, 2, 2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck failed for 4D. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -445,7 +462,7 @@ struct GradcheckEdgeCaseTests {
     // This is expected behavior, not a bug
     @Test("Gradcheck default eps")
     func gradcheckDefaultEps() {
-        let x = Tensor<Float>.randn([2, 2])
+        let x = detGradTensor([2, 2])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol)
 
         #expect(result.passed, "Gradcheck with default eps failed. MaxAbsDiff: \(result.maxAbsDiff)")
@@ -464,7 +481,7 @@ struct IndexConversionTests {
     @Test("Linear to multi-index")
     func linearToMultiIndex() {
         // Test via verbose gradcheck which uses this function
-        let x = Tensor<Float>.randn([2, 3])
+        let x = detGradTensor([2, 3])
         let result = gradcheck({ $0.sum() }, input: x, atol: atol, rtol: rtol, verbose: true)
 
         #expect(result.details != nil)
