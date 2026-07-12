@@ -234,6 +234,10 @@ public enum OpKind: String, Sendable {
     // Random Number Generation
     case rngUniform, rngNormal
 
+    // Collectives (cross-replica). Attributes: "replicaGroups" ([[Int]]) and,
+    // for allReduce, "reduction" (String, e.g. "add"/"maximum").
+    case allReduce, allReduceMean
+
 }
 
 // MARK: - IR Graph

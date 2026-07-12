@@ -147,6 +147,8 @@ public final class ConstantFoldingPass: OptimizationPass {
             return false  // Control flow not foldable
         case .rngUniform, .rngNormal:
             return false  // Random - not deterministic
+        case .allReduce, .allReduceMean:
+            return false  // Cross-replica collective - depends on runtime peers
         }
     }
 

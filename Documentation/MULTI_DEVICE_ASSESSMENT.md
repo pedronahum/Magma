@@ -271,13 +271,14 @@ across N devices, distributing each `.data` input as `.replicated` (parameters) 
 single-device barrier is untouched — and verified on emulated CPU devices. This is
 the seam DDP and SPMD plug into from the high level.
 
-**Remaining bridge for transparent DDP:** collectives must be expressible *inside*
-the high-level graph (an `all_reduce`/`allReduceMean` `OpKind` + emitter support),
-so a traced training step can sync gradients in-graph. That touches every
-exhaustive `switch op` in the emitter and the optimization passes, so it's a
-focused change tracked alongside graph-sharding (#19). Until then, the collective
-primitives (#12/#13) run as standalone executables over the barrier's per-replica
-outputs.
+**In-graph collectives (done, #23).** `all_reduce` and `allReduceMean` are now
+`OpKind`s wired through the `StableHLOEmitter` (all exhaustive `switch op` sites
+updated; collectives marked non-foldable in constant folding). So a traced graph
+can carry a cross-replica collective and, run through `executeGraphReplicated`,
+sync across replicas in-graph — verified: an in-graph `allReduceMean` gives every
+replica the mean of the per-replica inputs. This is the transparent DDP grad-sync
+path; the remaining step is emitting these ops from the high-level autodiff so a
+normal training step syncs gradients automatically (`nn`/`Optimizer` integration).
 
 ---
 

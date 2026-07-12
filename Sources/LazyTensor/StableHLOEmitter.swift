@@ -310,6 +310,17 @@ public final class StableHLOEmitter {
         case .power:
             return targetBuilder.power(inputs[0], inputs[1])
 
+        // Collectives (cross-replica)
+        case .allReduce:
+            return targetBuilder.allReduce(
+                inputs[0],
+                reduction: attributes["reduction"] as? String ?? "add",
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
+        case .allReduceMean:
+            return targetBuilder.allReduceMean(
+                inputs[0],
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
+
         // Unary elementwise
         case .negate:
             return targetBuilder.negate(inputs[0])
@@ -455,6 +466,17 @@ public final class StableHLOEmitter {
             return builder.minimum(inputs[0], inputs[1])
         case .power:
             return builder.power(inputs[0], inputs[1])
+
+        // Collectives (cross-replica)
+        case .allReduce:
+            return builder.allReduce(
+                inputs[0],
+                reduction: attributes["reduction"] as? String ?? "add",
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
+        case .allReduceMean:
+            return builder.allReduceMean(
+                inputs[0],
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
 
         // Unary elementwise
         case .negate:
@@ -670,6 +692,17 @@ public final class StableHLOEmitter {
             return builder.minimum(inputValues[0], inputValues[1])
         case .power:
             return builder.power(inputValues[0], inputValues[1])
+
+        // Collectives (cross-replica)
+        case .allReduce:
+            return builder.allReduce(
+                inputValues[0],
+                reduction: attributes["reduction"] as? String ?? "add",
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
+        case .allReduceMean:
+            return builder.allReduceMean(
+                inputValues[0],
+                replicaGroups: attributes["replicaGroups"] as? [[Int]] ?? [])
 
         // Unary elementwise
         case .negate:

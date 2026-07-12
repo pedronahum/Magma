@@ -69,4 +69,57 @@ struct MultiDeviceBarrierTests {
             #expect(try devOut[0].toFloatArray() == [6, 6, 6, 6])
         }
     }
+
+    @Test("in-graph allReduceMean syncs across replicas (transparent DDP grad-sync)")
+    func inGraphAllReduceMean() throws {
+        try #require(Self.cpuAvailable, "CPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .cpu, cpuDeviceCount: 2)
+        let dev0 = client.devices[0]
+
+        // y = allReduceMean(g): each replica supplies its own g; the graph
+        // averages across replicas, so both get the mean — the DDP grad-sync
+        // pattern expressed through the high-level graph + barrier.
+        let gBuf = try client.createBuffer([0, 0, 0, 0] as [Float], shape: [4],
+                                           elementType: .float32, device: dev0)
+        let graph = IRGraph()
+        let g = handle([4]); g.irNode = .data(gBuf)
+        let mean = handle([4])
+        mean.irNode = .operation(op: .allReduceMean, inputs: [g],
+                                 attributes: ["replicaGroups": [[0, 1]]])
+        graph.addOutput(mean)
+
+        let outs = try executeGraphReplicated(
+            graph, numReplicas: 2,
+            distribution: [ObjectIdentifier(gBuf): .perReplica([[2, 4, 6, 8], [10, 20, 30, 40]])],
+            client: client)
+
+        #expect(outs.count == 2)
+        for devOut in outs {   // mean([2,4,6,8],[10,20,30,40]) = [6,12,18,24]
+            #expect(try devOut[0].toFloatArray() == [6, 12, 18, 24])
+        }
+    }
+
+    @Test("in-graph allReduce(add) sums across replicas")
+    func inGraphAllReduceSum() throws {
+        try #require(Self.cpuAvailable, "CPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .cpu, cpuDeviceCount: 2)
+        let dev0 = client.devices[0]
+
+        let gBuf = try client.createBuffer([0, 0, 0, 0] as [Float], shape: [4],
+                                           elementType: .float32, device: dev0)
+        let graph = IRGraph()
+        let g = handle([4]); g.irNode = .data(gBuf)
+        let summed = handle([4])
+        summed.irNode = .operation(op: .allReduce, inputs: [g],
+                                   attributes: ["reduction": "add", "replicaGroups": [[0, 1]]])
+        graph.addOutput(summed)
+
+        let outs = try executeGraphReplicated(
+            graph, numReplicas: 2,
+            distribution: [ObjectIdentifier(gBuf): .perReplica([[1, 2, 3, 4], [10, 20, 30, 40]])],
+            client: client)
+        for devOut in outs {
+            #expect(try devOut[0].toFloatArray() == [11, 22, 33, 44])
+        }
+    }
 }
