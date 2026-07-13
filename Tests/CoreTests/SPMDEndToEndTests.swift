@@ -73,15 +73,10 @@ struct SPMDEndToEndTests {
         #expect(mlir.contains("sdy.mesh @mesh"))
         #expect(mlir.contains("#sdy.sharding<@mesh, [{\"x\"}, {}]>"))
 
-        let spmdExe = try client.compile(
-            mlir, numPartitions: 2, useSPMDPartitioning: true, useShardyPartitioner: true)
-
-        // Scatter x's rows across devices; replicate w — using the buffer helpers.
-        let xShards = try client.scatterAlongAxis0(xFull, shape: [rows, cols], elementType: .float32, count: 2)
-        let wCopies = try client.replicate(identity, shape: [cols, cols], elementType: .float32, count: 2)
-        let perDevice = (0..<2).map { [xShards[$0], wCopies[$0]] }
-
-        let outs = try spmdExe.executeMultiDevice(inputsPerDevice: perDevice)
+        // Execute via the production SPMD runner: it derives scatter (x's rows)
+        // vs replicate (w) from the graph's node shardings, compiles with the
+        // Shardy partitioner, and runs across devices.
+        let outs = try executeGraphSharded(spmdGraph, numDevices: 2, client: client)
         #expect(outs.count == 2)
 
         // Gather the per-device row shards back to the full output.

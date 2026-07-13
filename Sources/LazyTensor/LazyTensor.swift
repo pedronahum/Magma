@@ -1713,6 +1713,56 @@ public func executeGraphReplicated(
     return try executable.executeMultiDevice(inputsPerDevice: perReplica)
 }
 
+/// The high-level SPMD barrier: compile an sdy-annotated graph with the Shardy
+/// partitioner and execute it across `numDevices`, distributing each `.data`
+/// input according to its node sharding — its full (global) buffer is sharded
+/// along axis 0 when the node's leading dimension is sharded, otherwise
+/// replicated — and returning each device's (local) outputs.
+///
+/// The graph must declare a `mesh` and carry shardings (see `LazyTensorHandle
+/// .sharding`); shardings are validated first. This is the SPMD counterpart to
+/// `executeGraphReplicated` (data-parallel). It currently derives distribution
+/// from leading-dimension sharding vs replication; sharding on a non-leading
+/// dimension (e.g. a contracting dim) needs caller-provided per-device inputs.
+public func executeGraphSharded(
+    _ graph: IRGraph,
+    numDevices: Int,
+    client: PJRTClient
+) throws -> [[PJRTBuffer]] {
+    precondition(numDevices > 0, "numDevices must be positive")
+    guard client.deviceCount >= numDevices else {
+        throw XLAError.executionFailed(
+            "client has \(client.deviceCount) device(s), need \(numDevices)")
+    }
+    try graph.validateShardings()
+
+    // Emit directly from the annotated graph (no optimization passes: constant
+    // folding / DCE do not preserve `sdy` shardings, and partitioning must see
+    // them). Matches `emitStableHLO`.
+    graph.buildTopologicalOrder()
+    let emitter = StableHLOEmitter(graph: graph)
+    let mlir = emitter.emit(name: "sharded_graph_\(graph.computeHash().prefix(8))")
+
+    let executable = try client.compile(
+        mlir, numPartitions: numDevices,
+        useSPMDPartitioning: true, useShardyPartitioner: true)
+
+    // Distribute each .data input per its sharding: shard the leading dimension
+    // when it is sharded, otherwise replicate. The buffer holds the global tensor.
+    var perDevice: [[PJRTBuffer]] = Array(repeating: [], count: numDevices)
+    for node in graph.nodes {
+        guard case .data(let buf) = node.irNode else { continue }
+        let host = try buf.toFloatArray()
+        let leadingSharded = node.sharding?.dimShardings.first.map { !$0.axes.isEmpty } ?? false
+        let buffers = leadingSharded
+            ? try client.scatterAlongAxis0(host, shape: buf.shape, elementType: .float32, count: numDevices)
+            : try client.replicate(host, shape: buf.shape, elementType: .float32, count: numDevices)
+        for d in 0..<numDevices { perDevice[d].append(buffers[d]) }
+    }
+
+    return try executable.executeMultiDevice(inputsPerDevice: perDevice)
+}
+
 // MARK: - While Loop Tracing
 
 /// Context for tracing a function body for while loop emission

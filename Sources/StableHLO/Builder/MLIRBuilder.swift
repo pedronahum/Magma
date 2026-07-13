@@ -104,11 +104,6 @@ public final class MLIRBuilder: @unchecked Sendable {
         meshes.append(mesh)
     }
 
-    /// Meshes declared so far (for inspection/tests).
-    public func declaredMeshes() -> [DeviceMesh] {
-        meshes
-    }
-
     /// Emit an `sdy.sharding_constraint`, pinning `input` to `sharding` and
     /// returning the constrained value (same type). This is the in-graph way to
     /// tell Shardy how an intermediate tensor should be partitioned.

@@ -264,12 +264,16 @@ Effort: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ multiple weeks (one eng
 Phases 0–1 are the critical path and prove the architecture. 2–4 are largely
 independent follow-ons.
 
-**High-level multi-device barrier (done).** `executeGraphReplicated(_:numReplicas:
-distribution:client:)` compiles a traced `IRGraph` for N replicas and runs it
-across N devices, distributing each `.data` input as `.replicated` (parameters) or
-`.perReplica` (data shards) and returning per-replica outputs. It's additive — the
-single-device barrier is untouched — and verified on emulated CPU devices. This is
-the seam DDP and SPMD plug into from the high level.
+**High-level multi-device barriers (done).** Two production runners, additive and
+leaving the single-device barrier untouched:
+- `executeGraphReplicated(_:numReplicas:distribution:client:)` — **data parallel**:
+  compile the graph for N replicas, distribute each `.data` input as `.replicated`
+  or `.perReplica`, return per-replica outputs.
+- `executeGraphSharded(_:numDevices:client:)` — **SPMD**: validate the graph's
+  shardings, emit sdy-annotated MLIR (no optimization — passes don't preserve
+  shardings), compile with the Shardy partitioner, and distribute each `.data`
+  input per its node sharding (scatter a sharded leading dim, else replicate).
+Both verified on emulated CPU; the SPMD end-to-end test drives `executeGraphSharded`.
 
 **In-graph collectives (done, #23).** `all_reduce` and `allReduceMean` are now
 `OpKind`s wired through the `StableHLOEmitter` (all exhaustive `switch op` sites
