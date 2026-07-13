@@ -638,6 +638,67 @@ public final class PJRTClient: @unchecked Sendable {
     }
 }
 
+// MARK: - Buffer Distribution (scatter / replicate / gather)
+
+extension PJRTClient {
+    /// Place a copy of `hostData` on each of the first `count` devices.
+    /// Used for replicated inputs (e.g. DDP parameters).
+    public func replicate<T>(
+        _ hostData: [T],
+        shape: [Int],
+        elementType: ElementType,
+        count: Int
+    ) throws -> [PJRTBuffer] {
+        precondition(count > 0, "count must be positive")
+        guard deviceCount >= count else {
+            throw XLAError.noDeviceAvailable
+        }
+        return try (0..<count).map { d in
+            try createBuffer(hostData, shape: shape, elementType: elementType, device: devices[d])
+        }
+    }
+
+    /// Shard `hostData` (row-major, `shape[0]` = leading dim) into `count`
+    /// contiguous slices along axis 0, one buffer per device. `shape[0]` must be
+    /// divisible by `count`. Used for sharded inputs (e.g. an SPMD data batch).
+    public func scatterAlongAxis0<T>(
+        _ hostData: [T],
+        shape: [Int],
+        elementType: ElementType,
+        count: Int
+    ) throws -> [PJRTBuffer] {
+        precondition(count > 0, "count must be positive")
+        precondition(!shape.isEmpty, "scatter needs a leading dimension")
+        guard deviceCount >= count else { throw XLAError.noDeviceAvailable }
+        guard shape[0] % count == 0 else {
+            throw XLAError.bufferCreationFailed(
+                "axis-0 size \(shape[0]) is not divisible by device count \(count)")
+        }
+        let rowsPer = shape[0] / count
+        let inner = shape.dropFirst().reduce(1, *)      // elements per leading index
+        let sliceElems = rowsPer * inner
+        let shardShape = [rowsPer] + Array(shape.dropFirst())
+        return try (0..<count).map { d in
+            let slice = Array(hostData[(d * sliceElems)..<((d + 1) * sliceElems)])
+            return try createBuffer(slice, shape: shardShape, elementType: elementType, device: devices[d])
+        }
+    }
+
+    /// Concatenate per-device row shards (float32) back into a single host array
+    /// and its full shape (axis-0 gather). Shards must share their trailing dims.
+    public func gatherAlongAxis0(_ shards: [PJRTBuffer]) throws -> (data: [Float], shape: [Int]) {
+        guard let first = shards.first else { return ([], []) }
+        var data: [Float] = []
+        var totalRows = 0
+        for shard in shards {
+            data.append(contentsOf: try shard.toFloatArray())
+            totalRows += shard.shape.first ?? 1
+        }
+        let shape = [totalRows] + Array(first.shape.dropFirst())
+        return (data, shape)
+    }
+}
+
 // MARK: - PJRTDevice
 
 /// Represents a PJRT device

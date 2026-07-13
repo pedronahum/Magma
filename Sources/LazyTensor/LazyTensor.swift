@@ -1695,10 +1695,9 @@ public func executeGraphReplicated(
         switch distribution[ObjectIdentifier(buf)] ?? .replicated {
         case .replicated:
             let host = try buf.toFloatArray()
-            for d in 0..<numReplicas {
-                perReplica[d].append(try client.createBuffer(
-                    host, shape: buf.shape, elementType: .float32, device: client.devices[d]))
-            }
+            let copies = try client.replicate(
+                host, shape: buf.shape, elementType: .float32, count: numReplicas)
+            for d in 0..<numReplicas { perReplica[d].append(copies[d]) }
         case .perReplica(let datas):
             guard datas.count == numReplicas else {
                 throw XLAError.executionFailed(

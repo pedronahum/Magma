@@ -76,25 +76,17 @@ struct SPMDEndToEndTests {
         let spmdExe = try client.compile(
             mlir, numPartitions: 2, useSPMDPartitioning: true, useShardyPartitioner: true)
 
-        // Scatter: device d gets its 4 rows of x (local shard) and full w.
-        let halfRows = rows / 2                     // 4 rows per device
-        let sliceElems = halfRows * cols            // 16 floats
-        var perDevice: [[PJRTBuffer]] = []
-        for d in 0..<2 {
-            let xSlice = Array(xFull[(d * sliceElems)..<((d + 1) * sliceElems)])
-            let xShard = try client.createBuffer(xSlice, shape: [halfRows, cols],
-                                                 elementType: .float32, device: client.devices[d])
-            let wRep = try client.createBuffer(identity, shape: [cols, cols],
-                                               elementType: .float32, device: client.devices[d])
-            perDevice.append([xShard, wRep])
-        }
+        // Scatter x's rows across devices; replicate w — using the buffer helpers.
+        let xShards = try client.scatterAlongAxis0(xFull, shape: [rows, cols], elementType: .float32, count: 2)
+        let wCopies = try client.replicate(identity, shape: [cols, cols], elementType: .float32, count: 2)
+        let perDevice = (0..<2).map { [xShards[$0], wCopies[$0]] }
 
         let outs = try spmdExe.executeMultiDevice(inputsPerDevice: perDevice)
         #expect(outs.count == 2)
 
-        // Gather: concatenate the per-device row shards back to the full output.
-        let yGathered = try outs.flatMap { try $0[0].toFloatArray() }
-        #expect(yGathered.count == rows * cols)
+        // Gather the per-device row shards back to the full output.
+        let (yGathered, gatheredShape) = try client.gatherAlongAxis0(outs.map { $0[0] })
+        #expect(gatheredShape == [rows, cols])
         #expect(yGathered == yRef)   // SPMD result == single-device reference
     }
 }

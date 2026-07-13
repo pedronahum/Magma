@@ -255,7 +255,7 @@ Effort: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ multiple weeks (one eng
 
 | Phase | Deliverable | Effort |
 |-------|-------------|--------|
-| **0. Foundations** | ✅ Surface all devices (#6); ✅ CPU N-device emulation (#7); ✅ multi-device execute in the FFI `num_devices=N` + Swift `executeMultiDevice` returning `[[PJRTBuffer]]` (#8/#9); ⬜ buffer scatter/replicate/gather (#10) | **L** |
+| **0. Foundations** | ✅ Surface all devices (#6); ✅ CPU N-device emulation (#7); ✅ multi-device execute in the FFI + `executeMultiDevice` returning `[[PJRTBuffer]]` (#8/#9); ✅ buffer `replicate`/`scatterAlongAxis0`/`gatherAlongAxis0` helpers, used by the barrier and SPMD paths (#10) | **L** |
 | **1. DDP MVP (single host)** | ✅ `DeviceMesh` (#11); ✅ `all_reduce` op + runtime (#12); ✅ `allReduceMean` grad-sync + param-sync invariant (#13); ✅ `DistributedSampler` + per-replica batching (#14); ✅ in-graph collective `OpKind`s (#23); ✅ **DDP end-to-end == single-device reference** (#15) | **M–L** |
 | **2. SPMD / Shardy** | ✅ pure-Swift sdy types (#16); ✅ MLIRBuilder sdy hooks (#17); ✅ Shardy compile flags (#18); ✅ track sharding on graph nodes — `LazyTensorHandle.sharding` + `IRGraph.mesh` threaded through the emitter (`sdy.mesh` + arg `{sdy.sharding}` + intermediate `sdy.sharding_constraint`) with `validateShardings` (#19); ✅ **SPMD end-to-end** — Shardy partitions an sdy-annotated row-sharded matmul across a 2-device mesh and the gathered result matches the single-device reference (#20). **Closed the partition→execute loop SwiftIR never reached.** | **L** |
 | **3. FSDP / tensor parallel** | Sharded parameter & optimizer state, all-gather/reduce-scatter integration, sharded checkpointing | **L** |
