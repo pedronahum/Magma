@@ -282,11 +282,17 @@ emit the collectives from ordinary Tensor code; `Tensor.input(from:)` makes a
 distributable `.data`-backed input (vs an inlined constant); `Tensor.makeGraph()`
 extracts the `IRGraph`. So a DDP step is written naturally —
 `let wNew = w - grad.crossReplicaMean(groups: [[0,1]]) * lr` — and run across
-replicas, keeping parameters in sync (verified). The remaining gap to *fully*
-transparent DDP is autodiff/optimizer integration: have `valueWithGradient` /
-`Optimizer.update` insert the grad `crossReplicaMean` and drive the replicated
-barrier automatically, and materialize per-replica outputs back into `Tensor`s.
-The primitives for that are all in place.
+replicas, keeping parameters in sync (verified).
+
+**Transparent DDP via autodiff (done).** `dataParallelSGDStep(w:lr:numReplicas:
+client:dataDistribution:loss:)` runs the whole loop from a differentiable loss:
+`gradient(of: loss)` (autodiff) → `crossReplicaMean` → `w - lr*grad` → replicated
+execution — verified equal to a single-device full-batch step. `Optimizer.step(
+syncing:groups:)` is the drop-in DDP hook that averages gradients across replicas
+before applying. Users express the loss with autodiff and the sync is automatic;
+the one remaining nicety is materializing replicated results back into live
+single-device `Tensor`s for a multi-step in-place loop (today the step returns the
+per-replica values), plus multi-parameter sugar.
 
 ---
 

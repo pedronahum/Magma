@@ -7,6 +7,45 @@
 
 import LazyTensor
 import XLARuntime
+import _Differentiation
+
+extension Optimizer {
+    /// Data-parallel gradient sync: average each gradient across the replica
+    /// groups (`crossReplicaMean`) before applying it. Drop-in for `step(_:)` in a
+    /// DDP loop so replicated parameters receive an identical update and stay in
+    /// sync. `groups` defaults to a single all-replica group of `numReplicas`.
+    public mutating func step(syncing gradients: [Tensor<Float>], groups: [[Int]]) {
+        step(gradients.map { $0.crossReplicaMean(groups: groups) })
+    }
+}
+
+/// Run one data-parallel SGD step, end to end, via autodiff.
+///
+/// Computes `gradient(of: loss)` wrt `w` (autodiff), averages it across replicas,
+/// applies `w - lr * grad`, and executes the update across `numReplicas` devices
+/// — `dataDistribution` maps the per-replica data buffers captured by `loss` to
+/// their per-replica values (`w` and other unlisted inputs default to
+/// replicated). Returns each replica's updated parameter; all are identical (the
+/// DDP invariant), and equal to a single-device full-batch step for mean losses.
+public func dataParallelSGDStep(
+    w: Tensor<Float>,
+    lr: Float,
+    numReplicas: Int,
+    client: PJRTClient,
+    dataDistribution: [ObjectIdentifier: ReplicaInputDistribution],
+    groups: [[Int]]? = nil,
+    loss: @differentiable(reverse) (Tensor<Float>) -> Tensor<Float>
+) throws -> [[Float]] {
+    let replicaGroups = groups ?? [Array(0..<numReplicas)]
+    let grad = gradient(at: w, of: loss)                       // autodiff (lazy)
+    let synced = grad.crossReplicaMean(groups: replicaGroups)  // DDP grad sync
+    let lrT = Tensor<Float>.full(w.shape, lr, on: w.device)
+    let wNew = w - lrT * synced                                // SGD update
+    let outs = try executeGraphReplicated(
+        wNew.makeGraph(), numReplicas: numReplicas,
+        distribution: dataDistribution, client: client)
+    return try outs.map { try $0[0].toFloatArray() }
+}
 
 extension Tensor {
     /// Cross-replica sum: every replica in a group ends with the sum of the
