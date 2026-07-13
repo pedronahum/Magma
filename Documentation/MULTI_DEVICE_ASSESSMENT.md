@@ -1,18 +1,57 @@
-# Multi-Device (Multi-GPU / Multi-TPU) Support — Assessment
+# Multi-Device (Multi-GPU / Multi-TPU) Support — Assessment & Status
 
-**Status:** assessment only — nothing here is implemented yet.
-**Scope:** what it would take to run Magma across more than one accelerator,
-covering both multi-GPU (CUDA) and multi-TPU, single-host and multi-host.
+**Status:** ✅ **Implemented** (single-host multi-device: DDP + Shardy SPMD +
+tensor-parallel, end to end) — this began as an assessment and the plan below was
+then built out. Multi-host *coordination service* is the one part left as scoped
+future work (its topology/data-sharding config is done).
+**Scope:** running Magma across more than one accelerator — multi-GPU (CUDA) and
+multi-TPU, single-host and multi-host.
 
 ---
 
-## 1. Executive summary
+## 0. Implementation status
 
-Magma today is **strictly single-device at every layer**. Going multi-device is
-not a localized change; it touches the FFI shim, compile options, the runtime
-client, the lazy-tensor graph, autodiff, the optimizer, and data loading. The
-good news is that PJRT (the backend Magma already uses) has first-class
-multi-device support — the contract exists, it simply isn't wired through.
+All work below was developed and verified on **emulated multi-device CPU** (the
+XLA CPU plugin exposing N virtual devices — no GPU, no OOM), with every result
+checked against a **single-device reference** or known value. The full CPU suite
+is **814 tests**, green; the single-device path stayed byte-identical throughout.
+
+| Phase | Delivered | Status |
+|-------|-----------|--------|
+| **P0 Foundations** | device enumeration (`client.devices`/`deviceCount`); CPU N-device emulation (`create(cpuDeviceCount:)`); multi-device execute FFI (`num_devices=N`) + Swift `executeMultiDevice → [[PJRTBuffer]]`; `replicate`/`scatterAlongAxis0`/`gatherAlongAxis0` | ✅ #6–#10 |
+| **P1 DDP** | `DeviceMesh`; `all_reduce` + `allReduceMean`; `DistributedSampler` + per-replica batching; **DDP == single-device** verified | ✅ #11–#15 |
+| **P1 barrier + ergonomics** | `executeGraphReplicated` (production DDP runner); `Tensor.crossReplicaSum/Mean`, `input(from:)`, `makeGraph`; **transparent DDP via autodiff** (`dataParallelSGDStep`, `Optimizer.step(syncing:)`) | ✅ |
+| **P2 Shardy SPMD** | pure-Swift `sdy` types; `MLIRBuilder` sdy hooks; `use_shardy_partitioner` compile flags; graph sharding (`LazyTensorHandle.sharding`/`IRGraph.mesh` + emitter + `validateShardings`); in-graph collective `OpKind`s; **SPMD == single-device** verified | ✅ #16–#20, #23 |
+| **P2 barrier + ergonomics** | `executeGraphSharded` (production SPMD runner); `Tensor.sharded(on:_:)` + `makeGraph(mesh:)` sugar | ✅ |
+| **P3 Tensor parallel** | contracting-dim-sharded matmul → Shardy inserts `all_reduce` → == reference (FSDP builds on the same partitioner) | ✅ #21 |
+| **P4 Multi-host** | `MultiHostConfig` topology + `DistributedSampler.multiHost` global sharding | ✅ config/data (#22) |
+| **P4 coordination service** | PJRT distributed init — gRPC coordinator + KV rendezvous, NCCL id exchange | ⬜ needs a real cluster (not testable on one box) |
+
+**Two production runners, symmetric ergonomics:**
+
+| | High-level Tensor sugar | Production runner |
+|---|---|---|
+| **DDP** | `grad.crossReplicaMean(groups:)`, `dataParallelSGDStep`, `Optimizer.step(syncing:)` | `executeGraphReplicated` |
+| **SPMD** | `x.sharded(on:_:)`, `makeGraph(mesh:)` | `executeGraphSharded` |
+
+**Connectivity:** the Shardy chain was audited end to end — types → emitter hooks →
+graph sharding → Shardy compile flags → multi-device execute → high-level ops —
+every link has a real production consumer, no islands (audit removed one dead
+method and promoted the SPMD orchestration from test-only into `executeGraphSharded`).
+
+The remainder of this document is the original assessment (still the accurate
+architecture/rationale), annotated with ✅ where each item was implemented.
+
+---
+
+## 1. Executive summary (original assessment)
+
+Magma **was** strictly single-device at every layer; the work below made it
+multi-device without disturbing that path. Going multi-device was not a localized
+change — it touched the FFI shim, compile options, the runtime client, the
+lazy-tensor graph, autodiff, the optimizer, and data loading. PJRT (the backend
+Magma already uses) has first-class multi-device support — the contract existed,
+it simply wasn't wired through (now it is).
 
 Three decisions frame the whole effort:
 
@@ -44,7 +83,10 @@ Three decisions frame the whole effort:
 
 ---
 
-## 2. Current state — where single-device is baked in
+## 2. Starting state — where single-device *was* baked in
+
+*(The baseline this work started from; every row below has since been addressed —
+see §0. Kept as a map of what had to change.)*
 
 | Layer | File | Single-device assumption |
 |-------|------|--------------------------|
