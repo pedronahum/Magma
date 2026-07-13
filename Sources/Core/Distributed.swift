@@ -6,6 +6,7 @@
 // from `.makeGraph()`.
 
 import LazyTensor
+import StableHLO
 import XLARuntime
 import _Differentiation
 
@@ -86,10 +87,35 @@ extension Tensor {
 
     /// Build the `IRGraph` that produces this tensor (with this tensor as the sole
     /// output), ready for compilation/execution — e.g. `executeGraphReplicated`.
-    public func makeGraph() -> IRGraph {
+    /// Pass `mesh` to run under the Shardy partitioner via `executeGraphSharded`
+    /// (required for any `sharded(...)` annotations to take effect).
+    public func makeGraph(mesh: DeviceMesh? = nil) -> IRGraph {
         let graph = IRGraph()
+        graph.mesh = mesh
         graph.addOutput(self.handle)
         graph.buildTopologicalOrder()
         return graph
+    }
+}
+
+extension Tensor {
+    /// Annotate this tensor with a Shardy `sharding` for SPMD partitioning. The
+    /// sharding is attached in the emitted MLIR — as a `{sdy.sharding}` argument
+    /// attribute for a data input, or a `sdy.sharding_constraint` for an
+    /// intermediate. Build with `makeGraph(mesh:)` and run with
+    /// `executeGraphSharded`; the sharding's mesh name must match that mesh.
+    /// Returns self (the annotation is attached to this tensor's node).
+    @discardableResult
+    public func sharded(_ sharding: TensorSharding) -> Tensor {
+        handle.sharding = sharding
+        return self
+    }
+
+    /// Convenience: shard per dimension by mesh-axis name, `nil` = replicated.
+    /// e.g. `x.sharded(on: "mesh", ["data", nil])` shards dim 0 over axis "data"
+    /// and replicates dim 1.
+    @discardableResult
+    public func sharded(on meshName: String, _ axisNames: [String?]) -> Tensor {
+        sharded(TensorSharding(meshName: meshName, axisNames: axisNames))
     }
 }

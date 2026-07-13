@@ -275,6 +275,12 @@ leaving the single-device barrier untouched:
   input per its node sharding (scatter a sharded leading dim, else replicate).
 Both verified on emulated CPU; the SPMD end-to-end test drives `executeGraphSharded`.
 
+**High-level Tensor sugar (both paradigms).** DDP: `grad.crossReplicaMean(groups:)`.
+SPMD: `x.sharded(on: "mesh", ["x", nil])` annotates a tensor and `makeGraph(mesh:)`
+carries the mesh, so a sharded program reads as ordinary Tensor code —
+`let y = x.sharded(...).matmul(w); executeGraphSharded(y.makeGraph(mesh:), …)` —
+verified equal to the single-device reference.
+
 **In-graph collectives (done, #23).** `all_reduce` and `allReduceMean` are now
 `OpKind`s wired through the `StableHLOEmitter` (all exhaustive `switch op` sites
 updated; collectives marked non-foldable in constant folding). So a traced graph
