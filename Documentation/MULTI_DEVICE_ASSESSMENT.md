@@ -275,10 +275,18 @@ the seam DDP and SPMD plug into from the high level.
 `OpKind`s wired through the `StableHLOEmitter` (all exhaustive `switch op` sites
 updated; collectives marked non-foldable in constant folding). So a traced graph
 can carry a cross-replica collective and, run through `executeGraphReplicated`,
-sync across replicas in-graph — verified: an in-graph `allReduceMean` gives every
-replica the mean of the per-replica inputs. This is the transparent DDP grad-sync
-path; the remaining step is emitting these ops from the high-level autodiff so a
-normal training step syncs gradients automatically (`nn`/`Optimizer` integration).
+sync across replicas in-graph.
+
+**High-level Tensor ergonomics (done).** `Tensor.crossReplicaSum/Mean(groups:)`
+emit the collectives from ordinary Tensor code; `Tensor.input(from:)` makes a
+distributable `.data`-backed input (vs an inlined constant); `Tensor.makeGraph()`
+extracts the `IRGraph`. So a DDP step is written naturally —
+`let wNew = w - grad.crossReplicaMean(groups: [[0,1]]) * lr` — and run across
+replicas, keeping parameters in sync (verified). The remaining gap to *fully*
+transparent DDP is autodiff/optimizer integration: have `valueWithGradient` /
+`Optimizer.update` insert the grad `crossReplicaMean` and drive the replicated
+barrier automatically, and materialize per-replica outputs back into `Tensor`s.
+The primitives for that are all in place.
 
 ---
 
