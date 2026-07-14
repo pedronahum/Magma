@@ -52,6 +52,37 @@ public struct Sigmoid: Layer {
     }
 }
 
+/// 2D convolution layer: `conv2d(x, weight) + bias`. NHWC input, HWIO weight
+/// `[kH, kW, Cin, Cout]`, bias `[Cout]`. `strides`/`padding` are configuration,
+/// not learned, so they are `@noDerivative`.
+public struct Conv2d: Layer {
+    public var weight: Tensor<Float>
+    public var bias: Tensor<Float>
+    @noDerivative public var strides: [Int]
+    @noDerivative public var padding: [[Int]]
+
+    public init(
+        weight: Tensor<Float>,
+        bias: Tensor<Float>,
+        strides: [Int] = [1, 1],
+        padding: [[Int]] = [[0, 0], [0, 0]]
+    ) {
+        self.weight = weight
+        self.bias = bias
+        self.strides = strides
+        self.padding = padding
+    }
+
+    @differentiable(reverse)
+    public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
+        let out = input.conv2d(weight, strides: strides, padding: padding)
+        // Broadcast the per-output-channel bias over N, H, W. The output shape is
+        // structural (not a differentiable quantity), so detach it.
+        let outShape = withoutDerivative(at: out.shape)
+        return out + bias.broadcast(to: outShape)
+    }
+}
+
 /// Typed composition of two layers: `layer2(layer1(x))`. Differentiable is
 /// synthesized (both sub-layers are Differentiable); `KeyPathIterable` reaches
 /// both sub-layers' tensors recursively.
