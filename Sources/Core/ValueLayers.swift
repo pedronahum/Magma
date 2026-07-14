@@ -10,9 +10,12 @@
 // `nn.*` layers rather than replacing them yet. Currently `Tensor -> Tensor`
 // layers.
 //
-// NOTE: models must be held by their concrete (nested `Sequential2`) type, not as
-// `some Layer` — differentiating an opaque return type crashes the compiler's SIL
-// Differentiation pass. See Documentation/KNOWN_COMPILER_ISSUES.md.
+// NOTE: calling `gradient(at:)` directly on a value of opaque type (`some Layer`)
+// crashes the compiler's SIL Differentiation pass, so models spelled with their
+// concrete (nested `Sequential2`) type differentiate directly. To keep the
+// opaque `some Layer` spelling, route differentiation through the generic
+// `modelGradient` helper (Sources/Core/LayerGradient.swift), which sidesteps the
+// crash. See Documentation/KNOWN_COMPILER_ISSUES.md.
 
 import _Differentiation
 
