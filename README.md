@@ -60,6 +60,7 @@ for (images, labels) in dataLoader {
 - **Lazy execution**: x10-style tracing with explicit barriers for optimal compilation
 - **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, operation fusion
 - **Pure Swift StableHLO**: IR generation with no C dependencies
+- **Distributed training**: data-parallel (DDP) and Shardy/SPMD tensor sharding across multiple devices — see [Distributed & Multi-Device](#distributed--multi-device)
 
 ## Architecture
 
@@ -94,8 +95,55 @@ for (images, labels) in dataLoader {
 > loads, compiles StableHLO, and executes (buffer transfers, elementwise ops, and
 > cuBLAS GEMM verified on an NVIDIA GB10). It requires the CUDA PJRT plugin
 > (`pjrt_c_api_gpu_plugin.so`, e.g. JAX's `xla_cuda_plugin.so`) on `MAGMA_XLA_PATH`.
-> Multi-GPU / sharding is **not** yet available (single device only). CPU and TPU
-> backends remain the most thoroughly tested paths for v0.1.0.
+> Multi-device **distributed** training (DDP + Shardy/SPMD) is implemented; see the
+> section below for what is and isn't tested per backend.
+
+## Distributed & Multi-Device
+
+Magma supports single-host multi-device training in two paradigms, both compiling
+to standard PJRT multi-device execution:
+
+- **Data parallel (DDP)** — replicate the model, shard the batch, average gradients
+  across replicas. Write it in ordinary Tensor code:
+
+  ```swift
+  let synced = grad.crossReplicaMean(groups: [[0, 1]])   // average grads across replicas
+  let wNew   = w - synced * lr                           // identical update on every replica
+  // or the whole step via autodiff:
+  let updated = try dataParallelSGDStep(w: w, lr: 0.1, numReplicas: 2,
+                                        client: client, dataDistribution: …) { w in loss(w) }
+  ```
+
+- **SPMD / tensor sharding (Shardy)** — annotate tensors with a device mesh + sharding
+  and let [OpenXLA Shardy](https://github.com/openxla/shardy) partition the program and
+  insert collectives:
+
+  ```swift
+  let x = Tensor<Float>.input(from: xBuf).sharded(on: "mesh", ["x", nil])  // row-shard
+  let y = x.matmul(w).sharded(on: "mesh", ["x", nil])
+  let outs = try executeGraphSharded(y.makeGraph(mesh: mesh), numDevices: 2, client: client)
+  ```
+
+Core pieces: `DeviceMesh` / `TensorSharding`, `all_reduce`/`allReduceMean`,
+`DistributedSampler` (+ `.multiHost`), and two production runners —
+`executeGraphReplicated` (DDP) and `executeGraphSharded` (SPMD). Full design and
+status: [MULTI_DEVICE_ASSESSMENT.md](Documentation/MULTI_DEVICE_ASSESSMENT.md).
+
+### Testing status (important)
+
+| Path | CPU (N emulated devices) | GPU (CUDA) |
+|------|--------------------------|------------|
+| Single-device compile + execute | ✅ | ✅ (NVIDIA GB10) |
+| Shardy flags + `sdy` annotations accepted | ✅ | ✅ (single-GPU) |
+| **Multi-device** DDP / SPMD / tensor-parallel == single-device reference | ✅ | ⚠️ **untested** |
+
+All distributed logic is developed and verified on **emulated CPU** (the XLA CPU
+plugin exposing N virtual devices via `cpuDeviceCount`), each result checked
+against a single-device reference. On the CUDA plugin, only *single-GPU* Shardy
+compile/execute is verified — **real multi-GPU is untested**: this hardware has one
+physical GPU and the CUDA plugin has no multi-device emulation. Validating true
+multi-GPU (NCCL collectives, sharded execution) requires a multi-GPU host or TPU
+board, where the same runners should exercise the real collectives.
 
 ### Metal Backend Benchmarking
 
