@@ -9,6 +9,10 @@
 // This is the migration target de-risked earlier; it coexists with the existing
 // `nn.*` layers rather than replacing them yet. Currently `Tensor -> Tensor`
 // layers.
+//
+// NOTE: models must be held by their concrete (nested `Sequential2`) type, not as
+// `some Layer` — differentiating an opaque return type crashes the compiler's SIL
+// Differentiation pass. See Documentation/KNOWN_COMPILER_ISSUES.md.
 
 import _Differentiation
 
