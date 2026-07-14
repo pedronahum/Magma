@@ -1064,24 +1064,20 @@ extension IRGraph {
         var result: [LazyTensorHandle] = []
         var visited = Set<ObjectIdentifier>()
 
+        // Plain post-order DFS: every reachable node is visited exactly once
+        // (guarded by `visited`), inputs before the node that uses them.
+        //
+        // NOTE: an earlier version memoized each handle's "subtree" (the nodes
+        // newly appended while visiting it) and short-circuited on a later visit.
+        // That subtree is *incomplete* whenever a shared input was already visited
+        // via another path when the entry was cached — so a subsequent build that
+        // reaches the handle before that input would drop the input entirely,
+        // emitting a node whose operand was never produced ("missing inputs for
+        // <op>"). Correctness matters more than the reuse; the higher-level trace
+        // cache already skips the whole pipeline for repeated graphs.
         func visit(_ handle: LazyTensorHandle) {
             let oid = ObjectIdentifier(handle)
-            guard !visited.contains(oid) else { return }
-
-            // Fast path: use cached subtree if available (built in a previous barrier).
-            // The cache is invalidated when irNode changes, so this is always up-to-date.
-            if let cached = subgraphCacheGet(oid) {
-                for node in cached {
-                    let noid = ObjectIdentifier(node)
-                    if visited.insert(noid).inserted {
-                        result.append(node)
-                    }
-                }
-                return
-            }
-
-            visited.insert(oid)
-            let subtreeStart = result.count
+            guard visited.insert(oid).inserted else { return }
 
             if let node = handle.irNode {
                 switch node {
@@ -1103,10 +1099,6 @@ extension IRGraph {
             }
 
             result.append(handle)
-
-            // Cache this handle's subtree for reuse in subsequent barriers.
-            // Cap the cache size to bound memory growth.
-            subgraphCacheSet(oid, Array(result[subtreeStart...]))
         }
 
         for output in outputs {
