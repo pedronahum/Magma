@@ -32,7 +32,7 @@
 ```swift
 import Magma
 
-// Define a model using familiar PyTorch-style API
+// Define a model using the familiar PyTorch-style API
 let model = nn.Sequential {
     nn.Linear(784, 256)
     nn.ReLU()
@@ -40,16 +40,20 @@ let model = nn.Sequential {
     nn.Linear(256, 10)
 }
 
+var optimizer = optim.SGD(parameters: model.parameters(), lr: 0.01)
+
 // Training with Swift's native autodiff
 for (images, labels) in dataLoader {
     let (loss, grads) = valueWithGradient(at: model) { m in
-        let logits = m(images)
-        return softmaxCrossEntropy(logits: logits, probabilities: labels)
+        softmaxCrossEntropy(logits: m(images), probabilities: labels)
     }
-    optimizer.update(&model, along: grads)
-    Magma.barrier()  // Compile & execute
+    optimizer.step(grads)   // apply gradients
+    LazyTensorBarrier()     // compile & execute the traced graph
 }
 ```
+
+> This sketches the intended ergonomics. For a complete, runnable training loop
+> today (manual parameter struct + SGD), see [`Examples/MNIST`](Examples/MNIST/).
 
 ## Key Features
 
@@ -64,18 +68,22 @@ for (images, labels) in dataLoader {
 
 ## Architecture
 
+Distributed support is woven through the stack rather than bolted on — each layer
+gains a multi-device capability (shown on the second line of each box):
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Magma          PyTorch-compatible API (nn, optim, etc.)    │
-├─────────────────────────────────────────────────────────────┤
-│  LazyTensor     x10-style tracing, optimization, caching    │
-│                 DCE, CSE, constant folding, op fusion       │
-├─────────────────────────────────────────────────────────────┤
-│  StableHLO      Pure Swift MLIR generation                  │
-├─────────────────────────────────────────────────────────────┤
-│  XLARuntime     PJRT execution    │  MetalHLO (macOS)       │
-│                 (CPU, GPU, TPU)   │  Metal GPU via MPSGraph │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Magma       PyTorch-style API: nn, optim, Swift-native autodiff         │
+│             Distributed: crossReplicaMean, Tensor.sharded, DDP step     │
+├─────────────────────────────────────────────────────────────────────────┤
+│ LazyTensor  x10 tracing, optimize/cache (DCE, CSE, fusion)              │
+│             Graph sharding, collectives, DDP + SPMD runners             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ StableHLO   Pure-Swift MLIR generation + Shardy (sdy.mesh/sdy.sharding) │
+├─────────────────────────────────────────────────────────────────────────┤
+│ XLARuntime  PJRT exec (CPU/GPU/TPU), multi-device, scatter/gather       │
+│             MetalHLO: macOS GPU via MPSGraph                            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Status
@@ -109,9 +117,12 @@ to standard PJRT multi-device execution:
   ```swift
   let synced = grad.crossReplicaMean(groups: [[0, 1]])   // average grads across replicas
   let wNew   = w - synced * lr                           // identical update on every replica
-  // or the whole step via autodiff:
-  let updated = try dataParallelSGDStep(w: w, lr: 0.1, numReplicas: 2,
-                                        client: client, dataDistribution: …) { w in loss(w) }
+
+  // ...or the whole step from a differentiable loss, driven by autodiff:
+  let updated = try dataParallelSGDStep(
+      w: w, lr: 0.1, numReplicas: 2, client: client,
+      dataDistribution: [ObjectIdentifier(dataBuf): .perReplica(shards)]
+  ) { w in loss(w) }
   ```
 
 - **SPMD / tensor sharding (Shardy)** — annotate tensors with a device mesh + sharding
@@ -153,8 +164,8 @@ board, where the same runners should exercise the real collectives.
 
 Magma builds on the foundations of:
 - [Swift for TensorFlow (S4TF)](https://github.com/tensorflow/swift-apis) - Original lazy tensor design, initializers, loss functions, and layer patterns
-- [TaylorTorch](Legacy/TaylorTorch/) - PyTorch-style API design for Swift
-- [SwiftIR](Legacy/SwiftIR/) - MLIR/XLA infrastructure for Swift
+- **TaylorTorch** - PyTorch-style API design for Swift
+- [SwiftIR](https://github.com/pedronahum/SwiftIR) - MLIR/XLA infrastructure for Swift (the Shardy sharding types were adapted from its `SwiftIRShardingLite`)
 
 Many components are ported from S4TF including:
 - Parameter initializers (Glorot, He, LeCun, Orthogonal)
@@ -191,23 +202,21 @@ Magma uses [OpenXLA's PJRT](https://openxla.org/xla) (Portable JAX Runtime) for 
 > The framework was originally validated against XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (jaxlib 0.9.0); newer pins compatible with the PJRT C-API above also work.
 
 ```bash
-# Clone XLA
+# Clone XLA and check out the recommended pin (matches the Tested Versions above)
 git clone https://github.com/openxla/xla.git
 cd xla
+git checkout 9b635916ecc6df6efee62d8e4b0c7ef87ef84d69
 
-# Checkout the tested version (recommended)
-git checkout bb760b047bdbfeff962f0366ad5cc782c98657e0
-
-# Build PJRT CPU plugin (requires Bazel)
-# On macOS:
-bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.dylib
-# On Linux:
-bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
-
-# Copy to your preferred location
-# macOS:
-cp bazel-bin/xla/pjrt/c/pjrt_c_api_cpu_plugin.dylib /opt/xla/lib/
+# Build the PJRT CPU plugin (requires Bazel)
 # Linux:
+bazel build -c opt //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+# macOS:
+bazel build -c opt //xla/pjrt/c:pjrt_c_api_cpu_plugin.dylib
+
+# (optional) CUDA GPU plugin — or just use JAX's bundled xla_cuda_plugin.so
+bazel build -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
+
+# Copy the plugin(s) into your MAGMA_XLA_PATH directory (Linux example)
 cp bazel-bin/xla/pjrt/c/pjrt_c_api_cpu_plugin.so /opt/xla/lib/
 ```
 
@@ -292,7 +301,8 @@ See [TPU_DEPLOYMENT.md](Documentation/TPU_DEPLOYMENT.md) for running on Google C
 - [Architecture Overview](Documentation/ARCHITECTURE.md)
 - [Roadmap & Phases](Documentation/ROADMAP.md)
 - [API Reference](Documentation/API.md)
-- [Contributing](Documentation/CONTRIBUTING.md)
+- [Distributed & Multi-Device](Documentation/MULTI_DEVICE_ASSESSMENT.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 
