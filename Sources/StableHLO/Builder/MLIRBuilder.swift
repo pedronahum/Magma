@@ -768,12 +768,23 @@ public final class MLIRBuilder: @unchecked Sendable {
     ///   - kernel: HWIO kernel value.
     ///   - strides: `[strideH, strideW]`.
     ///   - padding: `[[padTop, padBottom], [padLeft, padRight]]`.
+    ///   - lhsDilation: input (base) dilation per spatial dim; `nil` == `[1, 1]`.
+    ///     Inserting `d-1` implicit zeros between input elements is what turns a
+    ///     plain convolution into a transposed one (used by the conv input-gradient).
+    ///   - rhsDilation: kernel (window) dilation per spatial dim; `nil` == `[1, 1]`.
+    ///     Spaces kernel taps out — used by the conv filter-gradient for stride > 1.
+    ///   - reverse: per-spatial-dim window reversal; `nil` == no reversal. Flipping
+    ///     the kernel spatially is the correlation-vs-convolution flip the
+    ///     input-gradient needs.
     ///   - outputShape: precomputed NHWC result shape.
     public func convolution(
         _ input: Value,
         kernel: Value,
         strides: [Int],
         padding: [[Int]],
+        lhsDilation: [Int]? = nil,
+        rhsDilation: [Int]? = nil,
+        reverse: [Bool]? = nil,
         outputShape: [Int]
     ) -> Value {
         let resultType = TensorType(shape: outputShape, dtype: input.type.dtype)
@@ -781,10 +792,18 @@ public final class MLIRBuilder: @unchecked Sendable {
 
         let strideStr = strides.map(String.init).joined(separator: ", ")
         let padStr = padding.map { "[\($0[0]), \($0[1])]" }.joined(separator: ", ")
+        let lhsStr = (lhsDilation ?? [1, 1]).map(String.init).joined(separator: ", ")
+        let rhsStr = (rhsDilation ?? [1, 1]).map(String.init).joined(separator: ", ")
+        // `reverse` is only emitted when at least one dim is flipped, so the common
+        // (forward) case round-trips to the exact same text as before.
+        let reverseStr = (reverse?.contains(true) ?? false)
+            ? ", reverse = [\(reverse!.map { $0 ? "true" : "false" }.joined(separator: ", "))]"
+            : ""
 
         let op = "    \(result.name) = stablehlo.convolution(\(input.displayName), \(kernel.displayName)) "
             + "dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], "
-            + "window = {stride = [\(strideStr)], pad = [\(padStr)], lhs_dilate = [1, 1], rhs_dilate = [1, 1]} "
+            + "window = {stride = [\(strideStr)], pad = [\(padStr)], "
+            + "lhs_dilate = [\(lhsStr)], rhs_dilate = [\(rhsStr)]\(reverseStr)} "
             + "{batch_group_count = 1 : i64, feature_group_count = 1 : i64} : "
             + "(\(input.type.mlirType), \(kernel.type.mlirType)) -> \(resultType.mlirType)"
         operations.append(op)

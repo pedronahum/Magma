@@ -904,11 +904,20 @@ public final class StableHLOEmitter {
         case .conv2d:
             let strides = (attributes["strides"] as? [Int]) ?? [1, 1]
             let padding = (attributes["padding"] as? [[Int]]) ?? [[0, 0], [0, 0]]
+            // Optional generalization used by the conv VJP: base/window dilation and
+            // spatial kernel reversal. Absent on forward convs (nn.Conv2d), so they
+            // default to the plain-convolution behavior.
+            let lhsDilation = attributes["lhsDilation"] as? [Int]
+            let rhsDilation = attributes["rhsDilation"] as? [Int]
+            let reverseKernel = attributes["reverseKernel"] as? [Bool]
             return builder.convolution(
                 inputValues[0],
                 kernel: inputValues[1],
                 strides: strides,
                 padding: padding,
+                lhsDilation: lhsDilation,
+                rhsDilation: rhsDilation,
+                reverse: reverseKernel,
                 outputShape: output.shape
             )
 
