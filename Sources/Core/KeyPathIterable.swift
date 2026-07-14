@@ -72,3 +72,77 @@ extension KeyPathIterable {
         reflectKeyPaths(of: Self.self, to: type)
     }
 }
+
+// MARK: - Recursive traversal (nested models: layer-of-layers)
+
+// Cache for the recursive traversal (keyed by root type).
+nonisolated(unsafe) private var _recursiveKeyPathCache: [ObjectIdentifier: [AnyKeyPath]] = [:]
+
+extension KeyPathIterable {
+    /// Writable key paths to every `Tensor<Float>` reachable through nested
+    /// `KeyPathIterable` properties (depth-first, declaration order). This is how
+    /// a generic optimizer reaches the tensors of a layer-of-layers model. Memoized
+    /// per type.
+    public func recursivelyWritableTensorKeyPaths() -> [WritableKeyPath<Self, Tensor<Float>>] {
+        let oid = ObjectIdentifier(Self.self)
+        _keyPathCacheLock.lock()
+        let cached = _recursiveKeyPathCache[oid]
+        _keyPathCacheLock.unlock()
+        if let cached { return cached.compactMap { $0 as? WritableKeyPath<Self, Tensor<Float>> } }
+
+        var out: [WritableKeyPath<Self, Tensor<Float>>] = []
+        _collectTensorKeyPaths(prefix: \Self.self, from: self,
+                               recurseInto: { $0 is KeyPathIterable }, into: &out)
+        _keyPathCacheLock.lock()
+        _recursiveKeyPathCache[oid] = out.map { $0 as AnyKeyPath }
+        _keyPathCacheLock.unlock()
+        return out
+    }
+}
+
+/// Writable key paths to every `Tensor<Float>` reachable through the nested
+/// aggregates of `value` — used to walk a synthesized `TangentVector`, which is
+/// nested for a nested model and can't be given a conformance. Recurses into any
+/// non-`Tensor` aggregate (tangents contain only tensors and nested tangent
+/// structs). Memoized per type.
+public func recursivelyTensorKeyPaths<T>(of value: T) -> [WritableKeyPath<T, Tensor<Float>>] {
+    let oid = ObjectIdentifier(T.self)
+    _keyPathCacheLock.lock()
+    let cached = _recursiveKeyPathCache[oid]
+    _keyPathCacheLock.unlock()
+    if let cached { return cached.compactMap { $0 as? WritableKeyPath<T, Tensor<Float>> } }
+
+    var out: [WritableKeyPath<T, Tensor<Float>>] = []
+    _collectTensorKeyPaths(prefix: \T.self, from: value,
+                           recurseInto: { !($0 is Tensor<Float>) }, into: &out)
+    _keyPathCacheLock.lock()
+    _recursiveKeyPathCache[oid] = out.map { $0 as AnyKeyPath }
+    _keyPathCacheLock.unlock()
+    return out
+}
+
+// Depth-first: append each Tensor leaf's key path (prefix ++ leaf), recursing into
+// children for which `recurseInto` holds. Child concrete types are recovered by
+// opening the child value's existential, then casting the erased child key path.
+private func _collectTensorKeyPaths<Root, Value>(
+    prefix: WritableKeyPath<Root, Value>,
+    from value: Value,
+    recurseInto: (Any) -> Bool,
+    into out: inout [WritableKeyPath<Root, Tensor<Float>>]
+) {
+    _ = _forEachFieldWithKeyPath(of: Value.self, options: []) { _, childKP in
+        let childValue = value[keyPath: childKP]
+        if let leaf = childKP as? WritableKeyPath<Value, Tensor<Float>> {
+            out.append(prefix.appending(path: leaf))
+        } else if recurseInto(childValue) {
+            func recurse<C>(_ child: C) {
+                if let wkp = childKP as? WritableKeyPath<Value, C> {
+                    _collectTensorKeyPaths(prefix: prefix.appending(path: wkp), from: child,
+                                           recurseInto: recurseInto, into: &out)
+                }
+            }
+            _openExistential(childValue, do: recurse)
+        }
+        return true
+    }
+}

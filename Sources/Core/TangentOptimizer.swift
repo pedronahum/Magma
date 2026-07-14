@@ -32,3 +32,43 @@ public func sgdUpdate<M: Differentiable & KeyPathIterable>(
         model[keyPath: pkp] = model[keyPath: pkp] - gradient[keyPath: gkp] * lr
     }
 }
+
+/// A stateful SGD-with-momentum optimizer over any nested Differentiable +
+/// KeyPathIterable model. Per-tensor velocity is kept as a flat array keyed by the
+/// (stable) recursive traversal order, proving stateful optimizers work over
+/// `Model.TangentVector` — the case that most needed the missing key-path
+/// traversal. Materializes params and velocity each step so the lazy graph stays
+/// flat across a training loop.
+public struct MomentumSGD<M: Differentiable & KeyPathIterable> {
+    public var learningRate: Float
+    public var momentum: Float
+    private var velocity: [Tensor<Float>] = []
+
+    public init(learningRate: Float, momentum: Float = 0.9) {
+        precondition(momentum >= 0 && momentum < 1, "momentum in [0, 1)")
+        self.learningRate = learningRate
+        self.momentum = momentum
+    }
+
+    public mutating func update(_ model: inout M, gradient: M.TangentVector) {
+        let paramKPs = model.recursivelyWritableTensorKeyPaths()
+        let gradKPs = recursivelyTensorKeyPaths(of: gradient)
+        precondition(
+            paramKPs.count == gradKPs.count,
+            "model/tangent Tensor-slot mismatch (\(paramKPs.count) vs \(gradKPs.count))")
+
+        if velocity.isEmpty {
+            velocity = paramKPs.map { Tensor<Float>.zeros(model[keyPath: $0].shape) }
+        }
+        let lr = Tensor<Float>.full([], learningRate)
+        let mom = Tensor<Float>.full([], momentum)
+
+        for i in paramKPs.indices {
+            let v = velocity[i] * mom + gradient[keyPath: gradKPs[i]]   // v = μ·v + g
+            let p = model[keyPath: paramKPs[i]] - v * lr                // w -= lr·v
+            // Collapse the lazy graph so it doesn't grow across steps.
+            velocity[i] = Tensor<Float>(v.scalars(), shape: v.shape)
+            model[keyPath: paramKPs[i]] = Tensor<Float>(p.scalars(), shape: p.shape)
+        }
+    }
+}
