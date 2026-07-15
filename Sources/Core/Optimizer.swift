@@ -68,9 +68,16 @@ public struct ParameterGroup {
 /// optimizer.step(grads)
 /// ```
 public protocol Optimizer {
+    /// The parameters this optimizer updates, in the order that `step(_:)`'s
+    /// positional gradient array must follow.
+    var parameters: [Parameter] { get }
+
     /// Update parameters using the given gradients.
     ///
-    /// - Parameter gradients: Array of gradient tensors, one per parameter.
+    /// - Parameter gradients: Array of gradient tensors, one per parameter, in the
+    ///   same order as `parameters`. Prefer the `[Parameter: Tensor]` overload,
+    ///   which matches gradients to parameters by identity and can't be silently
+    ///   misordered.
     mutating func step(_ gradients: [Tensor<Float>])
 
     /// Reset all optimizer state (e.g., momentum buffers).
@@ -78,6 +85,32 @@ public protocol Optimizer {
 
     /// The current learning rate.
     var learningRate: Float { get set }
+}
+
+extension Optimizer {
+    /// Update parameters using gradients matched to parameters **by identity**
+    /// rather than by array position.
+    ///
+    /// This is the safe way to feed autodiff results into an optimizer: the result
+    /// does not depend on the order in which you assembled the gradients, only on
+    /// which `Parameter` each gradient belongs to — so it cannot be silently
+    /// misordered the way the positional `step([Tensor])` can.
+    ///
+    /// Every parameter the optimizer owns with `requiresGrad == true` must have an
+    /// entry in `gradients`; frozen parameters may be omitted. Keys that are not
+    /// owned by this optimizer are ignored.
+    public mutating func step(_ gradients: [Parameter: Tensor<Float>]) {
+        let positional: [Tensor<Float>] = parameters.map { p in
+            if let g = gradients[p] { return g }
+            precondition(!p.requiresGrad,
+                "step(_:): no gradient supplied for trainable parameter"
+                    + (p.name.map { " '\($0)'" } ?? ""))
+            // Frozen params are skipped inside `step`; a zero placeholder keeps the
+            // positional array aligned.
+            return Tensor<Float>.zeros(p.value.shape, on: p.value.device)
+        }
+        step(positional)
+    }
 }
 
 // MARK: - SGD Optimizer
@@ -421,6 +454,9 @@ extension optim {
         /// All parameters flattened (for gradient indexing)
         private let allParameters: [Parameter]
 
+        /// All parameters across every group, in positional gradient order.
+        public var parameters: [Parameter] { allParameters }
+
         /// Group index for each parameter
         private let parameterGroupIndex: [Int]
 
@@ -528,11 +564,6 @@ extension optim {
             m = Array(repeating: nil, count: allParameters.count)
             v = Array(repeating: nil, count: allParameters.count)
             t = 0
-        }
-
-        /// Get all parameters across all groups (for gradient computation).
-        public func parameters() -> [Parameter] {
-            allParameters
         }
     }
 }

@@ -166,6 +166,15 @@ public final class Parameter: @unchecked Sendable {
     }
 }
 
+// `Parameter` is a reference cell, so identity (not value) is the meaningful
+// notion of equality — two parameters are "the same" iff they are the same
+// object. This lets a `Parameter` key a dictionary of gradients (see
+// `Optimizer.step(_:)` over `[Parameter: Tensor]`).
+extension Parameter: Hashable {
+    public static func == (lhs: Parameter, rhs: Parameter) -> Bool { lhs === rhs }
+    public func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+}
+
 // MARK: - Linear Layer
 
 extension nn {
