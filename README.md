@@ -101,10 +101,27 @@ it is exercised end to end by the test suite.
 
 A second, **reference-semantic** API mirrors PyTorch's `Module`/`Parameter` shape —
 `nn.Linear`, `nn.Conv2d`, … and `optim.SGD`/`optim.Adam` — for building and running
-networks. Note that an `nn.Module` is **not** itself `Differentiable`: its
-optimizers consume a hand-assembled `[Tensor]` gradient array, so there is no
-whole-model autodiff on that path today. Reach for the value-semantic API when you
-want the compiler to differentiate a whole model.
+networks. An `nn.Module` is not itself `Differentiable`, so you don't differentiate
+the model value directly; instead `parameterGradients(of:loss:)` differentiates a
+loss over a layer's parameters and hands back an identity-keyed gradient map that
+`optimizer.step(_:)` applies **by parameter identity, not array position**. That
+makes the manual path safe and real — an `nn.Linear` trains to convergence with
+true autodiff gradients in the test suite (`NNTrainingBridgeTests`). For *ergonomic
+whole-model* autodiff — differentiate the entire model with no parameter
+bookkeeping — reach for the value-semantic API above.
+
+```swift
+// The reference-semantic nn.* path, trained with real gradients via the bridge.
+// (x: [batch, 2], y: [batch, 1])
+let fc = nn.Linear(inputSize: 2, outputSize: 1)          // parameters: [weight, bias]
+var opt = optim.Adam(parameters: fc.parameters(), lr: 0.2)
+
+let (loss, grads) = parameterGradients(of: fc.parameters()) { p in
+    let pred = x.matmul(p[0].transpose()) + p[1].broadcast(to: [batch, 1])
+    return ((pred - y) * (pred - y)).sum() / n           // p[0] = weight, p[1] = bias
+}
+opt.step(grads)      // gradients matched to parameters by identity, not by position
+```
 
 > ⚠️ **Naming:** unqualified `Linear`, `ReLU`, `Sigmoid`, `Conv2d`, `Adam`, and
 > `sequential` resolve to the **value-semantic** types; the reference-semantic ones
@@ -134,7 +151,7 @@ call `LazyTensorBarrier()` once per iteration to get the same effect — see
 
 - **Swift-native autodiff**: models are plain `Differentiable` values — gradients come from the compiler, not a bolted-on tape or tracer.
 - **Value-semantic layers**: `sequential { Linear; ReLU; ... }` composes typed differentiable layers, trained by one generic reflection-based optimizer — no parameter lists, no per-layer update code.
-- **PyTorch-style layer library**: a familiar `nn.*` / `optim.*` set (`nn.Linear`, `nn.Conv2d`, `optim.Adam`, …) for building and running networks (reference-semantic, `Parameter`-based).
+- **PyTorch-style layer library**: a familiar `nn.*` / `optim.*` set (`nn.Linear`, `nn.Conv2d`, `optim.Adam`, …) for building, running, and training networks (reference-semantic, `Parameter`-based); trained via the `parameterGradients` autodiff bridge with identity-keyed optimizer steps.
 - **XLA backend**: x10-style lazy tracing compiled to StableHLO and executed via PJRT (CPU/GPU/TPU), with automatic operation fusion and hardware portability.
 - **Metal backend**: native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO).
 - **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, and operation fusion (`Sources/LazyTensor/Optimization`).
