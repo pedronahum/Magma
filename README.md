@@ -22,7 +22,7 @@
 
 * 🪨 **The Rock:** The foundation is **XLA and StableHLO**—rigid, unbreakable, and high-performance.
 * 🔥 **The Heat:** **Swift's native differentiation** provides the internal energy. Unlike Python libraries that need an external heat source (a "tape" or tracer) to melt the code, Swift generates gradients intrinsically. This internal heat turns rigid static code into a malleable, trainable medium.
-* 🌊 **The Flow:** You shape this molten code with a **PyTorch-compatible API** that feels natural and fluid.
+* 🌊 **The Flow:** You shape this molten code with **value-semantic layers and a PyTorch-style API** that feel natural and fluid.
 * 💎 **The Result:** When you are ready to execute, the magma cools instantly—compiling back into solid, optimized machine code for your hardware.
 
 ---
@@ -89,24 +89,57 @@ step 2000   loss = 0.0000
  +2.0     4.00    4.00
 ```
 
-Notes: `sequential`, `Linear`, `ReLU`, `Conv2d`, `modelGradient`, and the generic
-`Adam` are the value-semantic ("Design A") API — the `model` is a plain
-`Differentiable` value, so `d(loss)/d(model)` comes straight from the Swift
-compiler. `modelGradient` is a thin generic helper that also lets the model stay
-opaque as `some Layer` (see [`Documentation/KNOWN_COMPILER_ISSUES.md`](Documentation/KNOWN_COMPILER_ISSUES.md)
-for why routing through it matters). The reference-semantic PyTorch-style
-`nn.*`/`optim.*` API also exists — see [`Examples/MNIST`](Examples/MNIST/).
+**Two layer APIs.** The example above uses the **value-semantic** API —
+`sequential`, `Linear`, `ReLU`, `Conv2d`, the generic `Adam`, and `modelGradient`.
+The model is a plain `Differentiable` value, so `d(loss)/d(model)` comes straight
+from the Swift compiler and one generic optimizer trains any model by reflection —
+no parameter list, no per-layer update code. (`modelGradient` is a thin generic
+helper that also lets the model stay opaque as `some Layer`; see
+[`Documentation/KNOWN_COMPILER_ISSUES.md`](Documentation/KNOWN_COMPILER_ISSUES.md)
+for why routing through it matters.) This surface is newer and still evolving, but
+it is exercised end to end by the test suite.
+
+A second, **reference-semantic** API mirrors PyTorch's `Module`/`Parameter` shape —
+`nn.Linear`, `nn.Conv2d`, … and `optim.SGD`/`optim.Adam` — for building and running
+networks. Note that an `nn.Module` is **not** itself `Differentiable`: its
+optimizers consume a hand-assembled `[Tensor]` gradient array, so there is no
+whole-model autodiff on that path today. Reach for the value-semantic API when you
+want the compiler to differentiate a whole model.
+
+> ⚠️ **Naming:** unqualified `Linear`, `ReLU`, `Sigmoid`, `Conv2d`, `Adam`, and
+> `sequential` resolve to the **value-semantic** types; the reference-semantic ones
+> live under `nn.`/`optim.` (`nn.Linear`, `optim.Adam`). They take different
+> initializers — don't paste an `nn.*` snippet and then write the names unqualified.
+
+### Execution model — lazy tracing, explicit barriers
+
+Magma traces tensor operations into a graph and runs nothing until a **barrier**.
+Reading values (`.scalars()`, `.item()`) triggers one implicitly; calling
+`LazyTensorBarrier()` compiles and executes the pending graph without reading
+anything back:
+
+```swift
+let y = x.matmul(w).relu()   // lazy — nothing has executed yet
+LazyTensorBarrier()          // compile + execute the traced graph
+print(y.scalars())           // read the results
+```
+
+The training loop above needs no explicit barrier: the generic `Adam` materializes
+the updated weights each step (which barriers internally), so the traced graph
+stays flat across iterations instead of growing unboundedly. In hand-written loops,
+call `LazyTensorBarrier()` once per iteration to get the same effect — see
+[`Examples/BuildingSimulation`](Examples/BuildingSimulation/main.swift).
 
 ## Key Features
 
-- **PyTorch-compatible API**: Familiar `nn.Module`, `nn.Linear`, `optim.Adam`, etc.
-- **XLA backend**: Automatic operation fusion, hardware portability (CPU/GPU/TPU)
-- **Metal backend**: Native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO)
-- **Swift-native autodiff**: First-class `@differentiable` support, not a bolted-on tape
-- **Lazy execution**: x10-style tracing with explicit barriers for optimal compilation
-- **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, operation fusion
-- **Pure Swift StableHLO**: IR generation with no C dependencies
-- **Distributed training**: data-parallel (DDP) and Shardy/SPMD tensor sharding across multiple devices — see [Distributed & Multi-Device](#distributed--multi-device)
+- **Swift-native autodiff**: models are plain `Differentiable` values — gradients come from the compiler, not a bolted-on tape or tracer.
+- **Value-semantic layers**: `sequential { Linear; ReLU; ... }` composes typed differentiable layers, trained by one generic reflection-based optimizer — no parameter lists, no per-layer update code.
+- **PyTorch-style layer library**: a familiar `nn.*` / `optim.*` set (`nn.Linear`, `nn.Conv2d`, `optim.Adam`, …) for building and running networks (reference-semantic, `Parameter`-based).
+- **XLA backend**: x10-style lazy tracing compiled to StableHLO and executed via PJRT (CPU/GPU/TPU), with automatic operation fusion and hardware portability.
+- **Metal backend**: native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO).
+- **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, and operation fusion (`Sources/LazyTensor/Optimization`).
+- **Pure-Swift StableHLO**: MLIR/StableHLO text generation with no C dependencies.
+- **Distributed training**: data-parallel (DDP) and Shardy/SPMD tensor sharding across multiple devices — see [Distributed & Multi-Device](#distributed--multi-device).
 
 ## Architecture
 
@@ -270,10 +303,13 @@ Check the [releases page](https://github.com/openxla/xla/releases) or use JAX's 
 Set these before building/running with XLA:
 
 ```bash
-# Path to directory containing PJRT plugin libraries
+# RUNTIME: directory containing the PJRT plugin libraries. Read when a backend is
+# first used, to locate and load the plugin (e.g. pjrt_c_api_cpu_plugin.so). This
+# is the one you need to *run* models.
 export MAGMA_XLA_PATH=/opt/xla/lib
 
-# Enable XLA linking (required for execution)
+# BUILD TIME: link the XLA/PJRT runtime into the build. Read by Package.swift (not
+# at runtime); set it before `swift build` if XLA is not being linked.
 export MAGMA_ENABLE_XLA=1
 ```
 
@@ -330,7 +366,10 @@ swift build
 # only load one plugin, so run the GPU-only suites in a separate invocation.
 swift test --no-parallel --filter MagmaTests   # CoreTests, runs on CPU
 
-# Run MNIST example
+# Run the value-semantic training example (the Quick Example above)
+swift run ValueLayersExample
+
+# Run the MNIST example (a from-scratch loop: manual parameter struct + SGD)
 swift run MNISTExample
 ```
 
