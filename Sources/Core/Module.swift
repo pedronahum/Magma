@@ -130,6 +130,20 @@ extension Module {
 ///     }
 /// }
 /// ```
+///
+/// ## Semantics
+///
+/// `Parameter` is a **reference type**. A module that stores `Parameter`s
+/// therefore has *reference semantics* through them even when the module itself
+/// is a `struct`: copying the module shares the same `Parameter` objects, so an
+/// optimizer step (or any `parameter.value = …`) is visible through every copy.
+/// This is why the `nn.*` layers are described as reference-semantic; for
+/// value-semantic layers whose weights are plain stored `Tensor`s, use the
+/// `Layer` API (see `ValueLayers.swift`).
+///
+/// It is also **not thread-safe**: `value` is mutated without synchronization, so
+/// a `Parameter` must not be updated concurrently from multiple threads (the
+/// training loop is assumed single-threaded per model).
 public final class Parameter: @unchecked Sendable {
     /// The tensor value of this parameter.
     public var value: Tensor<Float>
@@ -2239,6 +2253,17 @@ extension nn {
     /// )
     /// let output = model(input)
     /// ```
+    ///
+    /// ## Type erasure
+    ///
+    /// Layers are stored as `[AnyLayer]` — a heterogeneous, dynamically dispatched
+    /// list. This keeps `nn.Sequential` flexible (any `Tensor -> Tensor` module can
+    /// be appended at runtime) but it is *statically opaque*: the element types are
+    /// erased, so the container is neither `Differentiable` nor amenable to
+    /// whole-model compiler autodiff. When you want the concrete layer types
+    /// preserved — for static typing and `gradient(at: model)` — use the
+    /// value-semantic `sequential { … }` builder, which composes a typed,
+    /// `Differentiable` `Sequential2` tree (see `ValueLayers.swift`).
     public struct Sequential: Module {
         public typealias Input = Tensor<Float>
         public typealias Output = Tensor<Float>
@@ -2302,6 +2327,11 @@ extension nn {
         public init<L: Module>(_ layer: L) where L.Input == Tensor<Float>, L.Output == Tensor<Float> {
             // All four closures capture the same boxed `mutableLayer`, so
             // `_setTraining` mutations are visible to later `_forward` calls.
+            // NOTE: this box is shared by every *copy* of the `AnyLayer` too, so
+            // copying an `nn.Sequential` (a struct) aliases both its parameters
+            // (already reference types) and its train/eval mode — `setTraining` on
+            // one copy is seen by the others. nn models are reference-semantic; use
+            // the value-semantic `Layer` API when you need independent copies.
             var mutableLayer = layer
             self._forward = { mutableLayer.forward($0) }
             self._parameters = { mutableLayer.parameters() }
