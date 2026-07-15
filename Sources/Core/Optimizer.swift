@@ -80,8 +80,9 @@ public protocol Optimizer {
     ///   misordered.
     mutating func step(_ gradients: [Tensor<Float>])
 
-    /// Reset all optimizer state (e.g., momentum buffers).
-    mutating func zeroGrad()
+    /// Reset all accumulated optimizer state (momentum / moment / accumulator
+    /// buffers and the step count) back to its initial condition.
+    mutating func resetState()
 
     /// The current learning rate.
     var learningRate: Float { get set }
@@ -111,6 +112,18 @@ extension Optimizer {
         }
         step(positional)
     }
+
+    /// Deprecated alias for `resetState()`.
+    ///
+    /// Named to catch a PyTorch reflex: there, `optimizer.zero_grad()` clears the
+    /// *gradients* accumulated on parameters and is called every iteration. Magma's
+    /// optimizers take gradients as an argument to `step(_:)`, so there is nothing
+    /// to zero — this call instead **wipes the optimizer's momentum/moment state**.
+    /// Calling it each step silently destroys momentum/Adam accumulators. Use
+    /// `resetState()` when you actually intend to reset state.
+    @available(*, deprecated, renamed: "resetState()",
+        message: "zeroGrad() resets optimizer state (momentum/moments), unlike PyTorch's zero_grad(). Use resetState().")
+    public mutating func zeroGrad() { resetState() }
 }
 
 // MARK: - SGD Optimizer
@@ -226,7 +239,7 @@ extension optim {
         }
 
         /// Reset optimizer state (velocities).
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             velocities = Array(repeating: nil, count: parameters.count)
         }
     }
@@ -374,7 +387,7 @@ extension optim {
         }
 
         /// Reset optimizer state.
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             m = Array(repeating: nil, count: parameters.count)
             v = Array(repeating: nil, count: parameters.count)
             t = 0
@@ -560,7 +573,7 @@ extension optim {
         }
 
         /// Reset optimizer state.
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             m = Array(repeating: nil, count: allParameters.count)
             v = Array(repeating: nil, count: allParameters.count)
             t = 0
@@ -906,7 +919,7 @@ extension optim {
         }
 
         /// Reset optimizer state.
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             squareAvg = Array(repeating: nil, count: parameters.count)
             gradAvg = Array(repeating: nil, count: parameters.count)
             momentumBuffer = Array(repeating: nil, count: parameters.count)
@@ -1018,7 +1031,7 @@ extension optim {
         }
 
         /// Reset optimizer state.
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             accumulator = Array(repeating: nil, count: parameters.count)
         }
     }
@@ -1152,7 +1165,7 @@ extension optim {
         }
 
         /// Reset optimizer state.
-        public mutating func zeroGrad() {
+        public mutating func resetState() {
             squareAvg = Array(repeating: nil, count: parameters.count)
             accDelta = Array(repeating: nil, count: parameters.count)
         }

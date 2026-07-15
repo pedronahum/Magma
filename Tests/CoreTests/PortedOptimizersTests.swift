@@ -92,7 +92,7 @@ struct RMSPropOptimizerTests {
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        optimizer.zeroGrad()
+        optimizer.resetState()
         optimizer.step([grad])
 
         #expect(param.value.shape == [2, 3])
@@ -201,7 +201,7 @@ struct AdaGradOptimizerTests {
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        optimizer.zeroGrad()  // Reset accumulator
+        optimizer.resetState()  // Reset accumulator
         optimizer.step([grad])
 
         #expect(param.value.shape == [2, 3])
@@ -296,7 +296,7 @@ struct AdaDeltaOptimizerTests {
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        optimizer.zeroGrad()
+        optimizer.resetState()
         optimizer.step([grad])
 
         #expect(param.value.shape == [2, 3])

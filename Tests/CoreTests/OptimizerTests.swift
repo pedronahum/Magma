@@ -78,9 +78,9 @@ struct SGDOptimizerTests {
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        optimizer.zeroGrad()  // Reset momentum
+        optimizer.resetState()  // Reset momentum
 
-        // After zeroGrad, next step should be like first step
+        // After resetState, next step should be like first step
         optimizer.step([grad])
         #expect(param.value.shape == [2, 3])
     }
@@ -151,9 +151,9 @@ struct AdamOptimizerTests {
         let grad = Tensor<Float>.ones([2, 3])
 
         optimizer.step([grad])
-        optimizer.zeroGrad()
+        optimizer.resetState()
 
-        // After zeroGrad, moments should be reset
+        // After resetState, moments should be reset
         optimizer.step([grad])
         #expect(param.value.shape == [2, 3])
     }
