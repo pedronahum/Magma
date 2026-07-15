@@ -29,31 +29,73 @@
 
 ## Quick Example
 
+A small MLP that learns a **nonlinear** function — value-semantic layers, the
+model held as `some Layer`, trained by Swift-native reverse-mode autodiff, with a
+generic `Adam` that finds every weight by reflection (no parameter list, no
+per-layer update code). This is a real, runnable target:
+[`Examples/ValueLayers`](Examples/ValueLayers/main.swift).
+
 ```swift
 import Magma
 
-// Define a model using the familiar PyTorch-style API
-let model = nn.Sequential {
-    nn.Linear(784, 256)
-    nn.ReLU()
-    nn.Dropout(0.1)
-    nn.Linear(256, 10)
+// A 1 → 16 → 1 ReLU MLP. `sequential { ... }` composes typed differentiable
+// layers; the concrete (nested) type stays hidden behind `some Layer`.
+func makeMLP() -> some Layer {
+    sequential {
+        Linear(weight: Tensor<Float>([Float](repeating: 1, count: 16), shape: [1, 16]),
+               bias: Tensor<Float>((0..<16).map { -(Float($0) / 15 * 4 - 2) }, shape: [16]))
+        ReLU()
+        Linear(weight: Tensor<Float>((0..<16).map { Float($0 % 3) * 0.1 - 0.1 }, shape: [16, 1]),
+               bias: Tensor<Float>.zeros([1]))
+    }
 }
 
-var optimizer = optim.SGD(parameters: model.parameters(), lr: 0.01)
+// Dataset: y = x² on [-2, 2].
+let xs = stride(from: Float(-2), through: 2, by: 0.5).map { $0 }
+let x = Tensor<Float>(xs, shape: [xs.count, 1])
+let y = Tensor<Float>(xs.map { $0 * $0 }, shape: [xs.count, 1])
 
-// Training with Swift's native autodiff
-for (images, labels) in dataLoader {
-    let (loss, grads) = valueWithGradient(at: model) { m in
-        softmaxCrossEntropy(logits: m(images), probabilities: labels)
-    }
-    optimizer.step(grads)   // apply gradients
-    LazyTensorBarrier()     // compile & execute the traced graph
+// Mean-squared error, typed over concrete tensors (predictions, targets).
+let n = Tensor<Float>.full([], Float(xs.count))
+let mse: @differentiable(reverse) (Tensor<Float>, Tensor<Float>) -> Tensor<Float> = { pred, target in
+    let r = pred - target
+    return (r * r).sum() / n
+}
+
+var model = makeMLP()                       // held as `some Layer`
+var optimizer = Adam(learningRate: 0.05)
+
+for _ in 0..<2000 {
+    // Reverse-mode autodiff through the model, then Adam updates every tensor
+    // slot it discovers by reflection — no boilerplate, no manual gradients.
+    let grad = modelGradient(of: model, input: x, target: y, lossFn: mse)
+    optimizer.update(&model, gradient: grad)
 }
 ```
 
-> This sketches the intended ergonomics. For a complete, runnable training loop
-> today (manual parameter struct + SGD), see [`Examples/MNIST`](Examples/MNIST/).
+Running it (`swift run ValueLayersExample`) drives the loss to ~0 and fits the
+curve at every point:
+
+```
+step    0   loss = 5.4067
+step  400   loss = 0.0005
+step 2000   loss = 0.0000
+
+  x     target   model
+ -2.0     4.00    4.00
+ -1.0     1.00    1.00
+ +0.0     0.00   -0.00
+ +1.0     1.00    1.00
+ +2.0     4.00    4.00
+```
+
+Notes: `sequential`, `Linear`, `ReLU`, `Conv2d`, `modelGradient`, and the generic
+`Adam` are the value-semantic ("Design A") API — the `model` is a plain
+`Differentiable` value, so `d(loss)/d(model)` comes straight from the Swift
+compiler. `modelGradient` is a thin generic helper that also lets the model stay
+opaque as `some Layer` (see [`Documentation/KNOWN_COMPILER_ISSUES.md`](Documentation/KNOWN_COMPILER_ISSUES.md)
+for why routing through it matters). The reference-semantic PyTorch-style
+`nn.*`/`optim.*` API also exists — see [`Examples/MNIST`](Examples/MNIST/).
 
 ## Key Features
 

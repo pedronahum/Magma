@@ -88,6 +88,10 @@ let package = Package(
             name: "Benchmarks",
             targets: ["Benchmarks"]
         ),
+        .executable(
+            name: "ValueLayersExample",
+            targets: ["ValueLayersExample"]
+        ),
     ],
     dependencies: packageDependencies,
     targets: [
@@ -170,6 +174,11 @@ let package = Package(
             name: "Benchmarks",
             dependencies: ["Magma"],
             path: "Examples/Benchmarks"
+        ),
+        .executableTarget(
+            name: "ValueLayersExample",
+            dependencies: ["Magma"],
+            path: "Examples/ValueLayers"
         ),
         // ════════════════════════════════════════════════════════════════════
         // TESTS
