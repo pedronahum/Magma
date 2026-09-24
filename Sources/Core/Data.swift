@@ -364,6 +364,7 @@ extension data {
     ///
     /// - Parameter tensors: Array of tensors with the same shape.
     /// - Returns: Stacked tensor with new batch dimension.
+    @differentiable(reverse)
     public static func stack(_ tensors: [Tensor<Float>]) -> Tensor<Float> {
         guard !tensors.isEmpty else {
             fatalError("Cannot stack empty array")
@@ -1181,6 +1182,7 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     /// Concatenate this tensor with others along an axis.
     ///
     /// Convenience method that calls the static `concat`.
+    @differentiable(reverse, wrt: (self, others))
     public func concat(with others: [Tensor], axis: Int = 0) -> Tensor {
         Tensor.concat([self] + others, axis: axis)
     }
@@ -1235,8 +1237,50 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     /// Stack this tensor with others along a new axis.
     ///
     /// Convenience method that calls the static `stack`.
+    @differentiable(reverse, wrt: (self, others))
     public func stack(with others: [Tensor], axis: Int = 0) -> Tensor {
         Tensor.stack([self] + others, axis: axis)
+    }
+
+    /// VJP for concat: each input receives its slice of the cotangent.
+    @derivative(of: concat(_:axis:))
+    public static func vjpConcat(
+        _ tensors: [Tensor], axis: Int
+    ) -> (value: Tensor, pullback: (Tensor) -> Array<Tensor>.TangentVector) {
+        let result = concat(tensors, axis: axis)
+        let normalizedAxis = axis < 0 ? tensors[0].rank + axis : axis
+        let sizes = tensors.map { $0.shape[normalizedAxis] }
+        let resultShape = result.shape
+        return (result, { v in
+            let v = v.broadcastCotangent(to: resultShape)
+            var parts: [Tensor] = []
+            var start = 0
+            for size in sizes {
+                parts.append(v.sliceAxis(axis: normalizedAxis, start: start, size: size))
+                start += size
+            }
+            return Array<Tensor>.TangentVector(parts)
+        })
+    }
+
+    /// VJP for stack: each input receives its slice of the cotangent, with
+    /// the stacked axis removed.
+    @derivative(of: stack(_:axis:))
+    public static func vjpStack(
+        _ tensors: [Tensor], axis: Int
+    ) -> (value: Tensor, pullback: (Tensor) -> Array<Tensor>.TangentVector) {
+        let result = stack(tensors, axis: axis)
+        let elementShape = tensors[0].shape
+        let normalizedAxis = axis < 0 ? elementShape.count + 1 + axis : axis
+        let count = tensors.count
+        let resultShape = result.shape
+        return (result, { v in
+            let v = v.broadcastCotangent(to: resultShape)
+            let parts = (0..<count).map { i in
+                v.sliceAxis(axis: normalizedAxis, start: i, size: 1).reshape(elementShape)
+            }
+            return Array<Tensor>.TangentVector(parts)
+        })
     }
 }
 
