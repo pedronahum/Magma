@@ -33,6 +33,29 @@ private func manyOutputsModule(_ n: Int) -> String {
     """
 }
 
+/// Runs `exe` once through `PJRT_ExecuteWrapper` directly and reports how many
+/// outputs it produced and how many handles the storage PJRT wrote them into
+/// can hold. Values alone cannot catch an overflow of that storage: PJRT
+/// writes the handles contiguously and they read back correctly even while
+/// the write overruns neighbouring thread-local memory.
+private func rawExecuteStorage(
+    _ exe: PJRTExecutable, _ input: PJRTBuffer
+) throws -> (outputs: Int, capacity: Int) {
+    var inputHandles: [UnsafeMutableRawPointer?] = [input.handle]
+    var outputsPtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+    var numOutputs = 0
+    let code = inputHandles.withUnsafeMutableBufferPointer { inputs in
+        PJRT_ExecuteWrapper(exe.handle, inputs.baseAddress, 1, &outputsPtr, &numOutputs)
+    }
+    guard code == SW_PJRT_Error_OK, let outputs = outputsPtr else {
+        throw XLAError.executionFailed("PJRT_ExecuteWrapper failed with code \(code)")
+    }
+    // Ask for the capacity before anything else can execute on this thread.
+    let capacity = PJRT_Testing_OutputStorageCapacity(outputs)
+    for i in 0..<numOutputs { PJRT_DestroyBuffer(outputs[i]) }
+    return (numOutputs, capacity)
+}
+
 @Suite("Runtime Hardening Tests", .serialized,
        .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RuntimeHardeningTests {
@@ -57,6 +80,23 @@ struct RuntimeHardeningTests {
         #expect(exe.executionCount == 2)
     }
 
+    @Test("execute output storage holds every output of a 24-output executable")
+    func manyOutputsStorageCapacity() throws {
+        let client = try PJRTClient.create(backend: .cpu)
+        let x = try client.createBuffer([1, 2, 3, 4] as [Float], shape: [4], elementType: .float32)
+
+        // Small first, then large, then small again: the storage must grow
+        // for the large executable and still fit the small one afterwards.
+        for n in [3, 24, 17, 5] {
+            let exe = try client.compile(manyOutputsModule(n))
+            let (outputs, capacity) = try rawExecuteStorage(exe, x)
+            #expect(outputs == n)
+            #expect(capacity >= n, "\(n) outputs written into storage for \(capacity)")
+        }
+    }
+
+    // Checks values only; the storage size itself is covered by
+    // manyOutputsStorageCapacity (a barrier runs through the same wrapper).
     @Test("a barrier materializing 24 tensors returns every value")
     func barrierWithManyOutputs() throws {
         TensorRegistry.shared.clearAll()
@@ -71,8 +111,24 @@ struct RuntimeHardeningTests {
         }
     }
 
-    @Test("output counts stay correct while executables are created and destroyed")
+    @Test("destroying an executable evicts its cached output count")
     func outputCountCacheIsEvictedOnDestroy() throws {
+        let client = try PJRTClient.create(backend: .cpu)
+        let x = try client.createBuffer([1, 2, 3, 4] as [Float], shape: [4], elementType: .float32)
+
+        var exe: PJRTExecutable? = try client.compile(manyOutputsModule(20))
+        _ = try exe!.execute([x])   // populates the cache
+        let handle = try #require(exe!.handle)
+        #expect(PJRT_Testing_HasCachedOutputCount(handle))
+
+        exe = nil   // PJRT_DestroyExecutable runs in deinit
+        // A stale entry would be reused if the allocator hands this address
+        // to a later executable with a different output count.
+        #expect(!PJRT_Testing_HasCachedOutputCount(handle))
+    }
+
+    @Test("output counts stay correct while executables are created and destroyed")
+    func outputCountsStayCorrectUnderChurn() throws {
         let client = try PJRTClient.create(backend: .cpu)
         let x = try client.createBuffer([1, 2, 3, 4] as [Float], shape: [4], elementType: .float32)
 
@@ -257,6 +313,11 @@ struct RuntimeHardeningTests {
                 do {
                     let outs = try exe.execute([x])
                     if try outs.count != 20 || outs[19].toFloatArray() != [20, 21, 22, 23] {
+                        failures.increment()
+                    }
+                    // Each thread has its own storage; it must fit all 20 outputs.
+                    let (outputs, capacity) = try rawExecuteStorage(exe, x)
+                    if outputs != 20 || capacity < 20 {
                         failures.increment()
                     }
                 } catch {

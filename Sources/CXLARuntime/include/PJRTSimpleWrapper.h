@@ -983,6 +983,22 @@ bool PJRT_TraceMeActive(int32_t level);
 /// Record an instant event (no duration, just a point in time).
 void PJRT_TraceMeInstant(const char* name, int32_t level);
 
+//===------------------------------------------------------------------===//
+// Testing Hooks
+//===------------------------------------------------------------------===//
+// Read-only introspection of internal state, used by regression tests. Not
+// part of the supported API.
+
+/// How many output handles `storage` can hold, if it is the calling thread's
+/// execute output storage (the pointer PJRT_ExecuteWrapper returns in
+/// out_outputs); 0 for any other pointer. A value below the executable's
+/// output count means PJRT wrote past the end of the storage.
+size_t PJRT_Testing_OutputStorageCapacity(const void* storage);
+
+/// Whether the output-count cache holds an entry for `executable`. The
+/// pointer is only compared, never dereferenced, so it may be stale.
+bool PJRT_Testing_HasCachedOutputCount(const void* executable);
+
 #ifdef __cplusplus
 }
 #endif

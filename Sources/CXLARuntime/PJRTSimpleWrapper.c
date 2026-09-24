@@ -1196,6 +1196,10 @@ static void EvictCachedNumOutputs(void* executable) {
     pthread_mutex_unlock(&g_num_outputs_cache_mutex);
 }
 
+bool PJRT_Testing_HasCachedOutputCount(const void* executable) {
+    return executable != NULL && GetCachedNumOutputs((void*)executable) != (size_t)-1;
+}
+
 void PJRT_DestroyExecutable(void* executable) {
     if (executable == NULL || g_api == NULL) {
         return;
@@ -1295,6 +1299,19 @@ static PJRT_Buffer** AcquireOutputStorage(size_t num_outputs) {
     }
     memset(storage, 0, (num_outputs > 0 ? num_outputs : 1) * sizeof(PJRT_Buffer*));
     return storage;
+}
+
+size_t PJRT_Testing_OutputStorageCapacity(const void* storage) {
+    if (storage == NULL) {
+        return 0;
+    }
+    if (storage == (const void*)g_output_buffer_array) {
+        return PJRT_MAX_OUTPUTS;
+    }
+    if (storage == (const void*)g_output_heap_array) {
+        return g_output_heap_capacity;
+    }
+    return 0;
 }
 
 // Fails (without executing) when an executable has more outputs than a
