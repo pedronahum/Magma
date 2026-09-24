@@ -49,21 +49,21 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     internal var handle: LazyTensorHandle
 
     /// Shape of the tensor
-    public var shape: [Int] { handle.shape }
+    @noDerivative public var shape: [Int] { handle.shape }
 
     /// Number of dimensions
-    public var rank: Int { shape.count }
+    @noDerivative public var rank: Int { shape.count }
 
     /// Total number of elements
-    public var elementCount: Int {
+    @noDerivative public var elementCount: Int {
         shape.isEmpty ? 1 : shape.reduce(1, *)
     }
 
     /// Data type of elements
-    public var dtype: DType { handle.dtype }
+    @noDerivative public var dtype: DType { handle.dtype }
 
     /// Device where tensor resides
-    public var device: Device { handle.device }
+    @noDerivative public var device: Device { handle.device }
 
     // MARK: - Initialization
 
