@@ -890,15 +890,22 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     public func vjpGather(indices: Tensor<Float>, axis: Int = 0) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
         let result = self.gather(indices: indices, axis: axis)
         let originalShape = self.shape
+        let normalizedAxis = axis < 0 ? rank + axis : axis
         return (result, { [selfDevice = self.device] v in
             // Use oneHot + matmul instead of scatter to avoid region-based MLIR ops.
             // This also correctly accumulates gradients for duplicate indices.
-            let n = originalShape[axis]
+            // Move the gathered axis to the front and flatten the rest so any
+            // axis and rank reduce to one [n, k] x [k, rest] matmul.
+            let n = originalShape[normalizedAxis]
             let oneHot = Tensor<Float>.oneHot(indices, numClasses: n, on: selfDevice)
-            // oneHot: [numIndices, n], v: [numIndices, D]
-            // grad = oneHot^T @ v = [n, D]
-            let vFloat = Tensor<Float>(handle: v.handle)
-            let grad = oneHot.transpose().matmul(vFloat)
+            var vFloat = Tensor<Float>(handle: v.handle)
+            if normalizedAxis != 0 { vFloat = vFloat.transpose(0, normalizedAxis) }
+            let k = vFloat.shape[0]
+            let rest = Array(vFloat.shape.dropFirst())
+            let restCount = rest.reduce(1, *)
+            // oneHot: [k, n]; grad = oneHot^T @ v = [n, rest]
+            var grad = oneHot.transpose().matmul(vFloat.reshape([k, restCount])).reshape([n] + rest)
+            if normalizedAxis != 0 { grad = grad.transpose(0, normalizedAxis) }
             return Tensor<Scalar>(handle: grad.handle)
         })
     }
@@ -967,29 +974,39 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     }
 
     /// VJP for scatter operation (with respect to self and updates, indices are not differentiable)
+    ///
+    /// Gradients are implemented for 1-D indices (slice scatter along `axis`,
+    /// with `updates` shaped like `self` except `indices.count` along `axis`):
+    /// - `self`: the cotangent with the overwritten slots zeroed, since those
+    ///   input values do not reach the output.
+    /// - `updates`: the cotangent gathered at the scattered positions.
+    ///
+    /// Indices are assumed unique; with duplicates only one update survives the
+    /// forward pass, but each duplicate receives the gathered cotangent.
+    /// Differentiating any other scatter form traps rather than returning a
+    /// silently wrong (zero) gradient.
     @derivative(of: scatter, wrt: (self, updates))
     public func vjpScatter(indices: Tensor<Float>, updates: Tensor, axis: Int = 0) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
         let result = self.scatter(indices: indices, updates: updates, axis: axis)
+        let normalizedAxis = axis < 0 ? rank + axis : axis
         let updatesShape = updates.shape
+        var sliceShape = self.shape
+        if indices.rank == 1 { sliceShape[normalizedAxis] = indices.shape[0] }
+        precondition(indices.rank == 1 && updatesShape == sliceShape,
+            "scatter: gradients are only implemented for 1-D indices with updates of shape " +
+            "\(sliceShape) (self's shape with indices.count along axis \(normalizedAxis)); " +
+            "got indices shape \(indices.shape) and updates shape \(updatesShape). " +
+            "Use 1-D indices or scatter slices one axis at a time.")
         let device = self.device
         return (result, { v in
-            // Gradient for input: updates overwrite, so the cotangent passes through.
-            let inputGrad = v
-            // Gradient for updates: gather the output cotangent at the scatter
-            // positions. `gather` only supports 1-D indices (index-select along
-            // `axis`); for multi-dim indices a proper element-wise gatherElements
-            // is not implemented yet, so fall back to a correctly-shaped zero
-            // gradient rather than crashing on gather's 1-D precondition.
-            // TODO: Implement gatherElements for multi-dim element-wise gathering.
-            let updatesGrad: Tensor<Scalar>
-            if indices.rank == 1 {
-                let gathered = v.gather(indices: indices, axis: axis)
-                updatesGrad = gathered.shape == updatesShape
-                    ? gathered
-                    : Tensor<Scalar>.zeros(updatesShape, on: device)
-            } else {
-                updatesGrad = Tensor<Scalar>.zeros(updatesShape, on: device)
-            }
+            // Input: the scattered slots were overwritten, so they get no gradient.
+            let inputGrad = v.scatter(
+                indices: indices,
+                updates: Tensor<Scalar>.zeros(updatesShape, on: device),
+                axis: normalizedAxis)
+            // Updates: each update slice lands at its index, so it receives the
+            // cotangent at that position.
+            let updatesGrad = v.gather(indices: indices, axis: normalizedAxis)
             return (inputGrad, updatesGrad)
         })
     }

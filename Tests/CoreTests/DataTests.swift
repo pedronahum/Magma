@@ -488,6 +488,31 @@ struct GatherTests {
 
         #expect(grad.shape == [4, 8])
     }
+
+    @Test("Gather gradient along axis 1 accumulates duplicate indices")
+    func gatherGradientAxis1Values() {
+        let x = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+        let indices = Tensor<Float>([2, 0, 2], shape: [3])
+        let w = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+
+        let grad = gradient(at: x) { t in
+            (t.gather(indices: indices, axis: -1) * w).sum()
+        }
+
+        #expect(grad.shape == [2, 3])
+        // Column 0 gets w[:,1]; column 2 gets w[:,0] + w[:,2]; column 1 nothing.
+        #expect(grad.scalars() == [2, 0, 4,  5, 0, 10])
+    }
+
+    @Test("Gather gradient on a rank-1 tensor")
+    func gatherGradientRank1() {
+        let x = Tensor<Float>([1, 2, 3, 4], shape: [4])
+        let indices = Tensor<Float>([3, 3, 1], shape: [3])
+
+        let grad = gradient(at: x) { t in t.gather(indices: indices, axis: 0).sum() }
+
+        #expect(grad.scalars() == [0, 1, 0, 2])
+    }
 }
 
 // MARK: - Scatter Operation Tests
@@ -535,18 +560,88 @@ struct ScatterTests {
         #expect(result.shape == [4, 8])
     }
 
-    @Test("Scatter gradient")
-    func scatterGradient() {
-        let x = Tensor<Float>.zeros([4, 8])
-        let indices = Tensor<Float>.zeros([4, 2])
-        let updates = Tensor<Float>.ones([4, 2])
+    @Test("Scatter values along axis 1")
+    func scatterValuesAxis1() {
+        let x = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+        let indices = Tensor<Float>([2, 0], shape: [2])
+        let updates = Tensor<Float>([10, 20,  30, 40], shape: [2, 2])
+
+        let result = x.scatter(indices: indices, updates: updates, axis: 1)
+        // Column 2 <- updates[:, 0], column 0 <- updates[:, 1].
+        #expect(result.scalars() == [20, 2, 10,  40, 5, 30])
+    }
+
+    @Test("Scatter gradient zeroes overwritten input slots (axis 0)")
+    func scatterGradientAxis0() {
+        let x = Tensor<Float>((0..<8).map(Float.init), shape: [4, 2])
+        let indices = Tensor<Float>([3, 1], shape: [2])
+        let updates = Tensor<Float>([1, 1, 1, 1], shape: [2, 2])
+        // Weight each output element differently so the gradient reveals where
+        // each cotangent went.
+        let w = Tensor<Float>([1, 2,  3, 4,  5, 6,  7, 8], shape: [4, 2])
 
         let (inputGrad, updatesGrad) = gradient(at: x, updates) { base, upd in
-            base.scatter(indices: indices, updates: upd, axis: 1).sum()
+            (base.scatter(indices: indices, updates: upd, axis: 0) * w).sum()
         }
 
-        #expect(inputGrad.shape == [4, 8])
-        #expect(updatesGrad.shape == [4, 2])
+        #expect(inputGrad.shape == [4, 2])
+        #expect(updatesGrad.shape == [2, 2])
+        // Rows 1 and 3 were overwritten: no gradient reaches the input there.
+        #expect(inputGrad.scalars() == [1, 2,  0, 0,  5, 6,  0, 0])
+        // Update row 0 landed in row 3, update row 1 in row 1.
+        #expect(updatesGrad.scalars() == [7, 8,  3, 4])
+    }
+
+    @Test("Scatter gradient along axis 1 matches finite differences")
+    func scatterGradientAxis1() {
+        let x = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+        let indices = Tensor<Float>([2, 0], shape: [2])
+        let updates = Tensor<Float>([0.5, -1,  2, 3], shape: [2, 2])
+        let w = Tensor<Float>([1, 2, 3,  4, 5, 6], shape: [2, 3])
+
+        func loss(_ base: Tensor<Float>, _ upd: Tensor<Float>) -> Tensor<Float> {
+            let y = base.scatter(indices: indices, updates: upd, axis: 1)
+            return (y * y * w).sum()
+        }
+        let (inputGrad, updatesGrad) = gradient(at: x, updates) { loss($0, $1) }
+
+        // The loss is exact in Float for these small integers/halves, so
+        // central differences with h = 0.5 are exact for the quadratic loss.
+        let h: Float = 0.5
+        let xv = x.scalars(), uv = updates.scalars()
+        var expectedInput: [Float] = []
+        for i in 0..<xv.count {
+            var plus = xv, minus = xv
+            plus[i] += h; minus[i] -= h
+            let lp = loss(Tensor<Float>(plus, shape: [2, 3]), updates).scalars()[0]
+            let lm = loss(Tensor<Float>(minus, shape: [2, 3]), updates).scalars()[0]
+            expectedInput.append((lp - lm) / (2 * h))
+        }
+        var expectedUpdates: [Float] = []
+        for i in 0..<uv.count {
+            var plus = uv, minus = uv
+            plus[i] += h; minus[i] -= h
+            let lp = loss(x, Tensor<Float>(plus, shape: [2, 2])).scalars()[0]
+            let lm = loss(x, Tensor<Float>(minus, shape: [2, 2])).scalars()[0]
+            expectedUpdates.append((lp - lm) / (2 * h))
+        }
+
+        // Columns 0 and 2 are overwritten, so only column 1 gets 2*x*w.
+        #expect(inputGrad.scalars() == [0, 8, 0,  0, 50, 0])
+        #expect(inputGrad.scalars() == expectedInput)
+        #expect(updatesGrad.scalars() == expectedUpdates)
+    }
+
+    @Test("Differentiating scatter with multi-dimensional indices traps")
+    func scatterGradientMultiDimTraps() async {
+        await #expect(processExitsWith: .failure) {
+            let x = Tensor<Float>.zeros([4, 8])
+            let indices = Tensor<Float>.zeros([4, 2])
+            let updates = Tensor<Float>.ones([4, 2])
+            _ = gradient(at: x, updates) { base, upd in
+                base.scatter(indices: indices, updates: upd, axis: 1).sum()
+            }
+        }
     }
 }
 
@@ -976,6 +1071,17 @@ struct AdvancedSlicingTests {
             t.slice(axis: 0, start: nil, stop: nil, step: 2).sum()
         }
         #expect(grad.shape == [10, 8])
+    }
+
+    @Test("Strided slice gradient scatters ones back to the selected rows")
+    func stridedSliceGradientValues() {
+        // The step > 1 pullback scatters the cotangent back; this materializes
+        // it (the scatter lowering previously failed to compile).
+        let x = Tensor<Float>((0..<10).map(Float.init), shape: [5, 2])
+        let grad = gradient(at: x) { t in
+            t.slice(axis: 0, start: 1, stop: nil, step: 2).sum()
+        }
+        #expect(grad.scalars() == [0, 0,  1, 1,  0, 0,  1, 1,  0, 0])
     }
 
     @Test("Advanced slice gradient negative indices")
