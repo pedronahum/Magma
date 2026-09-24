@@ -682,15 +682,11 @@ contrastiveLoss(anchor: anchor, sample: sample, labels: labels, margin: 1.0)  //
 tripletMarginLoss(anchor: anchor, positive: positive, negative: negative, margin: 1.0)
 ```
 
-> **Differentiating a loss.** Inside a closure you differentiate (with
-> `gradient(at:)`, `modelGradient` or `parameterGradients`), Swift can only
-> differentiate functions that are marked `@differentiable` or have a registered
-> derivative. In this alpha, `nn.functional.binaryCrossEntropyWithLogits` is the
-> only loss marked that way. Build other losses from differentiable primitives:
-> `+ - * /`, `matmul`, `sum`, `mean`, `log`, `exp`, `softmax`, `relu`,
-> `sigmoid`, `tanh`, `gelu`, `sqrt`, `reshape`, `transpose`, `broadcast`. The
-> README and examples do this. For example, a cross-entropy is
-> `-(labels * (logits.softmax(dim: 1) + eps).log()).sum() / n`.
+> **Differentiating a loss.** Every loss above, and the `nn.functional`
+> losses and activations, can be used inside a closure you differentiate (with
+> `gradient(at:)`, `modelGradient` or `parameterGradients`). Only the
+> predictions/logits are differentiated; targets and labels are treated as
+> constants.
 
 ---
 

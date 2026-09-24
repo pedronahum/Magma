@@ -339,6 +339,10 @@ targets: [
 ]
 ```
 
+The Metal backend cannot be enabled from a tagged release yet: it pulls in
+MetalHLO by branch, which SwiftPM only allows when Magma is the root package or
+is depended on by branch or path.
+
 `import Magma` is all you need: it re-exports the lower layers (`Device`,
 `Backend`, `DType`, `LazyTensorBarrier`, `MaterializationError`, ...) and the
 `_Differentiation` module (`@differentiable`, `gradient(at:)`).

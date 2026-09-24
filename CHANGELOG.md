@@ -195,6 +195,22 @@ change before 0.1.0. Only the CPU backend is routinely tested. Read
 - **Thread safety:** tensor reads are thread-safe. Barriers are serialized
   process-wide. If a batched barrier fails, a read retries its own tensor alone,
   so it only reports its own error.
+- **`import Magma` is enough:** Magma re-exports `LazyTensor`, `XLARuntime`,
+  `StableHLO` and `_Differentiation`, so `Device`, `DType`,
+  `MaterializationError`, `LazyTensorBarrier`, `@differentiable` and
+  `gradient(at:)` need no extra imports.
+- **Differentiable from your code:** activations (`logSoftmax`, `leakyRelu`,
+  `silu`, `elu`, `selu`, `mish`, `softplus`, `softsign`, `hardtanh`, `clamp`,
+  `pow`, …), reductions (`max`, `min`, `variance`), masking (`where_`,
+  `maskedFill`), `concat`/`stack`, every loss in `Loss.swift`, and
+  `nn.functional` (`mse`, `crossEntropy`, `binaryCrossEntropy`, `nllLoss`,
+  `logSoftmax`, …) are now `@differentiable` or have registered derivatives,
+  so `gradient(at:)` works through them from another module. Targets and labels
+  are not differentiated. `Tensor.shape`, `rank`, `dtype` and `device` are
+  `@noDerivative`.
+- **Training flags propagate:** setting `training` directly on
+  `nn.TransformerEncoderLayer`/`nn.TransformerDecoderLayer` now also sets it on
+  their attention sublayers; `nn.RNN` gained a `training` property.
 - **Transformer dropout:** `nn.TransformerEncoderLayer`,
   `nn.TransformerDecoderLayer`, and `nn.SinusoidalPositionalEncoding` default to
   `dropout: 0.1` and training mode, as PyTorch does. Their outputs are random
@@ -224,6 +240,9 @@ change before 0.1.0. Only the CPU backend is routinely tested. Read
 
 ### Fixed
 
+- **Activations:** `selu()` ignored its 1.0507 scale; `pow(_:)` crashed on
+  every use ("Missing input 1 for power"); `softplus` overflowed for large
+  inputs; `elu`/`selu` gradients were NaN for inputs above ~88.
 - **Runtime:**
   - Executing a program with more than 16 outputs overflowed a buffer.
   - PJRT error messages are now included in thrown errors.
@@ -283,9 +302,15 @@ change before 0.1.0. Only the CPU backend is routinely tested. Read
   Algebraic simplification still rewrites `exp(log x)` and `log(exp x)` to `x`.
 - **Distributed runners** (`executeGraphReplicated`, `executeGraphSharded`)
   handle `Float32` only.
-- **Metal is less hardened than PJRT.** The Metal barrier does not record errors
-  on individual tensors, and `MetalCompilationCache` is unbounded. Enabling
-  Metal adds MetalHLO as an unversioned (`branch: "main"`) dependency.
+- **Metal is less hardened than PJRT** and has not been built or tested in CI.
+  Enabling it (`MAGMA_ENABLE_METAL=1`) adds MetalHLO as an unversioned
+  (`branch: "main"`) dependency, which SwiftPM only accepts when Magma is the
+  root package or is itself depended on by branch or path — consumers of the
+  tagged release cannot enable Metal yet.
+- **Dropout and the trace cache:** each dropout mask is a new host-generated
+  constant, so in training mode the fast trace cache never hits (the compiled
+  executable is still reused). Training steps with dropout pay the full
+  trace/optimize cost.
 - `scanXLA` supports only a single-tensor state.
 - **Hardware coverage:** multi-GPU, TPU, and multi-host execution are untested.
   CUDA has only been verified on a single NVIDIA GB10.

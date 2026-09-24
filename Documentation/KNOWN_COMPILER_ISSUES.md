@@ -110,3 +110,15 @@ opt.update(&model, gradient: g)             // Adam over the opaque type (reflec
 So both spellings work: the concrete nested `Sequential2<...>` type (used by
 `ValueLayerMLPTests`/`ConvLayerTests`, and required if you call `gradient(at:)`
 directly), or the opaque `some Layer` type routed through `modelGradient`.
+
+## 2. Differentiating `variance`'s body crashes the Differentiation pass
+
+Marking `Tensor.variance(dims:keepDims:)` `@differentiable(reverse)` and letting
+the compiler derive its pullback crashed Swift 6.3.3 (signal 11 in
+`LinearMapInfo::getLinearMapType`). This is a different crash from issue 1.
+
+**Workaround in Magma:** `variance` has a hand-written VJP registered with
+`@derivative(of:)`, so the compiler never differentiates its body. Users are
+unaffected: `gradient(at:)` through `variance` works. If you hit a similar
+crash when marking your own function `@differentiable`, registering a custom
+derivative is the reliable way around it.
