@@ -1336,6 +1336,12 @@ func compileAndRunOptimizedGraph(
 
     let cache = CompilationCache.shared
 
+    // Passes can leave dead nodes behind (e.g. an input whose only use was
+    // simplified away). Re-derive the node list from the outputs so the emitted
+    // arguments, the structural hash, and the buffers fed below all describe
+    // exactly the live graph.
+    optimizedGraph.buildTopologicalOrder()
+
     // Analyze for constant promotion
     let promotionResult = optimizedGraph.analyzeForConstantPromotion()
     let structuralHash = promotionResult.structuralHash
@@ -1903,6 +1909,14 @@ private func MetalLazyTensorBarrier(on device: Device) {
 ///
 /// This is a lower-level API that executes a pre-built graph.
 /// For most use cases, prefer LazyTensorBarrier().
+///
+/// Shares the barrier's pipeline: constants are promoted to inputs, the
+/// executable is cached under the optimized graph's structural hash (which
+/// includes op attributes), and arguments are collected from that same
+/// optimized graph.
+///
+/// - Throws: `MaterializationError` if the backend is unavailable or
+///   compilation, input upload, or execution fails.
 public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws -> [PJRTBuffer] {
     graph.buildTopologicalOrder()
 
@@ -1915,33 +1929,7 @@ public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws 
         optimizedGraph = graph
     }
 
-    let emitter = StableHLOEmitter(graph: optimizedGraph)
-    let graphHash = optimizedGraph.computeHash()
-    let mlir = emitter.emit(name: "graph_\(graphHash.prefix(8))")
-
-    // Check cache
-    let cache = CompilationCache.shared
-    var executable: PJRTExecutable
-
-    if let cached = cache.get(hash: graphHash) {
-        cache.recordHit(promoted: false)
-        executable = cached
-    } else {
-        cache.recordMiss()
-        let client = try getGlobalClient(backend: device.backend)
-        executable = try client.compile(mlir)
-        cache.put(hash: graphHash, executable: executable)
-    }
-
-    // Collect input buffers
-    var inputBuffers: [PJRTBuffer] = []
-    for node in graph.nodes {
-        if case .data(let buffer) = node.irNode {
-            inputBuffers.append(buffer)
-        }
-    }
-
-    return try executable.execute(inputBuffers)
+    return try compileAndRunOptimizedGraph(optimizedGraph, on: device, namePrefix: "graph").outputs
 }
 
 /// How a graph input (`.data` node) is provided to each replica when running

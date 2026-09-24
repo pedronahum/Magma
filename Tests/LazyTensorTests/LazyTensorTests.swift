@@ -552,3 +552,67 @@ struct CacheStatisticsTests {
         #expect(cache.promotionBenefit <= 1.0)
     }
 }
+
+// MARK: - Cache Key Tests
+
+/// Executable-cache keys must separate every graph that compiles to a
+/// different program; a collision silently runs the wrong executable.
+@Suite("Cache Key Tests")
+struct CacheKeyTests {
+
+    private func handle(_ shape: [Int], _ dtype: DType = .float32, _ node: IRNode?) -> LazyTensorHandle {
+        let h = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: shape, dtype: dtype, device: .default)
+        h.irNode = node
+        return h
+    }
+
+    private func graph(_ output: LazyTensorHandle) -> IRGraph {
+        let g = IRGraph()
+        g.addOutput(output)
+        g.buildTopologicalOrder()
+        return g
+    }
+
+    private func convert(to dtype: DType) -> IRGraph {
+        let x = handle([3], .float32, .constant(values: [1, 2, 3], shape: [3]))
+        return graph(handle([3], dtype, .operation(op: .convert, inputs: [x], attributes: ["targetDtype": dtype])))
+    }
+
+    @Test("structural hash distinguishes the result dtype")
+    func structuralHashIncludesDType() {
+        #expect(convert(to: .float64).analyzeForConstantPromotion().structuralHash
+            != convert(to: .int32).analyzeForConstantPromotion().structuralHash)
+    }
+
+    @Test("legacy hash distinguishes attributes, dtypes and every constant value")
+    func legacyHashIsComplete() {
+        func slice(_ values: [Float], start: Int) -> IRGraph {
+            let x = handle([values.count], .float32, .constant(values: values, shape: [values.count]))
+            return graph(handle([2], .float32, .operation(
+                op: .slice, inputs: [x], attributes: ["start": [start], "limit": [start + 2], "strides": [1]])))
+        }
+        #expect(slice([1, 2, 3, 4], start: 0).computeHash() != slice([1, 2, 3, 4], start: 2).computeHash())
+        #expect(slice([1, 2, 3, 4, 5, 6], start: 0).computeHash()
+            != slice([1, 2, 3, 4, 5, 60], start: 0).computeHash())
+        #expect(convert(to: .float64).computeHash() != convert(to: .int32).computeHash())
+        #expect(slice([1, 2, 3, 4], start: 0).computeHash() == slice([1, 2, 3, 4], start: 0).computeHash())
+    }
+
+    @Test("while loops with different bodies do not share a key")
+    func whileBodyIsKeyed() {
+        func loop(_ op: OpKind, _ constant: Float) -> IRGraph {
+            let initial = handle([2], .float32, .constant(values: [1, 1], shape: [2]))
+            let placeholder = handle([2], .float32, nil)
+            let c = handle([2], .float32, .constant(values: [constant, constant], shape: [2]))
+            let body = handle([2], .float32, .operation(op: op, inputs: [placeholder, c], attributes: [:]))
+            return graph(handle([2], .float32, .whileLoopTraced(
+                iterations: 3, initialValues: [initial], bodyInputs: [placeholder],
+                bodyOutputs: [body], bodyNodes: [c, body])))
+        }
+        let add2 = loop(.add, 2).analyzeForConstantPromotion().structuralHash
+        #expect(add2 != loop(.multiply, 2).analyzeForConstantPromotion().structuralHash)
+        #expect(add2 != loop(.add, 3).analyzeForConstantPromotion().structuralHash)
+        #expect(add2 == loop(.add, 2).analyzeForConstantPromotion().structuralHash)
+    }
+}

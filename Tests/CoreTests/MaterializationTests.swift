@@ -164,3 +164,51 @@ struct PromotedConstantDTypeTests {
         #expect(bfloat16Bits(-2.0) == 0xC000)
     }
 }
+
+// executeGraph shares the executable cache with the barrier: its key must
+// distinguish every attribute and constant value the program depends on.
+@Suite("executeGraph Cache Tests", .serialized, .enabled(if: PluginAvailability.cpu))
+struct ExecuteGraphCacheTests {
+
+    private func constant(_ values: [Float]) -> LazyTensorHandle {
+        let handle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: [values.count],
+            dtype: .float32, device: .default)
+        handle.irNode = .constant(values: values, shape: [values.count])
+        return handle
+    }
+
+    private func run(_ output: LazyTensorHandle) throws -> [Float] {
+        let graph = IRGraph()
+        graph.addOutput(output)
+        let buffers = try executeGraph(graph)
+        try #require(buffers.count == 1)
+        return try buffers[0].toFloatArray()
+    }
+
+    private func slice(_ input: LazyTensorHandle, start: Int, limit: Int) -> LazyTensorHandle {
+        let handle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: [limit - start],
+            dtype: .float32, device: .default)
+        handle.irNode = .operation(
+            op: .slice, inputs: [input],
+            attributes: ["start": [start], "limit": [limit], "strides": [1]])
+        return handle
+    }
+
+    @Test("graphs differing only in slice offsets get different executables")
+    func sliceOffsetsAreKeyed() throws {
+        let first = try run(slice(constant([1, 2, 3, 4]), start: 0, limit: 2))
+        let second = try run(slice(constant([1, 2, 3, 4]), start: 2, limit: 4))
+        #expect(first == [1, 2])
+        #expect(second == [3, 4])
+    }
+
+    @Test("graphs differing only in later constant values give different results")
+    func laterConstantValuesAreUsed() throws {
+        let first = try run(slice(constant([1, 2, 3, 4, 5, 6]), start: 3, limit: 6))
+        let second = try run(slice(constant([1, 2, 3, 4, 50, 60]), start: 3, limit: 6))
+        #expect(first == [4, 5, 6])
+        #expect(second == [4, 50, 60])
+    }
+}

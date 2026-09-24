@@ -1118,7 +1118,9 @@ extension IRGraph {
     }
 
     /// Compute a hash for this graph (for caching)
-    /// This is the legacy hash that includes constant values
+    /// This is the legacy hash that includes constant values: every value,
+    /// dtype and op attribute, so graphs that compile to different programs
+    /// never share a hash.
     public func computeHash() -> String {
         var components: [String] = []
 
@@ -1132,14 +1134,14 @@ extension IRGraph {
             if let irNode = node.irNode {
                 switch irNode {
                 case .constant(let values, let shape):
-                    components.append("const:\(shape):\(values.prefix(4))")
+                    components.append("const:\(shape):\(node.dtype):\(Self.valuesHash(values))")
                 case .data:
                     components.append("data:\(node.shape):\(node.dtype)")
                 #if os(macOS) && canImport(MetalHLO)
                 case .metalData:
                     components.append("data:\(node.shape):\(node.dtype)")
                 #endif
-                case .operation(let op, let inputs, _):
+                case .operation(let op, let inputs, let attributes):
                     // Use RELATIVE indices not absolute IDs for cache compatibility
                     let inputIndices = inputs.map { input -> String in
                         if let idx = nodeIdToIndex[input.id] {
@@ -1148,8 +1150,9 @@ extension IRGraph {
                             return "ext:\(input.shape)"
                         }
                     }.joined(separator: ",")
-                    components.append("\(op.rawValue):[\(inputIndices)]:\(node.shape)")
-                case .whileLoopTraced(let iterations, let initialValues, _, _, _):
+                    components.append("\(op.rawValue):[\(inputIndices)]:\(node.shape):\(node.dtype):"
+                        + "{\(Self.attributesDescription(attributes))}")
+                case .whileLoopTraced(let iterations, let initialValues, let bodyInputs, let bodyOutputs, _):
                     let inputIndices = initialValues.map { input -> String in
                         if let idx = nodeIdToIndex[input.id] {
                             return String(idx)
@@ -1157,7 +1160,9 @@ extension IRGraph {
                             return "ext:\(input.shape)"
                         }
                     }.joined(separator: ",")
-                    components.append("while:\(iterations):[\(inputIndices)]:\(node.shape)")
+                    components.append("while:\(iterations):[\(inputIndices)]:\(node.shape):"
+                        + Self.whileBodySignature(bodyInputs: bodyInputs, bodyOutputs: bodyOutputs,
+                                                  outerIndex: nodeIdToIndex))
                 }
             }
         }
@@ -1226,7 +1231,7 @@ extension IRGraph {
                     promotedInputIndex += 1
                 } else {
                     // Large constants: include values in hash (not promoted)
-                    structuralComponents.append("const:\(shape):\(values.prefix(4))")
+                    structuralComponents.append("const:\(shape):\(node.dtype):\(Self.valuesHash(values))")
                 }
 
             case .data:
@@ -1252,12 +1257,13 @@ extension IRGraph {
                 // bake attribute values (offsets, axes, target shapes) into the
                 // compiled executable, so two ops identical except for attributes
                 // (e.g. slice start=0 vs start=2) must not share a cache entry.
-                let attrString = attributes.sorted(by: { $0.key < $1.key })
-                    .map { "\($0.key)=\(String(describing: $0.value))" }
-                    .joined(separator: ",")
-                structuralComponents.append("\(op.rawValue):[\(inputIndices)]:\(node.shape):{\(attrString)}")
+                // The result dtype is part of the key too: e.g. `convert` to f64
+                // vs i32 of the same input differ only there.
+                let attrString = Self.attributesDescription(attributes)
+                structuralComponents.append(
+                    "\(op.rawValue):[\(inputIndices)]:\(node.shape):\(node.dtype):{\(attrString)}")
 
-            case .whileLoopTraced(let iterations, let initialValues, _, _, _):
+            case .whileLoopTraced(let iterations, let initialValues, let bodyInputs, let bodyOutputs, _):
                 let inputIndices = initialValues.map { input -> String in
                     if let idx = nodeIdToIndex[input.id] {
                         return String(idx)
@@ -1265,7 +1271,10 @@ extension IRGraph {
                         return "ext:\(input.shape)"
                     }
                 }.joined(separator: ",")
-                structuralComponents.append("while:\(iterations):[\(inputIndices)]:\(node.shape)")
+                // The body is compiled into the program, so it is part of the key.
+                structuralComponents.append("while:\(iterations):[\(inputIndices)]:\(node.shape):"
+                    + Self.whileBodySignature(bodyInputs: bodyInputs, bodyOutputs: bodyOutputs,
+                                              outerIndex: nodeIdToIndex))
             }
         }
 
@@ -1276,6 +1285,70 @@ extension IRGraph {
             structuralHash: structuralHash,
             promotedConstants: promotedConstants
         )
+    }
+
+    /// Stable text for op attributes, sorted by key (for hashing).
+    static func attributesDescription(_ attributes: [String: Any]) -> String {
+        attributes.sorted(by: { $0.key < $1.key })
+            .map { "\($0.key)=\(String(describing: $0.value))" }
+            .joined(separator: ",")
+    }
+
+    /// A hash of every constant value (bit-exact, so -0.0 and NaN payloads count).
+    static func valuesHash(_ values: [Float]) -> String {
+        var hasher = Hasher()
+        hasher.combine(values.count)
+        for value in values { hasher.combine(value.bitPattern) }
+        return String(UInt64(bitPattern: Int64(hasher.finalize())))
+    }
+
+    /// Structural description of a traced while-loop body: every body node's op,
+    /// shape, dtype, attributes and operands (body arguments by position, other
+    /// body nodes by visit order, outer values by their index in the enclosing
+    /// graph), and body constants by value, since they are emitted inline.
+    static func whileBodySignature(
+        bodyInputs: [LazyTensorHandle],
+        bodyOutputs: [LazyTensorHandle],
+        outerIndex: [UInt64: Int]
+    ) -> String {
+        var argIndex: [UInt64: Int] = [:]
+        for (i, input) in bodyInputs.enumerated() { argIndex[input.id] = i }
+        var localIndex: [UInt64: Int] = [:]
+        var parts: [String] = []
+
+        func ref(_ handle: LazyTensorHandle) -> String {
+            if let i = argIndex[handle.id] { return "a\(i)" }
+            if let i = localIndex[handle.id] { return "n\(i)" }
+            if let i = outerIndex[handle.id] { return "o\(i)" }
+            return "x:\(handle.shape):\(handle.dtype)"
+        }
+
+        func visit(_ handle: LazyTensorHandle) {
+            if argIndex[handle.id] != nil || localIndex[handle.id] != nil
+                || outerIndex[handle.id] != nil { return }
+            switch handle.irNode {
+            case .operation(let op, let inputs, let attributes):
+                for input in inputs { visit(input) }
+                parts.append("\(op.rawValue)(\(inputs.map(ref).joined(separator: ","))):"
+                    + "\(handle.shape):\(handle.dtype):{\(attributesDescription(attributes))}")
+            case .constant(let values, let shape):
+                parts.append("c:\(shape):\(handle.dtype):\(valuesHash(values))")
+            case .whileLoopTraced(let iterations, let initialValues, let innerInputs, let innerOutputs, _):
+                for input in initialValues { visit(input) }
+                var nested = outerIndex
+                for (id, i) in localIndex { nested[id] = -1 - i }
+                parts.append("w\(iterations)(\(initialValues.map(ref).joined(separator: ","))):"
+                    + whileBodySignature(bodyInputs: innerInputs, bodyOutputs: innerOutputs,
+                                         outerIndex: nested))
+            default:
+                // A body placeholder or captured device value.
+                parts.append("leaf:\(handle.shape):\(handle.dtype)")
+            }
+            localIndex[handle.id] = localIndex.count
+        }
+
+        for output in bodyOutputs { visit(output) }
+        return "body{\(parts.joined(separator: ";"))->[\(bodyOutputs.map(ref).joined(separator: ","))]}"
     }
 
     /// Compute the set of nodes reachable from outputs by walking backwards through dependencies.
