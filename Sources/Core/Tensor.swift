@@ -2343,10 +2343,29 @@ extension nn {
         @differentiable(reverse, wrt: logits)
         public static func binaryCrossEntropyWithLogits(_ logits: Tensor<Float>, _ target: Tensor<Float>) -> Tensor<Float> {
             // max(x, 0) - x*y + log(1 + exp(-|x|)); exp(-|x|) is in (0, 1], so
-            // nothing overflows, and every op here has a registered derivative.
-            let one = withoutDerivative(at: Tensor<Float>.ones(logits.shape, on: logits.device))
+            // nothing overflows. The gradient comes from the custom VJP below.
+            let one = Tensor<Float>.ones(logits.shape, on: logits.device)
             let softplusNegAbs = (one + (-logits.abs()).exp()).log()
             return (logits.relu() - logits * target + softplusNegAbs).mean()
+        }
+
+        /// VJP for `binaryCrossEntropyWithLogits`: `(sigmoid(x) - y) / N`.
+        ///
+        /// Differentiating the closed form through `relu` and `abs` would drop the
+        /// `0.5 / N` term at `x == 0`, where both have a kink that cancels out.
+        @derivative(of: binaryCrossEntropyWithLogits, wrt: logits)
+        @usableFromInline
+        static func vjpBinaryCrossEntropyWithLogits(
+            _ logits: Tensor<Float>, _ target: Tensor<Float>
+        ) -> (value: Tensor<Float>, pullback: (Tensor<Float>) -> Tensor<Float>) {
+            let value = binaryCrossEntropyWithLogits(logits, target)
+            let shape = logits.shape
+            let n = Float(logits.elementCount)
+            let dLogits = logits.sigmoid() - target
+            return (value, { v in
+                let scaled = (v / Tensor<Float>.full([], n, on: v.device)).broadcast(to: shape)
+                return scaled * dLogits
+            })
         }
 
         /// Negative log likelihood loss.

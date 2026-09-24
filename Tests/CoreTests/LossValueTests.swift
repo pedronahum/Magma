@@ -93,12 +93,13 @@ struct LossValueTests {
 
     @Test("binaryCrossEntropyWithLogits gradient is (sigmoid(x) - y) / n")
     func bceWithLogitsGradient() {
-        let xs: [Float] = [2, -3, 100, -100]
-        let ys: [Float] = [0, 1, 0, 1]
-        let x = Tensor<Float>(xs, shape: [4])
-        let y = Tensor<Float>(ys, shape: [4])
+        // x == 0 is where the relu/abs kinks sit (zero-initialized output layers).
+        let xs: [Float] = [2, -3, 100, -100, 0, 0]
+        let ys: [Float] = [0, 1, 0, 1, 0, 1]
+        let x = Tensor<Float>(xs, shape: [6])
+        let y = Tensor<Float>(ys, shape: [6])
         let grad = gradient(at: x) { nn.functional.binaryCrossEntropyWithLogits($0, y) }
-        let expected = zip(xs, ys).map { xi, yi in (1 / (1 + Foundation.exp(-xi)) - yi) / 4 }
+        let expected = zip(xs, ys).map { xi, yi in (1 / (1 + Foundation.exp(-xi)) - yi) / 6 }
         #expect(close(grad.scalars(), expected, tol: 1e-4))
     }
 
