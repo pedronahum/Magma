@@ -7,19 +7,31 @@
 // - Computing gradients through a multi-timestep simulation
 // - Using indexing operations for structured data access
 //
-// Usage:
-//   ./BuildingSimulation [magma|native|both] [trials] [timesteps]
-//   Default: both 1000 1000
+// Run:
+//   MAGMA_XLA_PATH=/opt/xla/lib swift run BuildingSimulation [mode] [trials] [timesteps]
+//
+//   mode       native | magma | barrier | scan | both | all   (default: both)
+//   trials     timed trials per variant, after 3 warmup trials (default: 10)
+//   timesteps  simulation steps per trial (default: 100)
+//
+// With the defaults a run takes well under a minute on a CPU plugin. Cost
+// grows with trials x timesteps: `magma` unrolls every timestep into one
+// graph, and `barrier` executes one kernel per timestep. The `native` mode
+// needs no PJRT plugin.
+//
+// Every Magma timing covers tracing, compilation (a cache hit after warmup
+// where the graph repeats) and execution of the materialized result.
 
 import Foundation
 import _Differentiation
 import Magma
 import LazyTensor
+import XLARuntime
 
 // MARK: - Configuration
 
-var benchmarkTrials = 1000
-var benchmarkTimesteps = 1000
+var benchmarkTrials = 10
+var benchmarkTimesteps = 100
 let warmup = 3
 let dTime: Float = 0.1
 let printGradToCompare = false
@@ -338,24 +350,19 @@ func runMagmaBenchmark(trials: Int, timesteps: Int) {
     var totalGradientTime: Double = 0
 
     for i in 0..<(trials + warmup) {
-        // Forward pass
+        // Forward pass. Tracing alone computes nothing: materialize inside the
+        // timed region so compilation and execution are measured too.
         let (forwardTime, forwardOutput) = measureTime {
-            fullPipe(simParams: SimParamsConstant, timesteps: timesteps)
+            fullPipe(simParams: SimParamsConstant, timesteps: timesteps).materialize()
         }
-
-        // Trigger materialization
-        LazyTensorBarrier()
         let lossValue = forwardOutput.item()
 
-        // Gradient computation
+        // Gradient computation (forward + backward), materialized likewise.
         let (gradientTime, gradientResult) = measureTime {
             gradient(at: SimParamsConstant) { params in
                 fullPipe(simParams: params, timesteps: timesteps)
-            }
+            }.materialize()
         }
-
-        // Trigger materialization of gradients
-        LazyTensorBarrier()
 
         if printGradToCompare {
             print("Gradient shape: \(gradientResult.shape)")
@@ -390,16 +397,13 @@ func runMagmaBenchmark(trials: Int, timesteps: Int) {
 // - Pro: Compilation happens once for the iteration kernel, subsequent iterations hit cache
 // - Pro: Memory-efficient (don't need to hold entire unrolled graph)
 // - Pro: Better for heavy per-iteration work (batch training, convolutions)
-// - Con: Per-iteration kernel launch overhead (~3-5ms per barrier on CPU)
+// - Con: Per-iteration dispatch overhead (one execution per timestep)
 // - Con: XLA can't optimize across iteration boundaries
+// - Con: forward only; gradients cannot flow across barriers
 //
-// Benchmark findings (100 timesteps):
-// - Native Swift: 0.003s (gradient)
-// - Magma Unrolled: 0.152s (gradient) - 49x slower
-// - Magma Barrier: 0.508s (forward only) - kernel launch overhead dominates
-//
-// Conclusion: For lightweight per-iteration work, unrolling is faster.
-// Barrier approach is better when per-iteration work is heavy (e.g., batch training).
+// For lightweight per-iteration work like this simulation, per-step overhead
+// dominates; the barrier approach pays off when per-iteration work is heavy
+// (e.g. batch training). Run `all` to compare the variants on your machine.
 
 /// Single iteration step - designed for barrier-per-iteration execution
 func simulateOneStep(
@@ -477,9 +481,9 @@ func simulateWithBarriers(simParams: Tensor<Float>, timesteps: Int) -> Tensor<Fl
 /// Full pipeline with barriers
 func fullPipeWithBarriers(simParams: Tensor<Float>, timesteps: Int) -> Tensor<Float> {
     let pred = simulateWithBarriers(simParams: simParams, timesteps: timesteps)
-    let loss = lossCalc(pred: pred)
-    LazyTensorBarrier()
-    return loss
+    // A bare LazyTensorBarrier() only runs tensors that were marked, so
+    // materialize the loss explicitly.
+    return lossCalc(pred: pred).materialize()
 }
 
 func runMagmaBarrierBenchmark(trials: Int, timesteps: Int) {
@@ -509,6 +513,7 @@ func runMagmaBarrierBenchmark(trials: Int, timesteps: Int) {
     let cache = CompilationCache.shared
     let initialHits = cache.hitCount
     let initialMisses = cache.missCount
+    let initialFastHits = cache.fastHitCount
 
     for i in 0..<(trials + warmup) {
         // Forward pass with barriers
@@ -529,8 +534,9 @@ func runMagmaBarrierBenchmark(trials: Int, timesteps: Int) {
 
     let averageForwardTime = totalForwardTime / Double(trials)
 
-    // Calculate benchmark-specific cache stats
-    let benchmarkHits = cache.hitCount - initialHits
+    // Calculate benchmark-specific cache stats. Fast-path hits (a repeated
+    // trace that skips the whole pipeline) are hits too.
+    let benchmarkHits = (cache.hitCount - initialHits) + (cache.fastHitCount - initialFastHits)
     let benchmarkMisses = cache.missCount - initialMisses
     let hitRate = Double(benchmarkHits) / Double(max(1, benchmarkHits + benchmarkMisses)) * 100
 
@@ -539,7 +545,7 @@ func runMagmaBarrierBenchmark(trials: Int, timesteps: Int) {
     print("--------")
     print("Average forward time: \(String(format: "%.6f", averageForwardTime)) seconds")
     print("Cache hit rate: \(String(format: "%.1f", hitRate))% (\(benchmarkHits) hits, \(benchmarkMisses) misses)")
-    print("Note: ~\(timesteps + 2) barriers per trial, each ~3-5ms overhead on CPU")
+    print("Note: ~\(timesteps + 2) barriers per trial (one execution per timestep)")
 }
 
 // MARK: - Scan-Based Simulation (Option A - with full autodiff)
@@ -665,24 +671,18 @@ func runMagmaScanBenchmark(trials: Int, timesteps: Int) {
     var totalGradientTime: Double = 0
 
     for i in 0..<(trials + warmup) {
-        // Forward pass
+        // Forward pass, materialized inside the timed region (see runMagmaBenchmark).
         let (forwardTime, forwardOutput) = measureTime {
-            fullPipeWithScan(simParams: SimParamsConstant, timesteps: timesteps)
+            fullPipeWithScan(simParams: SimParamsConstant, timesteps: timesteps).materialize()
         }
-
-        // Trigger materialization
-        LazyTensorBarrier()
         let lossValue = forwardOutput.item()
 
-        // Gradient computation
+        // Gradient computation (forward + backward), materialized likewise.
         let (gradientTime, gradientResult) = measureTime {
             gradient(at: SimParamsConstant) { params in
                 fullPipeWithScan(simParams: params, timesteps: timesteps)
-            }
+            }.materialize()
         }
-
-        // Trigger materialization of gradients
-        LazyTensorBarrier()
 
         if i >= warmup {
             totalForwardTime += forwardTime
@@ -710,16 +710,58 @@ func runMagmaScanBenchmark(trials: Int, timesteps: Int) {
 
 // MARK: - Main
 
+let validModes = ["native", "magma", "barrier", "scan", "both", "all"]
+
+func printUsageAndExit() -> Never {
+    let usage = """
+        Usage: BuildingSimulation [mode] [trials] [timesteps]
+          mode       \(validModes.joined(separator: " | "))   (default: both)
+          trials     positive integer (default: 10)
+          timesteps  positive integer (default: 100)
+
+        """
+    FileHandle.standardError.write(Data(usage.utf8))
+    exit(1)
+}
+
+/// Parses a positive integer argument, exiting with usage on anything else.
+func positiveIntArgument(_ index: Int, default value: Int) -> Int {
+    guard CommandLine.arguments.count > index else { return value }
+    guard let n = Int(CommandLine.arguments[index]), n > 0 else { printUsageAndExit() }
+    return n
+}
+
 // Parse command line arguments
 var mode = "both"
 if CommandLine.arguments.count > 1 {
     mode = CommandLine.arguments[1].lowercased()
 }
-if CommandLine.arguments.count > 2 {
-    benchmarkTrials = Int(CommandLine.arguments[2]) ?? 1000
+if CommandLine.arguments.count > 4 || !validModes.contains(mode) {
+    printUsageAndExit()
 }
-if CommandLine.arguments.count > 3 {
-    benchmarkTimesteps = Int(CommandLine.arguments[3]) ?? 1000
+benchmarkTrials = positiveIntArgument(2, default: benchmarkTrials)
+benchmarkTimesteps = positiveIntArgument(3, default: benchmarkTimesteps)
+
+// Every mode except `native` executes through a PJRT plugin.
+if mode != "native" && Backend.availableBackends.isEmpty {
+    #if os(macOS)
+    let ext = "dylib"
+    #else
+    let ext = "so"
+    #endif
+    let path = ProcessInfo.processInfo.environment["MAGMA_XLA_PATH"]
+    let searched = path.map { "MAGMA_XLA_PATH=\($0)" }
+        ?? "MAGMA_XLA_PATH is not set; searched the default locations such as /opt/xla/lib"
+    let message = """
+        error: no execution backend found (\(searched)).
+        Set MAGMA_XLA_PATH to the directory that contains pjrt_c_api_cpu_plugin.\(ext)
+        (or pjrt_c_api_gpu_plugin.\(ext) / pjrt_c_api_tpu_plugin.\(ext)), for example:
+            MAGMA_XLA_PATH=/opt/xla/lib swift run BuildingSimulation
+        or run the plugin-free `native` mode.
+
+        """
+    FileHandle.standardError.write(Data(message.utf8))
+    exit(1)
 }
 
 print("Building Simulation Benchmark")
@@ -730,7 +772,7 @@ print("Timesteps: \(benchmarkTimesteps)")
 print()
 print("Available modes:")
 print("  native      - Native Swift (differentiable structs)")
-print("  magma - Magma with loop unrolling")
+print("  magma       - Magma with loop unrolling")
 print("  barrier     - Magma with barrier per iteration")
 print("  scan        - Magma with scan primitive (full autodiff)")
 print("  both        - Native + Magma (unrolled)")
