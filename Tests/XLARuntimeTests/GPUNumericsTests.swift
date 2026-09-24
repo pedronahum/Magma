@@ -16,9 +16,9 @@ import Testing
 @Suite("GPU Numerics Tests", .serialized,
        .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct GPUNumericsTests {
-    /// One GPU client shared by every test in this suite. nil when no GPU plugin
-    /// is present, in which case the whole suite is disabled by its trait.
-    static let client: PJRTClient? = try? PJRTClient.create(backend: .gpu)
+    // Each test creates (and releases) its own client instead of sharing a
+    // static one: a client kept alive for the whole process would make the
+    // concurrent-accelerator guard refuse every later GPU suite.
 
     // MARK: helpers
 
@@ -50,7 +50,7 @@ struct GPUNumericsTests {
 
     @Test("reduce sum over an axis")
     func reduceSum() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         let mlir = """
         module @reduce_sum {
           func.func @main(%arg0: tensor<2x3xf32>) -> tensor<2xf32> {
@@ -70,7 +70,7 @@ struct GPUNumericsTests {
 
     @Test("transpose")
     func transpose() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         let mlir = """
         module @transpose {
           func.func @main(%arg0: tensor<2x3xf32>) -> tensor<3x2xf32> {
@@ -86,7 +86,7 @@ struct GPUNumericsTests {
 
     @Test("broadcast_in_dim")
     func broadcast() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         let mlir = """
         module @bcast {
           func.func @main(%arg0: tensor<3xf32>) -> tensor<2x3xf32> {
@@ -104,7 +104,7 @@ struct GPUNumericsTests {
 
     @Test("tanh")
     func tanhOp() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         let mlir = """
         module @tanhm {
           func.func @main(%arg0: tensor<3xf32>) -> tensor<3xf32> {
@@ -121,7 +121,7 @@ struct GPUNumericsTests {
 
     @Test("softmax over last axis")
     func softmax() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         let mlir = """
         module @softmax {
           func.func @main(%arg0: tensor<2x3xf32>) -> tensor<2x3xf32> {
@@ -155,7 +155,7 @@ struct GPUNumericsTests {
 
     @Test("2-D convolution")
     func convolution() throws {
-        let client = try #require(Self.client, "GPU PJRT plugin not available")
+        let client = try PJRTClient.create(backend: .gpu)
         // 1x1x4x4 input, 1x1x2x2 kernel, VALID, stride 1 -> 1x1x3x3.
         let mlir = """
         module @conv {
