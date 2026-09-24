@@ -15,7 +15,7 @@ import Testing
 
 @Suite("Tensor Parallel Tests", .serialized)
 struct TensorParallelTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     private func handle(_ shape: [Int]) -> LazyTensorHandle {
         LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(),

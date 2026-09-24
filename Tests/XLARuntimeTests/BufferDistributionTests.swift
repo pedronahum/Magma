@@ -9,7 +9,7 @@ import Testing
 
 @Suite("Buffer Distribution Tests", .serialized)
 struct BufferDistributionTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     @Test("scatter shards along axis 0, gather reassembles")
     func scatterGatherRoundTrip() throws {

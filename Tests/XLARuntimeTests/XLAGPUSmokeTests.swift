@@ -12,19 +12,12 @@ import Testing
 // the CUDA PJRT plugin reserves ~75-80% of the unified pool per client, so
 // running these tests in parallel spins up several clients at once and OOMs
 // the whole box. Keep them one-at-a-time.
-@Suite("XLA GPU Smoke Tests", .serialized)
+@Suite("XLA GPU Smoke Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct XLAGPUSmokeTests {
 
     /// Whether a GPU PJRT client can be created on this machine.
-    static let gpuAvailable: Bool = {
-        do {
-            _ = try PJRTClient.create(backend: .gpu)
-            return true
-        } catch {
-            print("GPU not available: \(error)")
-            return false
-        }
-    }()
+    static var gpuAvailable: Bool { PluginAvailability.gpu }
 
     @Test("GPU client creation")
     func gpuClientCreation() throws {

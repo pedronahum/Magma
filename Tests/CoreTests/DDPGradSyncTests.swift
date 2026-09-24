@@ -11,7 +11,7 @@ import Testing
 
 @Suite("DDP Gradient Sync Tests", .serialized)
 struct DDPGradSyncTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     /// One SGD step with a DDP-synced gradient, as a 2-replica graph.
     ///

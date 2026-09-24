@@ -9,9 +9,10 @@ import _Differentiation
 @testable import LazyTensor
 @testable import XLARuntime
 
-@Suite("Transparent DDP Tests", .serialized)
+@Suite("Transparent DDP Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TransparentDDPTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     private func close(_ a: [Float], _ b: [Float]) -> Bool {
         a.count == b.count && zip(a, b).allSatisfy { abs($0 - $1) < 1e-4 }

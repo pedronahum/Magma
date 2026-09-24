@@ -13,7 +13,7 @@ import Testing
 
 @Suite("Collective Execution Tests", .serialized)
 struct CollectiveExecutionTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     /// Build `all_reduce(reduction)` over a `tensor<4xf32>` argument.
     private func allReduceModule(_ reduction: String, replicas: Int) -> String {

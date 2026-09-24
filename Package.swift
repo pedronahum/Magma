@@ -194,14 +194,15 @@ let package = Package(
         // LazyTensor tests - with mocking
         .testTarget(
             name: "LazyTensorTests",
-            dependencies: ["LazyTensor"],
+            dependencies: ["LazyTensor", "StableHLO"],
             path: "Tests/LazyTensorTests"
         ),
 
-        // XLARuntime tests - requires XLA installed
+        // XLARuntime tests - requires XLA installed. Some suites (XLA integration,
+        // Metal) drive the full stack, so they depend on the upper layers too.
         .testTarget(
             name: "XLARuntimeTests",
-            dependencies: ["XLARuntime"],
+            dependencies: ["XLARuntime", "StableHLO", "LazyTensor", "Magma"],
             path: "Tests/XLARuntimeTests"
         ),
 

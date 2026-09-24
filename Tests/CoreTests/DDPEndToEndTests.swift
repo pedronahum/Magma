@@ -9,9 +9,10 @@ import Testing
 @testable import LazyTensor
 @testable import XLARuntime
 
-@Suite("DDP End-to-End Tests", .serialized)
+@Suite("DDP End-to-End Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DDPEndToEndTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     private func handle(_ shape: [Int]) -> LazyTensorHandle {
         LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(),

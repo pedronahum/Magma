@@ -11,7 +11,7 @@ import Testing
 
 @Suite("Distributed Tensor Ops Tests", .serialized)
 struct DistributedTensorTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     @Test("a DDP step written in Tensor code syncs across replicas")
     func tensorLevelDDPStep() throws {

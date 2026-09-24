@@ -11,9 +11,10 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("GPU Client Guard Tests", .serialized)
+@Suite("GPU Client Guard Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct GPUClientGuardTests {
-    static let gpuAvailable: Bool = { (try? PJRTClient.create(backend: .gpu)) != nil }()
+    static var gpuAvailable: Bool { PluginAvailability.gpu }
 
     @Test("a second concurrent GPU client is refused")
     func secondConcurrentClientRefused() throws {

@@ -13,10 +13,11 @@ import Foundation
 import Testing
 @testable import XLARuntime
 
-@Suite("GPU Numerics Tests", .serialized)
+@Suite("GPU Numerics Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct GPUNumericsTests {
     /// One GPU client shared by every test in this suite. nil when no GPU plugin
-    /// is present, in which case each test skips via `#require`.
+    /// is present, in which case the whole suite is disabled by its trait.
     static let client: PJRTClient? = try? PJRTClient.create(backend: .gpu)
 
     // MARK: helpers

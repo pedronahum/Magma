@@ -11,9 +11,10 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Shardy GPU Tests", .serialized)
+@Suite("Shardy GPU Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct ShardyGPUTests {
-    static let gpuAvailable: Bool = { (try? PJRTClient.create(backend: .gpu)) != nil }()
+    static var gpuAvailable: Bool { PluginAvailability.gpu }
 
     @Test("CUDA plugin accepts use_shardy_partitioner and executes")
     func gpuAcceptsShardyFlag() throws {

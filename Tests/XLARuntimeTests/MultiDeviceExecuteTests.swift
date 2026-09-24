@@ -9,7 +9,7 @@ import Testing
 
 @Suite("Multi-Device Execute Tests", .serialized)
 struct MultiDeviceExecuteTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     private static let addModule = """
     module @m {

@@ -11,7 +11,7 @@ import Testing
 
 @Suite("SPMD Sugar Tests", .serialized)
 struct SPMDSugarTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     @Test("row-sharded matmul via Tensor.sharded sugar matches reference")
     func spmdViaSugar() throws {

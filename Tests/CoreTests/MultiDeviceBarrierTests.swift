@@ -9,7 +9,7 @@ import Testing
 
 @Suite("High-Level Multi-Device Barrier Tests", .serialized)
 struct MultiDeviceBarrierTests {
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     private func handle(_ shape: [Int]) -> LazyTensorHandle {
         LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(),

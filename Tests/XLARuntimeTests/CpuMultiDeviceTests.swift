@@ -7,10 +7,11 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("CPU Multi-Device Emulation Tests", .serialized)
+@Suite("CPU Multi-Device Emulation Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct CpuMultiDeviceTests {
     /// Whether the CPU plugin is present at all.
-    static let cpuAvailable: Bool = { (try? PJRTClient.create(backend: .cpu)) != nil }()
+    static var cpuAvailable: Bool { PluginAvailability.cpu }
 
     @Test("a CPU client can expose N virtual devices")
     func eightVirtualDevices() throws {

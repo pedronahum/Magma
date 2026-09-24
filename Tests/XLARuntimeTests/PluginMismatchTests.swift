@@ -10,9 +10,10 @@ import Testing
 import CXLARuntime
 @testable import XLARuntime
 
-@Suite("Plugin Mismatch Tests", .serialized)
+@Suite("Plugin Mismatch Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct PluginMismatchTests {
-    static let gpuAvailable: Bool = { (try? PJRTClient.create(backend: .gpu)) != nil }()
+    static var gpuAvailable: Bool { PluginAvailability.gpu }
 
     @Test("a different plugin path is rejected once one is loaded")
     func differentPathRejected() throws {

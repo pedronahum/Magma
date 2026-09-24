@@ -9,9 +9,10 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Output DType Tests", .serialized)
+@Suite("Output DType Tests", .serialized,
+       .enabled(if: PluginAvailability.gpu, "GPU PJRT plugin not available"))
 struct OutputDTypeTests {
-    static let gpuAvailable: Bool = { (try? PJRTClient.create(backend: .gpu)) != nil }()
+    static var gpuAvailable: Bool { PluginAvailability.gpu }
 
     @Test("int32 output reports .int32")
     func int32Output() throws {
