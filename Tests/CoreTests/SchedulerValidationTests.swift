@@ -11,20 +11,28 @@ import Testing
 @Suite("LR scheduler validation")
 struct SchedulerValidationTests {
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("StepLR with stepSize 0 traps at construction")
     func stepLRZeroStepSize() async {
         await #expect(processExitsWith: .failure) {
             _ = optim.StepLR(baseLR: 0.1, stepSize: 0)
         }
     }
+    #endif
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("CosineAnnealingLR with totalEpochs 0 traps at construction")
     func cosineZeroEpochs() async {
         await #expect(processExitsWith: .failure) {
             _ = optim.CosineAnnealingLR(baseLR: 0.1, totalEpochs: 0)
         }
     }
+    #endif
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("WarmupCosineScheduler needs totalSteps > warmupSteps")
     func warmupCosineDegenerate() async {
         await #expect(processExitsWith: .failure) {
@@ -34,6 +42,7 @@ struct SchedulerValidationTests {
             _ = optim.WarmupLR(baseLR: 0.1, warmupSteps: -1)
         }
     }
+    #endif
 
     @Test("Valid schedules produce finite learning rates through the end")
     func validSchedulesStayFinite() {

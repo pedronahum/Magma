@@ -59,6 +59,8 @@ struct LossValueTests {
         #expect(close(loss, (row0 + row1) / 2))
     }
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("crossEntropy rejects probability targets with the wrong class count")
     func crossEntropyClassMismatchTraps() async {
         await #expect(processExitsWith: .failure) {
@@ -66,6 +68,7 @@ struct LossValueTests {
             _ = nn.functional.crossEntropy(logits, Tensor<Float>.zeros([2, 4]))
         }
     }
+    #endif
 
     @Test("binaryCrossEntropyWithLogits matches the closed form")
     func bceWithLogitsValue() {
@@ -99,7 +102,10 @@ struct LossValueTests {
         let x = Tensor<Float>(xs, shape: [6])
         let y = Tensor<Float>(ys, shape: [6])
         let grad = gradient(at: x) { nn.functional.binaryCrossEntropyWithLogits($0, y) }
-        let expected = zip(xs, ys).map { xi, yi in (1 / (1 + Foundation.exp(-xi)) - yi) / 6 }
+        let expected: [Float] = zip(xs, ys).map { xi, yi in
+            let sigmoid: Float = 1 / (1 + Foundation.exp(-xi))
+            return (sigmoid - yi) / 6
+        }
         #expect(close(grad.scalars(), expected, tol: 1e-4))
     }
 
@@ -120,6 +126,8 @@ struct LossValueTests {
         #expect(close(loss.scalars()[0], expected))
     }
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("softmaxCrossEntropyWithLabels rejects out-of-range labels")
     func sparseLabelsOutOfRangeTraps() async {
         await #expect(processExitsWith: .failure) {
@@ -129,4 +137,5 @@ struct LossValueTests {
             _ = softmaxCrossEntropyWithLabels(logits: Tensor<Float>.zeros([2, 3]), labels: [0], numClasses: 3)
         }
     }
+    #endif
 }

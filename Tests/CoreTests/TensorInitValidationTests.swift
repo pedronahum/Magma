@@ -23,27 +23,38 @@ struct TensorInitValidationTests {
         #expect(empty.elementCount == 0)
     }
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("Too few values for the shape traps")
     func tooFewValuesTraps() async {
         await #expect(processExitsWith: .failure) {
             _ = Tensor<Float>([1, 2, 3], shape: [2, 2])
         }
     }
+    #endif
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("Too many values for the shape traps")
     func tooManyValuesTraps() async {
         await #expect(processExitsWith: .failure) {
             _ = Tensor<Float>([1, 2, 3, 4, 5], shape: [2, 2])
         }
     }
+    #endif
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("A scalar shape needs exactly one value")
     func scalarShapeNeedsOneValue() async {
         await #expect(processExitsWith: .failure) {
             _ = Tensor<Float>([], shape: [])
         }
     }
+    #endif
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("Negative dimensions trap in Tensor(_:shape:) and the factories")
     func negativeDimensionTraps() async {
         await #expect(processExitsWith: .failure) {
@@ -56,4 +67,5 @@ struct TensorInitValidationTests {
             _ = Tensor<Float>.randn([-4])
         }
     }
+    #endif
 }

@@ -633,6 +633,8 @@ struct ScatterTests {
         #expect(updatesGrad.scalars() == expectedUpdates)
     }
 
+    // Exit tests need Swift 6.2+; older toolchains skip these checks.
+    #if compiler(>=6.2)
     @Test("Differentiating scatter with multi-dimensional indices traps")
     func scatterGradientMultiDimTraps() async {
         await #expect(processExitsWith: .failure) {
@@ -644,6 +646,7 @@ struct ScatterTests {
             }
         }
     }
+    #endif
 }
 
 // MARK: - Expand Operation Tests

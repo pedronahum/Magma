@@ -45,7 +45,8 @@ struct MaterializationErrorTests {
     @Test("validation failure is thrown and recorded on the handle")
     func validationFailureIsThrown() {
         let bad = invalidReshape(of: Tensor<Float>([1, 2], shape: [2]))
-        let error = #expect(throws: MaterializationError.self) { try bad.fetchScalars() }
+        let error = materializationError { _ = try bad.fetchScalars() }
+        #expect(error != nil, "expected a MaterializationError")
         #expect(error?.stage == .validation)
         #expect(bad.handle.materializationError?.stage == .validation)
         #expect(!bad.handle.isMaterialized)
@@ -80,7 +81,8 @@ struct MaterializationErrorTests {
     func compilationFailureIsThrown() {
         let input = Tensor<Float>([1, 2], shape: [2]).materialize()
         let bad = outOfBoundsSlice(of: input)
-        let error = #expect(throws: MaterializationError.self) { try bad.fetchScalars() }
+        let error = materializationError { _ = try bad.fetchScalars() }
+        #expect(error != nil, "expected a MaterializationError")
         #expect(error?.stage == .compilation)
         #expect(error?.underlying != nil)
         #expect(error.map { "\($0)".contains("MAGMA_DEBUG") || $0.mlirDumpPath != nil } == true)
@@ -417,5 +419,18 @@ struct TraceCacheKeyTests {
         let negative = (x / Tensor<Float>([-0.0, -0.0, -0.0], shape: [3])).scalars()
         #expect(positive == [.infinity, .infinity, .infinity])
         #expect(negative == [-.infinity, -.infinity, -.infinity])
+    }
+}
+
+/// The `MaterializationError` thrown by `body`, or nil if it did not throw one.
+/// (`#expect(throws:)` only returns the error on Swift 6.1+ toolchains.)
+private func materializationError(_ body: () throws -> Void) -> MaterializationError? {
+    do {
+        try body()
+        return nil
+    } catch let error as MaterializationError {
+        return error
+    } catch {
+        return nil
     }
 }
