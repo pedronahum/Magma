@@ -129,6 +129,43 @@ struct DropoutModeTests {
         #expect(maxAbsDiff(rnn(x).0, rnnRef(x).0) < 1e-6)
     }
 
+    @Test("Assigning training = false matches eval() on layers with sub-modules")
+    func directTrainingAssignment() {
+        // Encoder: the flag must reach selfAttn, not only the layer's own dropout.
+        var enc = nn.TransformerEncoderLayer(dModel: 8, nHead: 2, dimFeedforward: 16, dropout: 0.5)
+        let encRef = nn.TransformerEncoderLayer(dModel: 8, nHead: 2, dimFeedforward: 16, dropout: 0)
+        copyWeights(from: enc, to: encRef)
+        let x = fill([2, 5, 8])
+        enc.training = false
+        #expect(!enc.selfAttn.training)
+        let a = enc(x), b = enc(x)
+        #expect(maxAbsDiff(a, b) == 0)
+        #expect(maxAbsDiff(a, encRef(x)) < 1e-5)
+        enc.training = true
+        #expect(enc.selfAttn.training)
+        #expect(maxAbsDiff(enc(x), encRef(x)) > 1e-3)
+
+        // Decoder: both attention sublayers follow the flag.
+        var dec = nn.TransformerDecoderLayer(dModel: 8, nHead: 2, dimFeedforward: 16, dropout: 0.5)
+        let decRef = nn.TransformerDecoderLayer(dModel: 8, nHead: 2, dimFeedforward: 16, dropout: 0)
+        copyWeights(from: dec, to: decRef)
+        let tgt = fill([2, 4, 8]), memory = fill([2, 6, 8], 0.05, -0.1)
+        dec.training = false
+        #expect(!dec.selfAttn.training && !dec.crossAttn.training)
+        #expect(maxAbsDiff(dec(tgt: tgt, memory: memory), decRef(tgt: tgt, memory: memory)) < 1e-5)
+
+        // RNN: the flag reaches the inter-layer dropout module.
+        var rnn = nn.RNN(inputSize: 3, hiddenSize: 5, numLayers: 2, dropout: 0.5)
+        let rnnRef = nn.RNN(inputSize: 3, hiddenSize: 5, numLayers: 2, dropout: 0)
+        copyWeights(from: rnn, to: rnnRef)
+        let s = fill([2, 4, 3])
+        rnn.training = false
+        #expect(rnn.dropoutLayer?.training == false)
+        #expect(maxAbsDiff(rnn(s).0, rnnRef(s).0) < 1e-6)
+        rnn.train()
+        #expect(rnn.training && rnn.dropoutLayer?.training == true)
+    }
+
     @Test("eval() on nn.Sequential reaches a nested transformer layer's dropout")
     func sequentialPropagation() {
         let layer = nn.TransformerEncoderLayer(dModel: 8, nHead: 2, dimFeedforward: 16, dropout: 0.5)

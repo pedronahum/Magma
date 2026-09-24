@@ -2835,7 +2835,12 @@ extension nn {
         public let dropout: Float
 
         /// Whether in training mode (enables dropout). Defaults to `true`.
-        public var training: Bool = true
+        ///
+        /// Assigning this propagates to `selfAttn`, exactly like
+        /// `setTraining(_:)` / `eval()` / `train()`.
+        public var training: Bool = true {
+            didSet { selfAttn.training = training }
+        }
 
         /// Whether to use Pre-LN (true) or Post-LN (false) architecture
         public let normFirst: Bool
@@ -3001,8 +3006,8 @@ extension nn {
         }
 
         public mutating func setTraining(_ training: Bool) {
+            // `training`'s didSet propagates to the attention sublayer.
             self.training = training
-            selfAttn.setTraining(training)
         }
 
         /// Dropout on a sublayer output / FFN activation (training mode only).
@@ -3051,7 +3056,15 @@ extension nn {
         public let dropout: Float
 
         /// Whether in training mode (enables dropout). Defaults to `true`.
-        public var training: Bool = true
+        ///
+        /// Assigning this propagates to `selfAttn` and `crossAttn`, exactly like
+        /// `setTraining(_:)` / `eval()` / `train()`.
+        public var training: Bool = true {
+            didSet {
+                selfAttn.training = training
+                crossAttn.training = training
+            }
+        }
 
         /// Whether to use Pre-LN (true) or Post-LN (false) architecture
         public let normFirst: Bool
@@ -3260,9 +3273,8 @@ extension nn {
         }
 
         public mutating func setTraining(_ training: Bool) {
+            // `training`'s didSet propagates to both attention sublayers.
             self.training = training
-            selfAttn.setTraining(training)
-            crossAttn.setTraining(training)
         }
 
         /// Dropout on a sublayer output / FFN activation (training mode only).
@@ -3925,6 +3937,14 @@ extension nn {
         /// Dropout layer (applied between RNN layers)
         public var dropoutLayer: Dropout?
 
+        /// Whether in training mode (enables inter-layer dropout). Defaults to `true`.
+        ///
+        /// Assigning this propagates to `dropoutLayer`, exactly like
+        /// `setTraining(_:)` / `eval()` / `train()`.
+        public var training: Bool = true {
+            didSet { dropoutLayer?.training = training }
+        }
+
         /// Number of directions (1 or 2)
         public var numDirections: Int { bidirectional ? 2 : 1 }
 
@@ -4106,7 +4126,8 @@ extension nn {
 
         /// Propagates train/eval mode to the inter-layer dropout.
         public mutating func setTraining(_ training: Bool) {
-            dropoutLayer?.setTraining(training)
+            // `training`'s didSet propagates to `dropoutLayer`.
+            self.training = training
         }
     }
 
