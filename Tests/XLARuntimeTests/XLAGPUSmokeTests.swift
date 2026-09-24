@@ -3,7 +3,7 @@
 // xla_cuda_plugin.so, symlinked as pjrt_c_api_gpu_plugin.so) loads,
 // compiles, and executes on the GPU.
 //
-// Gated on GPU availability so it is a no-op on machines without a GPU plugin.
+// Skipped unless MAGMA_TEST_BACKEND=gpu and a GPU plugin is available.
 
 import Testing
 @testable import XLARuntime

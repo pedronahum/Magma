@@ -25,7 +25,8 @@ import _Differentiation
 /// default device will fall back to the GPU. Used to *skip* (not fail) this suite
 /// in ordinary CPU runs — it only runs in a GPU-only process.
 private func isGPUOnlyMode() -> Bool {
-    !Backend.cpu.isAvailable && Backend.gpu.isAvailable
+    PluginAvailability.selectedBackend == "gpu"
+        && !Backend.cpu.isAvailable && Backend.gpu.isAvailable
 }
 
 @Suite("GPU Autodiff Tests", .serialized, .enabled(if: isGPUOnlyMode()))

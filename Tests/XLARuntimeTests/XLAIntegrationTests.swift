@@ -9,22 +9,14 @@ import Testing
 
 /// Integration tests for the XLA execution pipeline
 /// These tests require XLA PJRT plugin to be installed
-@Suite("XLA Integration Tests")
+@Suite("XLA Integration Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct XLAIntegrationTests {
 
     // MARK: - Setup
 
     /// Check if XLA is available for testing
-    static var xlaAvailable: Bool = {
-        // Try to create a client to see if XLA is available
-        do {
-            _ = try PJRTClient.create(backend: .cpu)
-            return true
-        } catch {
-            print("XLA not available: \(error)")
-            return false
-        }
-    }()
+    static var xlaAvailable: Bool { PluginAvailability.cpu }
 
     init() {
         // Reset tensor registry between tests
