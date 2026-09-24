@@ -34,6 +34,8 @@ if enableMetal {
     xlaRuntimeDependencies.append(
         .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS]))
     )
+    // The Metal bridge converts between StableHLO and MetalHLO element types.
+    xlaRuntimeDependencies.append("StableHLO")
 }
 
 let package = Package(

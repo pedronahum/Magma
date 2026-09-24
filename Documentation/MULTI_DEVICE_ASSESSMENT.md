@@ -14,7 +14,7 @@ multi-TPU, single-host and multi-host.
 All work below was developed and verified on **emulated multi-device CPU** (the
 XLA CPU plugin exposing N virtual devices — no GPU, no OOM), with every result
 checked against a **single-device reference** or known value. The full CPU suite
-is **814 tests**, green; the single-device path stayed byte-identical throughout.
+was green, and the single-device path stayed byte-identical throughout.
 
 | Phase | Delivered | Status |
 |-------|-----------|--------|
@@ -86,9 +86,10 @@ Three decisions frame the whole effort:
 ## 2. Starting state — where single-device *was* baked in
 
 *(The baseline this work started from; every row below has since been addressed —
-see §0. Kept as a map of what had to change.)*
+see §0. Kept as a map of what had to change. File/line anchors are **at time of
+assessment**; the code has moved since.)*
 
-| Layer | File | Single-device assumption |
+| Layer | File (at time of assessment) | Single-device assumption |
 |-------|------|--------------------------|
 | FFI execute | `Sources/CXLARuntime/PJRTSimpleWrapper.c:1071,1169` | `num_devices = 1` hardcoded in every execute path; one `argument_lists` / `output_lists`; global `g_output_lists_array` sized for one device |
 | FFI compile | `PJRTSimpleWrapper.c:945` | `PJRT_CreateCompileOptionsWithOptLevel(1, 1, …)` — one replica, one partition, no `device_assignment`, no `use_spmd_partitioning` |
@@ -402,7 +403,7 @@ no GPU and no OOM exposure — before any FFI execute rework.
 
 Verified against `pedronahum/SwiftIR` and Magma's `Sources/StableHLO/Builder/MLIRBuilder.swift`.
 Magma's `MLIRBuilder` is a text builder — it accumulates op strings in
-`operations: [String]` and `build(name:outputs:)` (MLIRBuilder.swift:1162) wraps
+`operations: [String]` and `build(name:outputs:)` (MLIRBuilder.swift:1162 at time of assessment) wraps
 them in `module @name { func.func @main(args) -> (types) { … } }`. That is
 structurally identical to SwiftIR's `ShardedModuleBuilder`, so the `sdy`
 vocabulary ports cleanly and the only new work is three small hooks.

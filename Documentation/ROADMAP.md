@@ -13,14 +13,36 @@ Phase 3: Training Infrastructure   [COMPLETE] ✅
     ↓
 Phase 4: Advanced Features         [COMPLETE] ✅
     ↓
-Phase 4.5: Distributed Training    [Next] ← Shardy/SPMD Integration
+Phase 4.5: Distributed Training    [SINGLE-HOST DONE] ✅ (DDP + Shardy/SPMD, emulated CPU devices)
     ↓
-Phase 5: Production Readiness      [IN PROGRESS] 🚧
+Phase 5: Production Readiness      [IN PROGRESS] 🚧 ← preparing 0.1.0-alpha.1
     ↓
 Phase 6: Ecosystem                 [Ongoing]
 ```
 
-**Current Status**: v0.1.0 Release Ready! 650+ tests passing, real MNIST data loader with autodiff training, full Transformer encoder/decoder, RNN/LSTM/GRU, advanced slicing, comparison ops, control flow, model checkpointing, PyTorch-compatible transforms, gradient checking utilities, numerical stability tests, XLA profiling/benchmarking utilities, mixed precision (bfloat16) support, comprehensive error handling, proper broadcasting, device transfer, one-hot encoding, and performance benchmarks example (peak ~71 GFLOPS on CPU)
+**Current Status**: preparing the first alpha release, **0.1.0-alpha.1**. The test
+suite has roughly 1000 tests. The suites that need a PJRT plugin run on the CPU
+plugin by default (`MAGMA_TEST_BACKEND` selects the backend) and are skipped when
+no plugin is installed.
+
+What works:
+- **Models**: real MNIST data loading with autodiff training, Transformer
+  encoder/decoder, RNN/LSTM/GRU.
+- **Tensor ops**: advanced slicing, comparison ops, loops (`scan`/`scanXLA`),
+  proper broadcasting, device transfer, one-hot encoding.
+- **Training and tooling**: model checkpointing, PyTorch-compatible transforms,
+  gradient checking, numerical stability tests, profiling and benchmarking
+  utilities, mixed precision (bfloat16), error handling.
+- **Two layer APIs**: value-semantic (`sequential`, `Linear`, `Adam`,
+  `modelGradient`) and reference-semantic (`nn.*`, `optim.*`,
+  `parameterGradients`).
+- **Multi-device**: DDP and Shardy/SPMD, tested on emulated CPU devices.
+
+Backends:
+- **CPU**: via the PJRT plugin.
+- **CUDA GPU**: single-device execution verified on an NVIDIA GB10.
+- **Metal**: opt-in via MetalHLO (`MAGMA_ENABLE_METAL=1`, macOS).
+- **Untested**: real multi-GPU and TPU.
 
 ---
 
@@ -38,8 +60,7 @@ Phase 6: Ecosystem                 [Ongoing]
   - [x] Add CONTRIBUTING.md
 
 - [x] **Legacy Integration**
-  - [x] Clone TaylorTorch into `Legacy/TaylorTorch/`
-  - [x] Clone SwiftIR into `Legacy/SwiftIR/`
+  - [ ] ~~Clone TaylorTorch / SwiftIR into `Legacy/`~~ (never vendored into this repository; see [LEGACY_MAPPING.md](LEGACY_MAPPING.md))
   - [x] Document what to reuse from each
   - [x] Create mapping: TaylorTorch API → new implementation
   - [x] Create mapping: SwiftIR internals → new layers
@@ -47,19 +68,19 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] **Package Structure**
   - [x] Create Package.swift with all targets
   - [x] Set up module structure (5 layers)
-  - [x] Configure build settings for XLA (conditional via MAGMA_ENABLE_XLA)
+  - [x] Load the PJRT plugin at runtime via `dlopen` (`MAGMA_XLA_PATH`), so no XLA libraries are needed at build time
   - [x] Add development container (devcontainer.json)
 
 - [x] **Documentation**
   - [x] ARCHITECTURE.md
   - [x] ROADMAP.md (this file)
   - [x] CONTRIBUTING.md
-  - [ ] API.md (stub)
+  - [x] API.md
 
 ### Exit Criteria
 - [x] `swift build` succeeds (stub modules)
 - [x] CI workflow configured (`.github/workflows/ci.yml`)
-- [x] 49 tests passing
+- [x] Initial tests passing
 - [x] MNISTExample runs (placeholder demonstrating target API)
 
 ---
@@ -86,7 +107,7 @@ Phase 6: Ecosystem                 [Ongoing]
 ### Week 2-3: Middle Layers (2-3)
 
 #### Layer 2: StableHLO
-- [x] `TensorType`, `DType`, `Shape` types
+- [x] `TensorType`, `DType` types
 - [x] `MLIRBuilder` - core builder class
 - [x] `Value` - SSA value reference
 - [x] Basic ops: `add`, `subtract`, `multiply`, `divide`
@@ -100,7 +121,7 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] `LazyTensorHandle` - graph node reference
 - [x] `IRNode` - operation representation
 - [x] `IRGraph` - full graph with topological sort
-- [x] `Device` - Swift device abstraction
+- [x] `Device` - Swift device abstraction (defined in XLARuntime)
 - [x] `LazyTensorBarrier()` - trigger compilation/execution
 - [x] `StableHLOEmitter` - IRGraph → MLIR
 - [x] `CompilationCache` - hash-based caching
@@ -109,7 +130,7 @@ Phase 6: Ecosystem                 [Ongoing]
 
 ### Week 3-4: User Layer (4) - Basics
 
-#### Layer 4: Torch (Tensor Only)
+#### Layer 4: Core, module `Magma` (Tensor Only)
 - [x] `Tensor<Scalar>` struct
 - [x] Creation: `init`, `zeros`, `ones`, `full`, `randn`
 - [x] Arithmetic: `+`, `-`, `*`, `/`
@@ -125,7 +146,7 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] Can execute: `let z = (x * y + z).sum(); print(z.item())`
 - [x] Compilation caching works (second run faster)
 - [x] Basic autodiff works: `gradient(at: x) { $0.sum() }`
-- [x] All layer tests pass (65+ tests)
+- [x] All layer tests pass
 - [x] Documentation updated
 
 ---
@@ -139,7 +160,7 @@ Phase 6: Ecosystem                 [Ongoing]
 #### nn.Module
 - [x] `Module` protocol definition
 - [x] `Parameter` wrapper type
-- [x] `@differentiable` requirements
+- [x] Autodiff via `parameterGradients(of:loss:)` (an `nn.Module` is not itself `Differentiable`; the value-semantic `Layer` protocol is)
 - [x] `parameters()` - collect all parameters
 - [x] `to(device:)` - move model to device
 
@@ -189,7 +210,6 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] MLP model compiles and runs
 - [x] Forward + backward with autodiff works
 - [x] `model.parameters()` returns all weights
-- [x] 145+ tests passing
 
 ---
 
@@ -201,8 +221,8 @@ Phase 6: Ecosystem                 [Ongoing]
 
 #### Optimizer Protocol
 - [x] `Optimizer` protocol definition
-- [x] `step(gradients:)` method
-- [x] `zeroGrad()` method
+- [x] `step(_:)` method (array form, and `[Parameter: Tensor]` matched by identity)
+- [x] `resetState()` method (`zeroGrad()` is a deprecated alias)
 - [x] `learningRate` property (get/set)
 
 #### Implementations
@@ -242,7 +262,6 @@ Phase 6: Ecosystem                 [Ongoing]
 - [x] Optimizer updates parameters correctly
 - [x] LR schedulers work as expected
 - [x] Data loading with batching works
-- [x] 178+ tests passing
 - [x] MNIST MLP training with real data (downloads from Google Storage, parses IDX format)
 - [x] Checkpointing works (save/load model) - JSON and binary formats implemented
 
@@ -312,24 +331,24 @@ Phase 6: Ecosystem                 [Ongoing]
 
 #### Control Flow ✅
 - [x] `select` (conditional select / where)
-- [x] `while_loop` for dynamic iteration
-- [x] `cond` for branching
+- [x] `stablehlo.while` loops, traced via `scanXLA` / `scanXLATensor`
+- [ ] `cond` for branching: available in `MLIRBuilder` (`stablehlo.if`), but there is no Tensor-level API yet
 - [x] `scan` for fixed-iteration loops with autodiff support
 
 ### Week 14-15: Multi-Device
 
-#### TPU Support ✅
+#### TPU Support ✅ (untested on real TPU hardware)
 - [x] `Backend.tpu` with automatic plugin detection
 - [x] `Backend.isAvailable` - check if backend plugin exists
-- [x] `Backend.bestAvailable` - auto-select best backend (TPU > GPU > CPU)
+- [x] `Backend.bestAvailable` - auto-select best backend (TPU > Metal > GPU > CPU)
 - [x] `TPUEnvironment` - detect TPU VM, topology, chip count
 - [x] Cloud TPU VM deployment documentation
 
-#### Device Management (Partially Done)
-- [x] TPU support (via libtpu.so on Cloud TPU VMs)
+#### Device Management
+- [x] TPU support (via libtpu.so on Cloud TPU VMs); untested on real TPU hardware
 - [x] GPU support (CUDA plugin) — single-device execution verified (NVIDIA GB10)
-- [ ] Multi-GPU data parallel
-- [ ] `DistributedDataParallel` (basic)
+- [x] Multi-device data parallel (DDP), tested on emulated CPU devices; real multi-GPU untested (see [Phase 4.5](#phase-45-distributed-training-shardyspmd-integration--single-host-implemented))
+- [ ] `DistributedDataParallel` wrapper type (DDP is provided by `executeGraphReplicated` / `dataParallelSGDStep`)
 
 #### Mixed Precision ✅
 - [x] `toReducedPrecision` (bfloat16)
@@ -348,9 +367,24 @@ Phase 6: Ecosystem                 [Ongoing]
 
 ---
 
-## Phase 4.5: Distributed Training (Shardy/SPMD Integration)
+## Phase 4.5: Distributed Training (Shardy/SPMD Integration) ✅ [single-host implemented]
 
-**Goal**: Enable distributed training across multiple devices (TPUs/GPUs) using Google's Shardy tensor partitioning system
+**Goal**: Enable distributed training across multiple devices (TPUs/GPUs) using OpenXLA's Shardy tensor partitioning system
+
+**Status**: single-host multi-device training is implemented. This covers
+data-parallel (DDP) training, Shardy/SPMD sharding and tensor parallelism through
+the Shardy partitioner. All of it is tested on **emulated CPU devices** (the XLA
+CPU plugin exposing N virtual devices), and each result is checked against a
+single-device reference. On CUDA, only single-GPU Shardy compile and execute is
+verified. **Real multi-GPU and TPU runs are untested.** Multi-host support is
+configuration only (topology and data sharding); the PJRT coordination service is
+not implemented. Full design and status:
+[MULTI_DEVICE_ASSESSMENT.md](MULTI_DEVICE_ASSESSMENT.md).
+
+The integration differs from the original plan below in two main ways. Shardy
+runs **inside XLA**, enabled by the `use_shardy_partitioner` compile option, so no
+`sdy_opt` or `libsdy_capi` is needed. DDP is a pair of runners and helpers rather
+than a `DistributedDataParallel` wrapper type.
 
 ### Background & Motivation
 
@@ -370,7 +404,7 @@ Phase 6: Ecosystem                 [Ongoing]
 | PyTorch | Manual DDP/FSDP, increasingly SPMD via TorchTPU |
 | JAX | GSPMD/Shardy native |
 | TensorFlow | GSPMD via DTensor |
-| **Magma** | Shardy-based SPMD (first Swift framework with this capability) |
+| **Magma** | Shardy-based SPMD |
 
 Swift's compile-time type safety + Shardy's automatic sharding = safer distributed training than Python alternatives.
 
@@ -386,490 +420,207 @@ Magma can leverage the same Shardy infrastructure that powers TorchTPU's SPMD ca
 
 #### Legacy Foundation
 
-The `Legacy/SwiftIR/` codebase already contains substantial Shardy infrastructure:
-
-| File | Description |
-|------|-------------|
-| `Sources/SwiftIRSharding/DeviceMesh.swift` | Device mesh topology types |
-| `Sources/SwiftIRSharding/TensorSharding.swift` | Sharding specification types |
-| `Sources/SwiftIRSharding/ShardingPipeline.swift` | Integration with sdy_opt |
-| `Sources/SwiftIRSharding/SdyDialect.swift` | Shardy dialect bindings |
-| `scripts/install-swiftir-ubuntu.sh` | Builds libsdy_capi.so, sdy_opt |
+The sharding types were adapted from `SwiftIRShardingLite` in
+[pedronahum/SwiftIR](https://github.com/pedronahum/SwiftIR). That code is not
+vendored in this repository. SwiftIR emitted and propagated `sdy` annotations but
+never partitioned or executed them. Partitioning, collectives, multi-device
+execution and gradient sync were new work in Magma (see
+[MULTI_DEVICE_ASSESSMENT.md §9](MULTI_DEVICE_ASSESSMENT.md)).
 
 ---
 
-### Week 15-16: Sharding Foundation
+### Sharding Foundation ✅
 
-#### Device Mesh Types
+#### Device Mesh Types (`Sources/StableHLO/Sharding/DeviceMesh.swift`)
 
-Port and adapt mesh types from SwiftIRSharding:
-
-- [ ] `MeshAxis` - Named axis with size (e.g., `MeshAxis(name: "x", size: 4)`)
-- [ ] `DeviceMesh` - Multi-dimensional device topology
-  - [ ] `DeviceMesh.linear(name:axisName:size:)` - 1D mesh
-  - [ ] `DeviceMesh.grid(name:rows:cols:)` - 2D mesh
-  - [ ] `DeviceMesh.grid(name:rows:cols:rowAxis:colAxis:)` - 2D with custom axis names
-  - [ ] `deviceCount` - Total devices in mesh
-  - [ ] `axis(named:)` - Get axis by name
-  - [ ] `toAttribute(context:)` - Convert to MLIR attribute
-  - [ ] `mlirText` - Generate MLIR textual representation
+- [x] `MeshAxis` - Named axis with size (e.g., `MeshAxis(name: "x", size: 4)`)
+- [x] `DeviceMesh` - Multi-dimensional device topology
+  - [x] `DeviceMesh.linear(name:axisName:size:)` - 1D mesh
+  - [x] `DeviceMesh.grid(name:rows:cols:rowAxis:colAxis:)` - 2D mesh (axis names default to `x`/`y`)
+  - [x] `DeviceMesh.cube(name:x:y:z:...)` - 3D mesh
+  - [x] `deviceCount` - Total devices in mesh
+  - [x] `axis(named:)` - Get axis by name
+  - [x] `mlirText` - Generate the `sdy.mesh` text
+  - [ ] ~~`toAttribute(context:)`~~ - not needed (text-based builder)
 
 ```swift
-// Target API
-let mesh = DeviceMesh.grid(name: "tpu_mesh", rows: 2, cols: 4)  // 8 TPUs
+let mesh = DeviceMesh.grid(name: "tpu_mesh", rows: 2, cols: 4)  // 8 devices
 print(mesh.deviceCount)  // 8
 
-// Or with semantic names for different parallelism strategies
 let mesh = DeviceMesh(name: "training_mesh", axes: [
     MeshAxis(name: "data", size: 4),   // Data parallelism
     MeshAxis(name: "model", size: 2)   // Tensor parallelism
 ])
 ```
 
-#### Tensor Sharding Specification Types
+#### Tensor Sharding Specification Types (`Sources/StableHLO/Sharding/TensorSharding.swift`)
 
-- [ ] `AxisRef` - Reference to a mesh axis
-  - [ ] Simple axis reference: `AxisRef("x")`
-  - [ ] Sub-axis support for hierarchical partitioning: `AxisRef(name: "x", subAxisInfo: SubAxisInfo(preSize: 1, size: 2))`
-- [ ] `SubAxisInfo` - Hierarchical axis splitting
-- [ ] `DimensionSharding` - Per-dimension sharding specification
-  - [ ] `DimensionSharding("x")` - Shard along axis "x"
-  - [ ] `DimensionSharding.replicated` - Fully replicated (closed)
-  - [ ] `DimensionSharding.open` - Allow propagation to determine
-  - [ ] Priority support for propagation ordering
-- [ ] `TensorSharding` - Complete tensor sharding specification
-  - [ ] `TensorSharding(meshName:dimShardings:)` - Full specification
-  - [ ] `TensorSharding(meshName:axisNames:)` - Convenience with axis names
-  - [ ] `TensorSharding.replicated(meshName:rank:)` - Fully replicated
-  - [ ] `TensorSharding.open(meshName:rank:)` - Open for propagation
-  - [ ] `replicatedAxes` - Axes along which tensor is replicated
-  - [ ] `unreducedAxes` - Axes not yet reduced (for reduce ops)
+- [ ] `AxisRef` / `SubAxisInfo` - sub-axis (hierarchical) sharding: not ported
+- [x] `DimensionSharding` - Per-dimension sharding specification
+  - [x] `DimensionSharding.sharded(on: "x")` - Shard along axis "x"
+  - [x] `DimensionSharding.replicated` - Fully replicated (closed)
+  - [x] `DimensionSharding.open(on:)` - Allow propagation to determine
+  - [x] Priority support for propagation ordering
+- [x] `TensorSharding` - Complete tensor sharding specification
+  - [x] `TensorSharding(meshName:dimShardings:replicatedAxes:)` - Full specification
+  - [x] `TensorSharding(meshName:axisNames:)` - Convenience with axis names
+  - [x] `TensorSharding.replicated(meshName:rank:)` - Fully replicated
+  - [x] `replicatedAxes`
+  - [x] `validate(against:rank:)` - mesh/rank/axis validation
+  - [ ] `unreducedAxes`
 
 ```swift
-// Target API - Shard a 2D tensor: batch on "data", features replicated
+// Shard a 2D tensor: batch on "data", features replicated
 let sharding = TensorSharding(
     meshName: "training_mesh",
-    dimShardings: [
-        DimensionSharding("data"),      // Batch dimension sharded
-        .replicated                      // Feature dimension replicated
-    ]
+    dimShardings: [.sharded(on: "data"), .replicated]
 )
 
-// Or using convenience initializer
+// Or using the convenience initializer
 let sharding = TensorSharding(meshName: "training_mesh", axisNames: ["data", nil])
 ```
 
-#### StableHLO Sharding Support
+#### StableHLO Sharding Support (`MLIRBuilder`)
 
-Extend `Sources/StableHLO/` to emit sharding operations:
-
-- [ ] `sdy.mesh` operation generation
-- [ ] `sdy.sharding` attribute attachment
-- [ ] `sdy.sharding_constraint` for intermediate tensors
+- [x] `sdy.mesh` generation - `declareMesh(_:)`
+- [x] `sdy.sharding` attribute on arguments - `argument(_:sharding:)`
+- [x] `sdy.sharding_constraint` for intermediate tensors - `shardingConstraint(_:_:)`
 - [ ] `sdy.manual_computation` for user-defined partitioned regions
-
-```swift
-// MLIRBuilder extensions
-extension MLIRBuilder {
-    func emitMesh(_ mesh: DeviceMesh)
-    func addShardingConstraint(_ value: Value, sharding: TensorSharding)
-    func emitShardingAttribute(_ sharding: TensorSharding) -> String
-}
-```
 
 #### LazyTensor Sharding Integration
 
-Extend IR graph to track sharding:
-
-- [ ] Add `sharding: TensorSharding?` to `IRNode`
-- [ ] Sharding propagation through graph operations
-- [ ] Sharding validation (mesh compatibility, dimension matching)
-- [ ] `StableHLOEmitter` updates for sharding emission
+- [x] Sharding on graph nodes - `LazyTensorHandle.sharding` + `IRGraph.mesh`
+- [x] Sharding validation - `IRGraph.validateShardings()`
+- [x] `StableHLOEmitter` emits `sdy.mesh`, argument shardings and constraints
+- [x] Propagation is left to Shardy inside XLA (no Swift-side propagation)
 
 ---
 
-### Week 17-18: SPMD User API
+### SPMD User API
 
 #### Core Sharding API
 
-PyTorch/XLA-inspired API for tensor sharding:
+The original plan called for a PyTorch/XLA-style `markSharding` / `PartitionSpec`
+API. The implemented equivalent is simpler:
 
-- [ ] `Tensor.markSharding(mesh:partitionSpec:)` - Annotate tensor with sharding
-- [ ] `XLAShardedTensor` wrapper type (optional, for explicit tracking)
-- [ ] `PartitionSpec` type for dimension-to-axis mapping
-- [ ] Sharding validation and error messages
-
-```swift
-// Target API - inspired by PyTorch/XLA
-let mesh = Mesh(shape: (2, 4), axisNames: ("data", "model"))
-
-// Mark input sharding - batch dimension across 'data' axis
-var inputs = inputs.markSharding(mesh: mesh, partitionSpec: ("data", nil))
-
-// Mark weight sharding for tensor parallelism
-var weights = model.linear.weight.markSharding(
-    mesh: mesh,
-    partitionSpec: (nil, "model")  // Shard output features across 'model' axis
-)
-```
-
-#### Partition Spec
-
-- [ ] `PartitionSpec` - Maps tensor dimensions to mesh axes
-  - [ ] Tuple-based initialization: `("data", nil, "model")`
-  - [ ] Named dimension support
-  - [ ] Validation against mesh and tensor rank
-- [ ] `nil` means replicated along that dimension
-- [ ] String axis name means sharded along that axis
+- [x] `Tensor.sharded(on:_:)` / `Tensor.sharded(_:)` - annotate a tensor with a sharding
+- [x] `Tensor.input(from:)` - a distributable `.data`-backed input
+- [x] `Tensor.makeGraph(mesh:)` - extract the traced `IRGraph` carrying the mesh
+- [x] `executeGraphSharded(_:numDevices:client:)` - compile with the Shardy partitioner and run across N devices
+- [x] Sharding validation and error messages (`ShardingError`)
+- [ ] `markSharding(mesh:partitionSpec:)`, `PartitionSpec`, `XLAShardedTensor`
+- [ ] `Mesh.with(_:body:)` scoped mesh context
 
 ```swift
-// PartitionSpec examples
-let spec1 = PartitionSpec("data", nil)        // [sharded, replicated]
-let spec2 = PartitionSpec("data", "model")    // [sharded, sharded]
-let spec3 = PartitionSpec(nil, nil, nil)      // Fully replicated 3D tensor
-```
-
-#### Mesh Context Manager
-
-- [ ] `Mesh.with(_:body:)` - Scoped mesh context
-- [ ] Default mesh resolution
-- [ ] Nested mesh support for complex topologies
-
-```swift
-// Target API
-Mesh.with(mesh) {
-    // All sharding operations in this scope use 'mesh'
-    let shardedInputs = inputs.shard(along: 0, axis: "data")
-    let output = model(shardedInputs)
-}
+let x = Tensor<Float>.input(from: xBuf).sharded(on: "mesh", ["x", nil])  // row-shard
+let y = x.matmul(w).sharded(on: "mesh", ["x", nil])
+let outs = try executeGraphSharded(y.makeGraph(mesh: mesh), numDevices: 2, client: client)
 ```
 
 #### Collective Operations
 
-Automatic insertion of collective operations:
-
-- [ ] `allReduce` - Sum/mean gradients across devices
-- [ ] `allGather` - Gather sharded tensor to all devices
-- [ ] `reduceScatter` - Reduce and scatter result
-- [ ] `allToAll` - Redistribute tensor sharding
-- [ ] Collective operation fusion for efficiency
+- [x] `allReduce` / `allReduceMean` - in-graph `stablehlo.all_reduce` (`Tensor.crossReplicaSum/Mean(groups:)`)
+- [x] Partitioner-inserted collectives - Shardy inserts the collectives an SPMD program needs (e.g. an all-reduce for a contracting-dim-sharded matmul)
+- [ ] Hand-written `allGather`, `reduceScatter`, `allToAll` ops
+- [ ] Collective operation fusion
 
 ---
 
-### Week 19-20: Automatic Sharding Propagation
+### Automatic Sharding Propagation
 
-#### Shardy Integration
-
-- [ ] `sdy_opt` binary integration via `SdyOptRunner`
-- [ ] MLIR module preprocessing for Shardy
-- [ ] Sharding propagation pass execution
-- [ ] Post-propagation MLIR parsing
-
-```swift
-// SdyOptRunner - execute Shardy propagation
-struct SdyOptRunner {
-    static func propagate(mlir: String, passes: [String]) throws -> String
-    static func runPipeline(_ pipeline: ShardingPipeline, on mlir: String) throws -> String
-}
-```
-
-#### Propagation Configuration
-
-- [ ] `ShardingPropagationConfig` - Control propagation behavior
-  - [ ] User priorities (e.g., "do batch parallelism first, then ZeRO")
-  - [ ] Op-based priorities (e.g., "element-wise ops first, then matmuls")
-  - [ ] Cost model selection
-  - [ ] Aggressive vs conservative propagation modes
-
-```swift
-// Target API
-let config = ShardingPropagationConfig()
-    .priority(.batchParallelism, then: .tensorParallelism)
-    .costModel(.memory)  // Optimize for memory over compute
-    .propagationMode(.aggressive)
-```
-
-#### Auto-Sharding API
-
-High-level API for automatic model sharding:
-
-- [ ] `model.autoShard(mesh:strategy:)` - Automatically shard entire model
-- [ ] Predefined strategies: `.dataParallel`, `.tensorParallel`, `.fsdp`, `.hybrid`
-- [ ] Custom strategy support via `ShardingStrategy` protocol
-
-```swift
-// Target API - simple data parallelism
-let mesh = DeviceMesh.linear(name: "devices", size: 8)
-let shardedModel = model.autoShard(mesh: mesh, strategy: .dataParallel)
-
-// Hybrid parallelism for large models
-let mesh = DeviceMesh.grid(name: "mesh", rows: 4, cols: 2)
-let shardedModel = model.autoShard(mesh: mesh, strategy: .hybrid(
-    dataAxis: "x",      // 4-way data parallel
-    modelAxis: "y"      // 2-way tensor parallel
-))
-```
-
-#### Module Sharding Annotations
-
-- [ ] `@Sharded` property wrapper for Module parameters
-- [ ] `Module.shardingSpec` - Declare per-parameter sharding
-- [ ] Automatic gradient aggregation setup
-
-```swift
-// Target API
-struct LargeTransformer: Module {
-    // Shard embedding table across model axis
-    @Sharded(axis: "model", dim: 0)
-    var embedding: nn.Embedding
-
-    // Shard attention weights
-    @Sharded(axis: "model", dim: 1)
-    var attention: nn.MultiheadAttention
-
-    // Replicated small layers
-    var layerNorm: nn.LayerNorm  // Automatically replicated
-}
-```
+- [x] Shardy propagation and partitioning inside XLA (`PJRTClient.compile(_:numPartitions:useSPMDPartitioning:useShardyPartitioner:)`); CPU plugin and single-GPU CUDA plugin verified
+- [ ] ~~`sdy_opt` integration via `SdyOptRunner`~~ - not needed; offline inspection only
+- [ ] `ShardingPropagationConfig` (priorities, cost model, propagation modes)
+- [ ] `model.autoShard(mesh:strategy:)` and predefined strategies
+- [ ] `@Sharded` property wrapper / `Module.shardingSpec`
 
 ---
 
-### Week 21-22: Distributed Training Wrappers
+### Distributed Training Wrappers
 
-#### DistributedDataParallel (DDP)
+#### Data Parallel (DDP)
 
-Simple data parallelism wrapper:
-
-- [ ] `DistributedDataParallel` wrapper struct
-- [ ] Automatic input sharding across batch dimension
-- [ ] Gradient all-reduce after backward pass
-- [ ] Bucket gradient all-reduce for efficiency
-- [ ] Gradient compression options (optional)
+- [x] Replicated execution - `executeGraphReplicated(_:numReplicas:distribution:client:)` with `.replicated` / `.perReplica` inputs
+- [x] Gradient all-reduce - `grad.crossReplicaMean(groups:)`, `Optimizer.step(syncing:groups:)`
+- [x] End-to-end step from a differentiable loss - `dataParallelSGDStep(...)`
+- [x] DDP result == single-device reference (emulated CPU)
+- [ ] `DistributedDataParallel` wrapper type
+- [ ] Bucketed all-reduce, gradient compression
 
 ```swift
-// Target API
-let mesh = DeviceMesh.linear(name: "workers", size: 8)
-let ddpModel = DistributedDataParallel(model, mesh: mesh)
+let synced = grad.crossReplicaMean(groups: [[0, 1]])   // average grads across replicas
+let wNew   = w - synced * lr                           // identical update on every replica
 
-for batch in dataLoader {
-    let (loss, grads) = valueWithGradient(at: ddpModel.module) { m in
-        let output = m(batch.inputs)
-        return crossEntropy(output, batch.labels)
-    }
-    // Gradients automatically all-reduced across devices
-    optimizer.step(grads)
-}
+let updated = try dataParallelSGDStep(
+    w: w, lr: 0.1, numReplicas: 2, client: client,
+    dataDistribution: [ObjectIdentifier(dataBuf): .perReplica(shards)]
+) { w in loss(w) }
 ```
 
 #### FullyShardedDataParallel (FSDP)
 
-Memory-efficient distributed training:
+- [ ] `FullyShardedDataParallel` wrapper and sharding strategies (the Shardy collective-insertion mechanism it would build on is proven)
 
-- [ ] `FullyShardedDataParallel` wrapper (inspired by PyTorch FSDP)
-- [ ] Parameter sharding across devices
-- [ ] All-gather parameters before forward
-- [ ] Reduce-scatter gradients after backward
-- [ ] Configurable sharding strategies:
-  - [ ] `ShardingStrategy.fullShard` - Shard params, grads, and optimizer states
-  - [ ] `ShardingStrategy.shardGradOp` - Shard grads and optimizer states only
-  - [ ] `ShardingStrategy.noShard` - DDP-style, no parameter sharding
-- [ ] Mixed precision integration
-- [ ] Activation checkpointing integration
+#### Tensor Parallelism
 
-```swift
-// Target API
-let mesh = DeviceMesh.linear(name: "workers", size: 8)
-let fsdpModel = FullyShardedDataParallel(
-    model,
-    mesh: mesh,
-    shardingStrategy: .fullShard,
-    mixedPrecision: .bfloat16
-)
-
-// Training loop - parameters automatically gathered/scattered
-for batch in dataLoader {
-    let (loss, grads) = valueWithGradient(at: fsdpModel) { m in
-        m(batch.inputs).loss(batch.labels)
-    }
-    optimizer.step(grads)
-}
-```
-
-#### Tensor Parallelism Utilities
-
-For large model layers:
-
-- [ ] `nn.ColumnParallelLinear` - Shard output features
-- [ ] `nn.RowParallelLinear` - Shard input features
-- [ ] `nn.ParallelEmbedding` - Shard embedding table
-- [ ] `nn.ParallelMultiheadAttention` - Distributed attention
-- [ ] Automatic all-reduce/all-gather insertion
-
-```swift
-// Target API for tensor-parallel layers
-let mesh = DeviceMesh.linear(name: "model", size: 4)
-
-// Column parallel: output features sharded across 4 devices
-let columnLinear = nn.ColumnParallelLinear(
-    inFeatures: 1024,
-    outFeatures: 4096,
-    mesh: mesh,
-    axis: "model"
-)
-
-// Row parallel: input features sharded, output all-reduced
-let rowLinear = nn.RowParallelLinear(
-    inFeatures: 4096,
-    outFeatures: 1024,
-    mesh: mesh,
-    axis: "model"
-)
-```
+- [x] Tensor parallelism via Shardy - a contracting-dim-sharded matmul partitions correctly and matches the reference (`TensorParallelTests`)
+- [ ] `nn.ColumnParallelLinear`, `nn.RowParallelLinear`, `nn.ParallelEmbedding`, `nn.ParallelMultiheadAttention`
 
 ---
 
-### Week 23-24: Multi-Host & Advanced Features
+### Multi-Host & Advanced Features
 
-#### Multi-Host Training
-
-Support for training across multiple machines:
-
-- [ ] Multi-host mesh initialization
-- [ ] Cross-host collective operations via PJRT
-- [ ] Host-to-host communication setup
-- [ ] Process group management
-- [ ] Fault tolerance basics (checkpoint on failure)
-
-```swift
-// Target API
-let topology = DistributedTopology.detect()  // Auto-detect hosts and devices
-print("Hosts: \(topology.hostCount), Devices per host: \(topology.devicesPerHost)")
-
-let mesh = DeviceMesh.fromTopology(
-    topology,
-    name: "global_mesh",
-    hostAxis: "host",
-    deviceAxis: "device"
-)
-```
-
-#### Pipeline Parallelism (Basic)
-
-For very deep models:
-
-- [ ] `nn.PipelineStage` - Mark model stage boundaries
-- [ ] `PipelineParallel` wrapper
-- [ ] Micro-batch scheduling (GPipe-style)
-- [ ] Inter-stage communication
-
-```swift
-// Target API - basic pipeline parallelism
-let stages = [
-    PipelineStage(model.embedding, device: 0),
-    PipelineStage(model.encoderLayers[0..<6], device: 1),
-    PipelineStage(model.encoderLayers[6..<12], device: 2),
-    PipelineStage(model.outputHead, device: 3)
-]
-
-let pipelineModel = PipelineParallel(stages: stages, microBatches: 4)
-```
-
-#### Distributed Checkpointing
-
-- [ ] Sharded checkpoint save/load
-- [ ] Efficient parallel I/O
-- [ ] Checkpoint format compatible with resharding
-- [ ] Async checkpointing (non-blocking)
-
-```swift
-// Target API
-// Save sharded checkpoint - each device saves its shard
-try fsdpModel.saveShardedCheckpoint(to: "checkpoint/step_1000/")
-
-// Load with potentially different sharding
-let newMesh = DeviceMesh.linear(name: "new", size: 16)  // Different device count
-let restored = try FullyShardedDataParallel.loadShardedCheckpoint(
-    from: "checkpoint/step_1000/",
-    mesh: newMesh
-)
-```
-
-#### Distributed Data Loading
-
-- [ ] `DistributedSampler` - Partition dataset across devices
-- [ ] Automatic shard-aware batching
-- [ ] Prefetching across shards
-
-```swift
-// Target API
-let sampler = DistributedSampler(
-    dataset: trainDataset,
-    mesh: mesh,
-    shuffle: true,
-    seed: 42
-)
-
-let dataLoader = DataLoader(
-    dataset: trainDataset,
-    sampler: sampler,
-    batchSize: 32  // Per-device batch size
-)
-```
+- [x] `MultiHostConfig` - process/device topology, global device indices
+- [x] `DistributedSampler` - partition a dataset across replicas; `DistributedSampler.multiHost` for global sharding across processes
+- [ ] PJRT coordination service (gRPC coordinator, KV rendezvous, NCCL id exchange) - needs a real cluster
+- [ ] Pipeline parallelism
+- [ ] Distributed (sharded) checkpointing
 
 ---
 
 ### Supported Parallelism Strategies Summary
 
-| Strategy | Description | Shardy Implementation |
-|----------|-------------|----------------------|
-| **Data Parallel** | Replicate model, shard data batches | Shard batch dimension across mesh axis |
-| **Tensor Parallel** | Shard large weight matrices across devices | Shard weight dimensions, auto all-reduce |
-| **FSDP** | Shard parameters, gradients, and optimizer states | Combined sharding with all-gather/reduce-scatter |
-| **Pipeline Parallel** | Shard model layers across devices | `sdy.manual_computation` regions |
-| **ZeRO Stage 1** | Shard optimizer states only | Optimizer state sharding |
-| **ZeRO Stage 2** | Shard optimizer states + gradients | Gradient reduce-scatter |
-| **ZeRO Stage 3** | Full parameter sharding (= FSDP) | Full sharding with all-gather |
-| **Hybrid** | Combine data + tensor parallelism | Multi-axis mesh with combined specs |
+| Strategy | Description | Status |
+|----------|-------------|--------|
+| **Data Parallel** | Replicate model, shard data batches | ✅ `executeGraphReplicated` + `crossReplicaMean` (emulated CPU) |
+| **SPMD sharding** | Annotate shardings, Shardy partitions | ✅ `executeGraphSharded` (emulated CPU) |
+| **Tensor Parallel** | Shard large weight matrices across devices | ✅ via Shardy (emulated CPU); no parallel-layer types |
+| **FSDP / ZeRO** | Shard parameters, gradients, optimizer states | ⬜ Not implemented |
+| **Pipeline Parallel** | Shard model layers across devices | ⬜ Not implemented |
+| **Hybrid** | Combine data + tensor parallelism | ⬜ Not packaged (multi-axis meshes are supported by the types) |
 
 ---
 
 ### Exit Criteria
 
-- [ ] `DeviceMesh` and `TensorSharding` types working
-- [ ] `Tensor.markSharding()` API functional
-- [ ] Basic data parallelism example running on multi-device
-- [ ] `DistributedDataParallel` wrapper working
+- [x] `DeviceMesh` and `TensorSharding` types working
+- [x] Tensor sharding API functional (`Tensor.sharded(on:_:)`, not `markSharding()`)
+- [x] Basic data parallelism running on multiple (emulated CPU) devices
+- [x] DDP working (`executeGraphReplicated`, `dataParallelSGDStep`; no wrapper type)
 - [ ] `FullyShardedDataParallel` wrapper working
-- [ ] Shardy propagation integrated via `sdy_opt`
+- [x] Shardy propagation + partitioning integrated (inside XLA, not via `sdy_opt`)
 - [ ] Multi-host training example (2+ hosts)
 - [ ] Distributed checkpointing working
-- [ ] Documentation: Tutorial on distributed training
-- [ ] Tests: 50+ distributed training tests
+- [ ] Documentation: Tutorial on distributed training (design/status doc: [MULTI_DEVICE_ASSESSMENT.md](MULTI_DEVICE_ASSESSMENT.md))
+- [x] Tests: distributed suites (DDP, SPMD, tensor parallel, collectives, sampler, multi-host config)
+- [ ] Validation on real multi-GPU and TPU hardware
 
 ---
 
-### Key Files to Create
+### Key Files
 
 | File | Purpose |
 |------|---------|
-| `Sources/Torch/Distributed/DeviceMesh.swift` | Device mesh topology types |
-| `Sources/Torch/Distributed/TensorSharding.swift` | Sharding specification types |
-| `Sources/Torch/Distributed/PartitionSpec.swift` | Dimension-to-axis mapping |
-| `Sources/Torch/Distributed/ShardingAPI.swift` | `markSharding`, `autoShard` APIs |
-| `Sources/Torch/Distributed/Collectives.swift` | All-reduce, all-gather, etc. |
-| `Sources/Torch/Distributed/DDP.swift` | DistributedDataParallel wrapper |
-| `Sources/Torch/Distributed/FSDP.swift` | FullyShardedDataParallel wrapper |
-| `Sources/Torch/Distributed/TensorParallel.swift` | Column/Row parallel layers |
-| `Sources/Torch/Distributed/Pipeline.swift` | Pipeline parallelism |
-| `Sources/Torch/Distributed/Checkpoint.swift` | Distributed checkpointing |
-| `Sources/StableHLO/Sharding.swift` | Sharding MLIR generation |
-| `Sources/LazyTensor/ShardedExecution.swift` | Multi-device execution |
-| `Sources/XLARuntime/MultiDevice.swift` | PJRT multi-device support |
-| `Sources/Shardy/SdyOptRunner.swift` | Shardy tool integration |
-| `Sources/Shardy/ShardingPropagation.swift` | Propagation configuration |
-| `Documentation/DISTRIBUTED_TRAINING.md` | Comprehensive guide |
-| `Examples/DistributedMNIST/` | Data parallel MNIST example |
-| `Examples/LargeModelTraining/` | FSDP + tensor parallel example |
+| `Sources/StableHLO/Sharding/DeviceMesh.swift` | Device mesh topology types |
+| `Sources/StableHLO/Sharding/TensorSharding.swift` | Sharding specification types |
+| `Sources/StableHLO/Builder/MLIRBuilder.swift` | `sdy` hooks, `all_reduce` |
+| `Sources/LazyTensor/LazyTensor.swift` | Graph sharding, `executeGraphReplicated`, `executeGraphSharded` |
+| `Sources/LazyTensor/StableHLOEmitter.swift` | Sharding and collective emission |
+| `Sources/XLARuntime/XLARuntime.swift` | Multi-device execute, buffer distribution, SPMD/Shardy compile options |
+| `Sources/CXLARuntime/PJRTProtoHelper.cpp` | `use_spmd_partitioning` / `use_shardy_partitioner` compile options |
+| `Sources/Core/Distributed.swift` | Collectives on `Tensor`, `sharded`, `makeGraph`, `dataParallelSGDStep` |
+| `Sources/Core/MultiHost.swift` | `MultiHostConfig`, `DistributedSampler.multiHost` |
+| `Documentation/MULTI_DEVICE_ASSESSMENT.md` | Design and status |
 
 ---
 
@@ -877,11 +628,10 @@ let dataLoader = DataLoader(
 
 | Dependency | Purpose | Source |
 |------------|---------|--------|
-| `libsdy_capi.so` | Shardy C API | Build from [openxla/shardy](https://github.com/openxla/shardy) |
-| `sdy_opt` | Shardy optimization tool | Build from openxla/shardy |
+| PJRT plugin built with Shardy | Propagation + partitioning at compile time | The XLA CPU/GPU plugin (see README for the tested pin) |
 | PJRT multi-device | Multi-device execution | Already in XLA |
 
-Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (includes Shardy build)
+`libsdy_capi.so` and `sdy_opt` are **not** required.
 
 ---
 
@@ -909,15 +659,14 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 - [x] `CommonSubexpressionEliminationPass` - Eliminate redundant computations
 - [x] `ConstantFoldingPass` - Evaluate constant expressions at compile time
 - [x] `AlgebraicSimplificationPass` - Simplify patterns (x+0=x, x*1=x, -(-x)=x, etc.)
-- [x] `OperationFusionPass` - Pattern matching for fused operations
+- [ ] `OperationFusionPass` - present but **disabled by default and performs no transformations** (`Sources/LazyTensor/Optimization/Passes/OperationFusion.swift`). Only the `FusionPattern` protocol and helpers remain (`Optimization/Fusion/FusionPattern.swift`). No patterns ship.
 
-#### Fusion Patterns ✅
-- [x] `ScaledDotProductAttentionPattern` - Fuse Q·K^T/√d · V attention
-- [x] `LayerNormPattern` - Fuse layer normalization operations
-- [x] `RMSNormPattern` - Fuse RMS normalization operations
-- [x] `MatMulBiasActivationPattern` - Fuse matmul + bias + activation
-- [x] `SoftmaxPattern` - Fuse exp-sum-div softmax pattern
-- [x] `GeluPattern` - Fuse GELU activation pattern
+#### Fusion
+Fusion is left to the backend compiler: Magma emits plain StableHLO, and XLA
+(or MetalHLO) fuses operations during compilation. The earlier graph-level
+fusion patterns (attention, LayerNorm, RMSNorm, MatMul+bias+activation, softmax,
+GELU) are no longer in the tree. Graph-level fusion in Magma is listed under
+[Beyond the alpha](#beyond-the-alpha).
 
 #### Optimization
 - [ ] Profile compilation times
@@ -947,18 +696,17 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 - [ ] Migration guide from PyTorch
 
 #### Testing
-- [x] Gradient checking for all ops ✅
+- [x] Gradient checking for common ops ✅
   - `gradcheck` function comparing autodiff vs numerical gradients
   - `numericalGradient` and `numericalGradientForward` utilities
   - `numericalJacobian` for vector-valued functions
-  - 34 gradient checking tests covering arithmetic, activations, matrix ops
+  - Gradient checking tests covering arithmetic, activations, matrix ops
 - [x] Numerical stability tests ✅
   - Very large/small values handling
   - Near-zero division and underflow/overflow
   - NaN/Inf propagation tests
   - Softmax stability with extreme values
   - Gradient stability tests
-  - 45+ numerical stability tests
 - [x] Edge case tests ✅
   - Broadcasting edge cases
   - Reduction edge cases
@@ -989,7 +737,7 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 - [ ] All public APIs documented
 - [ ] No known memory leaks
 - [ ] Competitive performance benchmarks
-- [ ] v0.1.0 release
+- [ ] 0.1.0-alpha.1 release (in preparation)
 
 ---
 
@@ -1009,11 +757,11 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 - [ ] Weights & Biases logging
 
 ### Platforms
-- [ ] macOS (Apple Silicon)
-- [x] Linux (x86_64)
-- [x] TPU support (Cloud TPU VMs) - See [TPU_DEPLOYMENT.md](TPU_DEPLOYMENT.md)
-- [ ] GPU support (CUDA)
-- [ ] Metal backend (future)
+- [x] Linux: CI builds on x86_64 (Swift 6.0 and 6.3); development and GPU verification on aarch64 (NVIDIA GB10)
+- [ ] macOS (Apple Silicon): CI build job is experimental (`continue-on-error`)
+- [x] GPU support (CUDA): single-device execution verified; multi-GPU untested
+- [x] Metal backend: opt-in via [MetalHLO](https://github.com/pedronahum/MetalHLO) (`MAGMA_ENABLE_METAL=1`, macOS only)
+- [ ] TPU support (Cloud TPU VMs): plugin detection and a deployment guide exist ([TPU_DEPLOYMENT.md](TPU_DEPLOYMENT.md)), but it is untested on real TPU hardware
 
 ### Community
 - [ ] Discord/Slack
@@ -1025,53 +773,56 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 
 ## Current Implementation Summary
 
-### What's Working (650+ tests)
+### What's Working
 
 | Category | Components |
 |----------|------------|
 | **Tensor** | Creation, arithmetic, matrix ops, reductions, activations, broadcasting, slicing (advanced with step/negative indices), subscript indexing (`tensor[i]`, `tensor[i,j]`), concat, stack |
 | **Comparison** | lessThan, greaterThan, equalTo, operators (.<, .>, .<=, .>=, .==, .!=), where_, maskedSelect |
 | **Autodiff** | Full VJP support for common ops, `gradient()`, `valueWithGradient()` |
-| **Layers** | Linear, Conv2d, BatchNorm, LayerNorm, Dropout, Flatten, Sequential, Pooling |
-| **Activations** | ReLU, Sigmoid, Tanh, GELU, LeakyReLU, SiLU, ELU, Hardtanh |
+| **Layers (`nn.*`)** | Linear, Embedding, Conv1d, Conv2d, ConvTranspose2d, BatchNorm1d/2d, LayerNorm, GroupNorm, InstanceNorm2d, Dropout, Flatten, Sequential, pooling, upsampling |
+| **Value-semantic layers** | `Layer` protocol, `Linear`, `ReLU`, `Sigmoid`, `Conv2d`, typed `sequential { }`, `modelGradient` |
+| **Activations** | ReLU, Sigmoid, Tanh, GELU, LeakyReLU, SiLU, ELU, Hardtanh, SELU, Mish, Softplus, Softsign, PReLU |
 | **Attention** | ScaledDotProductAttention, MultiheadAttention |
 | **Transformer** | TransformerEncoderLayer, TransformerDecoderLayer, SinusoidalPositionalEncoding, LearnedPositionalEmbedding, CausalMask |
 | **Recurrent** | RNNCell, LSTMCell, GRUCell, RNN, LSTM, GRU (with multi-layer and bidirectional support) |
-| **Optimizers** | SGD (momentum, Nesterov), Adam/AdamW |
+| **Optimizers** | `optim.SGD` (momentum, Nesterov), `optim.Adam`/`optim.AdamW`, `optim.AdamWGroups`, `optim.RMSProp`, `optim.AdaGrad`, `optim.AdaDelta`; value-semantic `Adam`, `MomentumSGD`, `sgdUpdate` |
 | **Schedulers** | StepLR, ExponentialLR, CosineAnnealingLR, WarmupLR, WarmupCosine |
-| **Data** | Dataset protocol, SimpleBatchLoader (shuffle, dropLast) |
+| **Data** | Dataset protocol, TensorDataset, DataLoader, SimpleBatchLoader (shuffle, dropLast), DistributedSampler, MNIST |
 | **Transforms** | Compose, Normalize, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomCrop, Pad, Grayscale, Lambda |
-| **Backends** | CPU (via PJRT), TPU (Cloud TPU VMs), GPU (CUDA, single-device), Metal (macOS) |
-| **Distributed** | Shardy integration planned (DeviceMesh, TensorSharding, SPMD, DDP, FSDP) |
+| **Backends** | CPU (via PJRT); GPU (CUDA, single-device verified); Metal (macOS, opt-in via MetalHLO); TPU (plugin detection, untested on hardware) |
+| **Distributed** | DeviceMesh, TensorSharding, Shardy/SPMD (`executeGraphSharded`), DDP (`executeGraphReplicated`, `crossReplicaMean`, `dataParallelSGDStep`), tensor parallelism via Shardy. Tested on emulated CPU devices; real multi-GPU/TPU untested. No FSDP |
 | **Checkpointing** | JSON format, Binary format, state_dict API |
-| **Control Flow** | select, while_loop, cond, scan (with autodiff) |
+| **Control Flow** | select, `stablehlo.while` via `scanXLA`, scan (with autodiff); `cond` only at the MLIRBuilder level |
 | **Mixed Precision** | toReducedPrecision, toFullPrecision, to(dtype:), MixedPrecision.autocast |
 | **Profiling** | Timing, Benchmarking, FLOPS estimation, Memory profiling, XLA tracing |
 | **Error Handling** | TensorError types, TensorDebug utilities, TensorAssert helpers |
 | **Testing Utils** | Gradient checking, Numerical stability tests |
-| **Graph Optimization** | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification, OperationFusion |
-| **Fusion Patterns** | ScaledDotProductAttention, LayerNorm, RMSNorm, MatMulBiasActivation, Softmax, Gelu |
+| **Graph Optimization** | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification. OperationFusion is disabled and performs no transformations; XLA does the fusion |
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `Sources/Torch/Torch.swift` | Tensor type, operations, mixed precision |
-| `Sources/Torch/Module.swift` | Module protocol and all layers |
-| `Sources/Torch/Autodiff.swift` | Differentiable conformance and VJPs |
-| `Sources/Torch/Optimizer.swift` | Optimizers and LR schedulers |
-| `Sources/Torch/Data.swift` | Dataset, DataLoader, and tensor indexing |
-| `Sources/Torch/Scan.swift` | Loop operations (scan, while_loop) with autodiff |
-| `Sources/Torch/Transforms.swift` | PyTorch-compatible data transforms |
-| `Sources/Torch/Profiling.swift` | Timing, benchmarking, FLOPS estimation |
-| `Sources/Torch/TensorError.swift` | Error types and debugging utilities |
-| `Sources/LazyTensor/` | Lazy execution engine |
-| `Sources/LazyTensor/Optimization/` | Graph optimization passes (PassManager, DCE, CSE, fusion) |
-| `Sources/StableHLO/` | MLIR code generation |
-| `Sources/XLARuntime/` | XLA/PJRT integration, TPU detection |
-| `Sources/Torch/Distributed/` | Distributed training (planned): DDP, FSDP, sharding |
-| `Sources/Shardy/` | Shardy integration (planned): sdy_opt, propagation |
+| `Sources/Core/Tensor.swift` | Tensor type, operations, mixed precision, `nn`/`optim` namespaces |
+| `Sources/Core/Module.swift` | `Module` protocol and all `nn.*` layers |
+| `Sources/Core/ValueLayers.swift`, `LayerGradient.swift`, `TangentOptimizer.swift` | Value-semantic `Layer` API, `modelGradient`, generic optimizers |
+| `Sources/Core/NNGradient.swift` | `parameterGradients` autodiff bridge for `nn.*` |
+| `Sources/Core/Autodiff.swift` | Differentiable conformance and VJPs |
+| `Sources/Core/Optimizer.swift` | `optim.*` optimizers and LR schedulers |
+| `Sources/Core/Data.swift` | Dataset, DataLoader, DistributedSampler, and tensor indexing |
+| `Sources/Core/Scan.swift` | Loop operations (scan, scanXLA) with autodiff |
+| `Sources/Core/Transforms.swift` | PyTorch-compatible data transforms |
+| `Sources/Core/Profiling.swift` | Timing, benchmarking, FLOPS estimation |
+| `Sources/Core/TensorError.swift` | Error types and debugging utilities |
+| `Sources/Core/Distributed.swift`, `MultiHost.swift` | Distributed Tensor helpers, DDP step, multi-host config |
+| `Sources/LazyTensor/` | Lazy execution engine, replicated/sharded runners |
+| `Sources/LazyTensor/Optimization/` | Graph optimization passes (PassManager, DCE, CSE, constant folding, algebraic simplification) |
+| `Sources/StableHLO/` | MLIR code generation, Shardy sharding types |
+| `Sources/XLARuntime/` | XLA/PJRT integration, TPU detection, MetalHLO backend |
+| `Sources/CXLARuntime/` | C wrapper over the PJRT C API (plugin loaded at runtime) |
 | `Examples/MNIST/` | MNIST training example |
+| `Examples/ValueLayers/` | Value-semantic MLP trained with `modelGradient` + `Adam` |
 | `Examples/BuildingSimulation/` | Differentiable physics simulation (PyTorch port) |
 | `Documentation/TPU_DEPLOYMENT.md` | TPU deployment guide |
 
@@ -1080,6 +831,8 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | Example | Description |
 |---------|-------------|
 | **MNIST** | Handwritten digit classification with MLP, real data loading and autodiff training |
+| **ValueLayers** | The README Quick Example: a value-semantic MLP held as `some Layer`, trained with `modelGradient` and the generic `Adam` |
+| **Metal** | Metal backend demo via MetalHLO (built only with `MAGMA_ENABLE_METAL=1` on macOS) |
 | **BuildingSimulation** | Port of PyTorch building thermal simulation benchmark from [differentiable-swift-examples](https://github.com/PassiveLogic/differentiable-swift-examples). Demonstrates differentiable multi-timestep simulation with gradient computation through loops. |
 | **Benchmarks** | Performance benchmarking suite for matrix operations. Measures GFLOPS for matmul at various sizes (256×256 to 4096×4096). Includes framework for element-wise, activation, reduction, and layer benchmarks. |
 | **DistributedMNIST** | (Planned) Data parallel MNIST training across multiple devices |
@@ -1108,15 +861,15 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 | M14: Mixed Precision | ✅ Complete | bfloat16 support, toReducedPrecision/toFullPrecision, autocast |
 | M15: Error Handling | ✅ Complete | TensorError types, TensorDebug utilities, TensorAssert helpers |
 | M16: Benchmarks | ✅ Complete | Examples/Benchmarks with matmul GFLOPS measurement (peak ~71 GFLOPS) |
-| M17: Graph Optimization | ✅ Complete | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification, Fusion patterns |
-| M18: Sharding Foundation | Not Started | DeviceMesh, TensorSharding types, StableHLO sharding support |
-| M19: SPMD API | Not Started | `markSharding()`, `PartitionSpec`, collective operations |
-| M20: Auto-Sharding | Not Started | Shardy propagation via sdy_opt, `autoShard()` API |
-| M21: DDP | Not Started | DistributedDataParallel wrapper for multi-device training |
+| M17: Graph Optimization | ✅ Complete | PassManager, DCE, CSE, ConstantFolding, AlgebraicSimplification (fusion left to XLA) |
+| M18: Sharding Foundation | ✅ Complete | DeviceMesh, TensorSharding types, StableHLO `sdy` support, graph sharding |
+| M19: SPMD API | ✅ Complete (emulated CPU) | `Tensor.sharded(on:_:)`, `makeGraph(mesh:)`, `executeGraphSharded`, in-graph `all_reduce` |
+| M20: Auto-Sharding | 🟡 Partial | Shardy propagation + partitioning inside XLA; no `autoShard()` API |
+| M21: DDP | ✅ Complete (emulated CPU) | `executeGraphReplicated`, `crossReplicaMean`, `dataParallelSGDStep`, `Optimizer.step(syncing:)` |
 | M22: FSDP | Not Started | FullyShardedDataParallel with ZeRO-style sharding |
-| M23: Tensor Parallelism | Not Started | Column/Row parallel layers for large models |
-| M24: Multi-Host | Not Started | Cross-host training, distributed checkpointing |
-| M25: v0.1.0 | 🚧 In Progress | Public release - blocking issues resolved |
+| M23: Tensor Parallelism | 🟡 Partial | Tensor parallelism via Shardy verified; no Column/Row parallel layer types |
+| M24: Multi-Host | 🟡 Partial | `MultiHostConfig` + `DistributedSampler.multiHost`; no coordination service or distributed checkpointing |
+| M25: 0.1.0-alpha.1 | 🚧 Preparing | First alpha release |
 
 ---
 
@@ -1126,11 +879,14 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 - ~~**Real MNIST Training**~~ - Downloads from Google Storage, parses IDX format, trains with real autodiff
 - ~~**Embedding Layer**~~ - nn.Embedding with gather/scatter and backward pass support
 - ~~**Model Checkpointing**~~ - JSON format, binary format, state_dict API (PyTorch-compatible)
-- ~~**Control Flow in XLA**~~ - while_loop, cond, and scan with autodiff support
+- ~~**Control Flow in XLA**~~ - `stablehlo.while` loops (via `scanXLA`) and scan with autodiff support
+- ~~**Distributed Training (Phase 4.5)**~~ - DDP and Shardy/SPMD, tested on emulated CPU devices
+- ~~**Value-semantic layer API**~~ - `Layer`, `sequential { }`, `modelGradient`, generic `Adam`
+- ~~**nn.* autodiff bridge**~~ - `parameterGradients` with identity-keyed `optimizer.step(_:)`
 - ~~**Conv2D Layer**~~ - nn.Conv2d for image models
 
 ### In Progress 🚧
-1. **GPU Support** - CUDA plugin integration for GPU execution
+1. ~~**GPU Support**~~ ✅ - single-device CUDA execution verified (NVIDIA GB10)
 2. ~~**Mixed Precision**~~ ✅ - bfloat16 training support (toReducedPrecision, toFullPrecision, MixedPrecision.autocast)
 3. ~~**Performance Benchmarking**~~ ✅ - Examples/Benchmarks suite measuring matmul GFLOPS (peak ~71 GFLOPS on 4096×4096)
 4. ~~**DataLoader Shuffling**~~ ✅ - Implemented in SimpleBatchLoader with dropLast support
@@ -1138,15 +894,23 @@ Build script location: `Legacy/SwiftIR/scripts/install-swiftir-ubuntu.sh` (inclu
 6. ~~**Improved Error Messages**~~ ✅ - TensorError enum with detailed descriptions, TensorDebug utilities, TensorAssert helpers
 
 ### Up Next 📋
-1. **Distributed Training (Phase 4.5)** - Shardy/SPMD integration for multi-device training
-   - Port DeviceMesh and TensorSharding from Legacy/SwiftIR
-   - Implement `markSharding()` API (PyTorch/XLA-style)
-   - Integrate Shardy propagation via sdy_opt
-   - DistributedDataParallel wrapper
-   - FullyShardedDataParallel (FSDP) wrapper
-   - Tensor parallelism for large models
-   - Multi-host training support
-   - See [Phase 4.5](#phase-45-distributed-training-shardyspmd-integration) for full details
+1. **0.1.0-alpha.1 release**: finish docs, tag, and publish.
+
+### Beyond the alpha
+- **Naming unification**: the value-semantic API (`Linear`, `Adam`, `sequential`)
+  and the `nn.*`/`optim.*` API use overlapping names and different initializers.
+  Unify or clearly separate them.
+- **CI with a real CPU PJRT plugin**: CI builds everything and runs
+  `StableHLOTests`, `LazyTensorTests` and `XLARuntimeTests` without a plugin. The
+  plugin-backed suites are skipped there, and the Core suites (`MagmaTests`) are
+  not run in CI.
+- **Multi-GPU and TPU validation**: run the DDP, SPMD and tensor-parallel suites
+  on a real multi-GPU host and a TPU board. So far they are only verified on
+  emulated CPU devices, and on CUDA only single-GPU is verified.
+- **Fusion**: `OperationFusionPass` is a disabled no-op, and all fusion is left to
+  XLA/MetalHLO. Decide whether Magma needs graph-level fusion at all.
+- Remaining distributed work: FSDP, a multi-host coordination service,
+  distributed checkpointing. See [Phase 4.5](#phase-45-distributed-training-shardyspmd-integration--single-host-implemented).
 
 ---
 

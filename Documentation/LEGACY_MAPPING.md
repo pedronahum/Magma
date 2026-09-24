@@ -1,209 +1,87 @@
 # Legacy Code Mapping
 
-This document maps components from TaylorTorch and SwiftIR to their roles in Magma.
+This document maps what Magma inherited from its predecessors, Swift for
+TensorFlow (S4TF), TaylorTorch and SwiftIR, to where that code or design lives in
+Magma today.
 
-## Repository Structure
+> **Historical note.** This file started as a migration plan. The plan assumed a
+> `Legacy/TaylorTorch` and `Legacy/SwiftIR` checkout inside the repository and a
+> `Sources/Torch/...` layout. Neither exists: the legacy repositories were never
+> vendored, and the user-facing layer is `Sources/Core` (module `Magma`). The
+> migration is complete. The sections below describe the current state, and the
+> plan is summarized at the end for reference only.
+
+## Current Layout (for orientation)
 
 ```
-Magma/
-├── Legacy/
-│   ├── TaylorTorch/          # Clone of https://github.com/pedronahum/TaylorTorch
-│   └── SwiftIR/              # Clone of https://github.com/pedronahum/SwiftIR
-└── Sources/
-    └── ...                   # New implementation
+Sources/
+├── CXLARuntime/   # C wrapper over the PJRT C API (plugin dlopen'd at runtime)
+├── XLARuntime/    # XLARuntime.swift (PJRT client/buffer/executable), MetalHLORuntime.swift
+├── StableHLO/     # Builder/ (MLIRBuilder, Value), Types/ (DType, TensorType), Sharding/ (Shardy)
+├── LazyTensor/    # LazyTensor.swift, StableHLOEmitter.swift, Optimization/
+└── Core/          # module `Magma`: Tensor, autodiff, nn.*, optim.*, value layers, data, ...
 ```
 
----
-
-## From TaylorTorch
-
-### To Reuse (Copy & Adapt)
-
-| TaylorTorch File | Magma Target | Changes Needed |
-|------------------|-------------------|----------------|
-| `Sources/Torch/Core/Tensor.swift` | `Sources/Torch/Tensor/Tensor.swift` | Replace LibTorch handle with LazyTensorHandle |
-| `Sources/Torch/Modules/Layers/Linear.swift` | `Sources/Torch/NN/Layers/Linear.swift` | Update Tensor references |
-| `Sources/Torch/Modules/Layers/Conv2d.swift` | `Sources/Torch/NN/Layers/Conv2d.swift` | Update Tensor references |
-| `Sources/Torch/Modules/Layers/BatchNorm.swift` | `Sources/Torch/NN/Layers/BatchNorm.swift` | Update Tensor references |
-| `Sources/Torch/Modules/Layers/Dropout.swift` | `Sources/Torch/NN/Layers/Dropout.swift` | Update for functional PRNG |
-| `Sources/Torch/Modules/Layers/Attention.swift` | `Sources/Torch/NN/Layers/Attention.swift` | Update Tensor references |
-| `Sources/Torch/Modules/Sequential.swift` | `Sources/Torch/NN/Sequential.swift` | Keep result builder |
-| `Sources/Torch/Optimizers/*.swift` | `Sources/Torch/Optim/*.swift` | Update for new Tensor |
-
-### To Reference (Study Design)
-
-| TaylorTorch Component | What to Learn |
-|-----------------------|---------------|
-| `Module` protocol | How to structure `@differentiable` layers |
-| `TangentVector` implementations | Custom tangent vectors for complex layers |
-| Graph neural network layers | Advanced layer patterns |
-| Examples (MNIST, etc.) | Training loop structure |
-
-### Not to Reuse
-
-| Component | Reason |
-|-----------|--------|
-| LibTorch C++ bindings | We're using XLA instead |
-| `TorchCpp` module | Not needed |
-| ATen tensor operations | Replaced by StableHLO |
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full file tree.
 
 ---
 
 ## From SwiftIR
 
-### To Reuse (Copy & Adapt)
+[SwiftIR](https://github.com/pedronahum/SwiftIR) provided the MLIR/XLA
+infrastructure.
 
-| SwiftIR File | Magma Target | Changes Needed |
-|--------------|-------------------|----------------|
-| `Sources/SwiftIRXLA/PJRTClient.swift` | `Sources/XLARuntime/PJRTClient.swift` | Clean up API |
-| `Sources/SwiftIRXLA/PJRTBuffer.swift` | `Sources/XLARuntime/PJRTBuffer.swift` | Simplify |
-| `Sources/SwiftIRXLA/PJRTExecutable.swift` | `Sources/XLARuntime/PJRTExecutable.swift` | Simplify |
-| PJRT C headers | `Sources/CXLARuntime/` | Copy directly |
+| SwiftIR component | Where it lives in Magma | Notes |
+|-------------------|-------------------------|-------|
+| PJRT C API header + simplified C wrapper | `Sources/CXLARuntime/` (`pjrt_c_api.h`, `PJRTSimpleWrapper.c/.h`, `PJRTProtoHelper.cpp/.h`) | The wrapper loads the plugin with `dlopen`. Extended with multi-device execute and SPMD/Shardy compile options |
+| Swift PJRT client / buffer / executable layer (`SwiftIRXLA`) | `Sources/XLARuntime/XLARuntime.swift` | Magma's counterpart: `PJRTClient`, `PJRTDevice`, `PJRTBuffer` and `PJRTExecutable` in one file, plus multi-device buffer distribution |
+| `JTracingContext` / `JTracer` (graph building, op semantics) | `Sources/StableHLO/Builder/MLIRBuilder.swift` | Reimplemented as a pure-Swift text builder (no C++ MLIR bindings) |
+| `JTracerValue` | `Sources/StableHLO/Builder/Value.swift` | SSA `Value` |
+| `jWhileLoop` / `jCond` | `MLIRBuilder.whileLoop` / `MLIRBuilder.cond`, plus `scan`/`scanXLA` in `Sources/Core/Scan.swift` | Emit `stablehlo.while` / `stablehlo.if` |
+| `SwiftIRShardingLite` (`DeviceMesh`, `TensorSharding`) | `Sources/StableHLO/Sharding/DeviceMesh.swift`, `TensorSharding.swift` | Ported and adapted. Sub-axis (`AxisRef`/`SubAxisInfo`) support was not ported |
 
-### To Reference (Study Design)
-
-| SwiftIR Component | What to Learn |
-|-------------------|---------------|
-| `JTracingContext` | How to build graphs |
-| `JTracer` operations | StableHLO op semantics |
-| Shape inference | How to compute output shapes |
-| `jWhileLoop` | Control flow compilation |
-| `jVmap` | Batching implementation |
-| Profiler integration | TensorBoard support |
-
-### To Port (Reimplementing)
-
-| SwiftIR Component | Magma Equivalent | Notes |
-|-------------------|------------------------|-------|
-| `JTracerValue` | `Value` in StableHLO | Pure Swift, simpler |
-| `JTracingContext.buildModule()` | `MLIRBuilder.build()` | String-based MLIR |
-| Op implementations | StableHLO ops | Map 1:1 |
-
-### Not to Reuse
-
-| Component | Reason |
-|-----------|--------|
-| C++ MLIR bindings | Using pure Swift MLIR generation |
-| SwiftIRJupyter | Simplified into StableHLO layer |
-| Benchmark infrastructure | Will rebuild |
+**Not reused from SwiftIR**: the C++ MLIR bindings (Magma generates MLIR text in
+Swift), SwiftIRJupyter, the benchmark infrastructure, the native Shardy C API
+(`SdyCAPIWrapper`) and the standalone `sdy_opt` runner. Magma enables the Shardy
+partitioner inside XLA through compile options instead. See
+[MULTI_DEVICE_ASSESSMENT.md §9](MULTI_DEVICE_ASSESSMENT.md). `jVmap`-style
+automatic batching has no equivalent yet.
 
 ---
 
-## Operation Mapping
+## From TaylorTorch
 
-### TaylorTorch → StableHLO
+TaylorTorch contributed the **PyTorch-style API design**: a `Module` protocol with
+`nn.*` layers, `optim.*` optimizers, and a result-builder `Sequential`. Magma
+reimplemented this design on lazy tensors (LibTorch, ATen and the `TorchCpp`
+bindings were not reused).
 
-| TaylorTorch | StableHLO | Notes |
-|-------------|-----------|-------|
-| `Tensor.matmul` | `stablehlo.dot` | Direct mapping |
-| `Tensor + Tensor` | `stablehlo.add` | Direct |
-| `Tensor * Tensor` | `stablehlo.multiply` | Direct |
-| `Tensor.relu()` | `stablehlo.maximum(x, 0)` | Composite |
-| `Tensor.sigmoid()` | `1 / (1 + exp(-x))` | Composite |
-| `Tensor.softmax()` | `exp(x) / sum(exp(x))` | Composite |
-| `Tensor.sum()` | `stablehlo.reduce` | With add reducer |
-| `Tensor.mean()` | `reduce_sum / count` | Composite |
-| `Tensor.conv2d()` | `stablehlo.convolution` | Complex attributes |
-| `Tensor.batchNorm()` | Multiple ops | Decomposed |
-
-### SwiftIR → StableHLO
-
-| SwiftIR | StableHLO Layer | Notes |
-|---------|-----------------|-------|
-| `JTracer +` | `MLIRBuilder.add()` | Same semantics |
-| `SwiftIR.matmul()` | `MLIRBuilder.dot()` | Same |
-| `SwiftIR.relu()` | `MLIRBuilder.relu()` | Same |
-| `jWhileLoop` | `stablehlo.while` | Control flow |
-| `jCond` | `stablehlo.if` | Control flow |
-| `jVmap` | Manual batching | Future work |
-
----
-
-## API Compatibility Goals
-
-### PyTorch Compatibility
-
-Target API should feel familiar to PyTorch users:
-
-```swift
-// PyTorch
-# model = nn.Sequential(
-#     nn.Linear(784, 256),
-#     nn.ReLU(),
-#     nn.Linear(256, 10)
-# )
-
-// Magma
-let model = nn.Sequential {
-    nn.Linear(784, 256)
-    nn.ReLU()
-    nn.Linear(256, 10)
-}
-```
-
-### S4TF Compatibility
-
-Honor S4TF patterns where they make sense:
-
-```swift
-// S4TF style (keep)
-let (loss, grads) = valueWithGradient(at: model) { m in
-    m(input).mean()
-}
-
-// S4TF style (keep)
-LazyTensorBarrier()
-```
-
----
-
-## Migration Checklist
-
-### Phase 1: Setup
-- [ ] Clone TaylorTorch into `Legacy/TaylorTorch/`
-- [ ] Clone SwiftIR into `Legacy/SwiftIR/`
-- [ ] Document key files in each repo
-- [ ] Identify test cases to port
-
-### Phase 2: XLARuntime (from SwiftIR)
-- [ ] Copy PJRT C headers
-- [ ] Port `PJRTClient.swift`
-- [ ] Port `PJRTBuffer.swift`
-- [ ] Port `PJRTExecutable.swift`
-- [ ] Write integration tests
-
-### Phase 3: StableHLO (new, referencing SwiftIR)
-- [x] Create `DType.swift`
-- [x] Create `TensorType.swift`
-- [x] Create `Value.swift`
-- [x] Create `MLIRBuilder.swift`
-- [ ] Add remaining ops (conv, pooling, etc.)
-- [x] Write pure-Swift tests
-
-### Phase 4: LazyTensor (new, inspired by x10)
-- [ ] Create `LazyTensorHandle.swift`
-- [ ] Create `IRNode.swift`
-- [ ] Create `IRGraph.swift`
-- [ ] Create `LazyTensorBarrier.swift`
-- [ ] Create `CompilationCache.swift`
-- [ ] Write tests with XLA
-
-### Phase 5: Torch (from TaylorTorch)
-- [ ] Port `Tensor.swift` (major rewrite)
-- [ ] Port `Layer.swift` protocol
-- [ ] Port `Linear.swift`
-- [ ] Port `Conv2d.swift`
-- [ ] Port `Sequential.swift`
-- [ ] Port optimizers
-- [ ] Write end-to-end tests
+| TaylorTorch concept | Where it lives in Magma |
+|---------------------|-------------------------|
+| `Tensor` API surface | `Sources/Core/Tensor.swift` (backed by `LazyTensorHandle`, not a LibTorch handle) |
+| `Module` protocol, layers (`Linear`, `Conv2d`, `BatchNorm`, `Dropout`, attention, ...) | `Sources/Core/Module.swift` (`nn.Linear`, `nn.Conv2d`, `nn.BatchNorm2d`, `nn.Dropout`, `nn.MultiheadAttention`, ...) |
+| `Sequential` with a result builder | `nn.Sequential` / `nn.sequential { ... }` in `Sources/Core/Module.swift` |
+| Optimizers | `Sources/Core/Optimizer.swift` (`optim.SGD`, `optim.Adam`, ...) |
+| Training-loop structure (MNIST, etc.), used as a design reference | `Examples/MNIST/` |
 
 ---
 
 ## Ported from Swift for TensorFlow (S4TF)
 
-The following components were ported from the [S4TF swift-apis](https://github.com/tensorflow/swift-apis) repository.
+The following components were ported from the
+[S4TF swift-apis](https://github.com/tensorflow/swift-apis) repository, or modeled
+on it.
 
-### Initializers
+### Design
+
+| S4TF | Magma | Notes |
+|------|-------|-------|
+| x10 lazy tensors + `LazyTensorBarrier()` | `Sources/LazyTensor/` | Traced into StableHLO and run through PJRT |
+| `Layer` protocol (value-semantic, `Differentiable`) | `Layer` in `Sources/Core/ValueLayers.swift` | Coexists with the PyTorch-style `nn.Module` API |
+| `KeyPathIterable` | `Sources/Core/KeyPathIterable.swift` | Backed by reflection, not compiler synthesis |
+| Optimizers that update from `TangentVector` | `Adam`, `MomentumSGD`, `sgdUpdate` in `Sources/Core/TangentOptimizer.swift` | Generic over any `Differentiable & KeyPathIterable` model |
+
+### Initializers (`Sources/Core/Initializers.swift`)
 
 | S4TF | Magma | Notes |
 |------|-------------|-------|
@@ -216,7 +94,7 @@ The following components were ported from the [S4TF swift-apis](https://github.c
 | `truncatedNormal(forShape:)` | `Tensor<Float>.truncatedNormal(_:)` | Truncated normal init |
 | `orthogonal(forShape:)` | `Tensor<Float>.orthogonal(_:)` | Orthogonal init |
 
-### Loss Functions
+### Loss Functions (`Sources/Core/Loss.swift`)
 
 | S4TF | Magma | Notes |
 |------|-------------|-------|
@@ -237,23 +115,26 @@ The following components were ported from the [S4TF swift-apis](https://github.c
 | N/A | `contrastiveLoss(anchor:sample:labels:margin:reduction:)` | Siamese networks |
 | N/A | `tripletMarginLoss(anchor:positive:negative:margin:reduction:)` | Metric learning |
 
-### Optimizers
+### Optimizers (`Sources/Core/Optimizer.swift`)
 
 | S4TF | Magma | Notes |
 |------|-------------|-------|
-| `SGD` | `SGD` | With momentum, weight decay, nesterov |
-| `Adam` | `Adam` | Adaptive moment estimation |
-| `RMSProp` | `RMSProp` | Root mean square propagation |
-| `AdaGrad` | `AdaGrad` | Adaptive gradients |
-| `AdaDelta` | `AdaDelta` | No learning rate needed |
+| `SGD` | `optim.SGD` | With momentum, weight decay, nesterov |
+| `Adam` | `optim.Adam` | Adaptive moment estimation (`optim.AdamW` is an alias) |
+| `RMSProp` | `optim.RMSProp` | Root mean square propagation |
+| `AdaGrad` | `optim.AdaGrad` | Adaptive gradients |
+| `AdaDelta` | `optim.AdaDelta` | No learning rate needed |
 
-### Layers
+The unqualified `Adam` in `TangentOptimizer.swift` is a different type: the
+value-semantic optimizer that updates a model from its `TangentVector`.
+
+### Layers (`Sources/Core/Module.swift`)
 
 | S4TF | Magma | Notes |
 |------|-------------|-------|
-| `Dense` | `nn.Linear` | Fully connected layer |
+| `Dense` | `nn.Linear` | Fully connected layer (value-semantic: `Linear`) |
 | `Conv1D` | `nn.Conv1d` | 1D convolution |
-| `Conv2D` | `nn.Conv2d` | 2D convolution |
+| `Conv2D` | `nn.Conv2d` | 2D convolution (value-semantic: `Conv2d`) |
 | `TransposedConv2D` | `nn.ConvTranspose2d` | Transposed 2D convolution |
 | `MaxPool2D` | `nn.MaxPool2d` | Max pooling |
 | `AvgPool2D` | `nn.AvgPool2d` | Average pooling |
@@ -277,31 +158,101 @@ The following components were ported from the [S4TF swift-apis](https://github.c
 
 ### Key Differences
 
-1. **Tensor Format**: S4TF used NHWC (TensorFlow style), Magma also uses NHWC for compatibility with XLA.
+1. **Tensor Format**: S4TF used NHWC (TensorFlow style). Magma's convolution and
+   pooling layers also use NHWC.
 
-2. **Reduction Parameter**: Magma loss functions have an explicit `reduction` parameter (`.mean`, `.sum`, `.none`), similar to PyTorch.
+2. **Reduction Parameter**: Magma's loss functions take an explicit `reduction`
+   parameter (`.mean`, `.sum`, `.none`), as PyTorch does.
 
-3. **Module Protocol**: S4TF used `Layer` protocol, Magma uses `Module` protocol for consistency with PyTorch naming.
+3. **Layer protocols**: S4TF had one `Layer` protocol. Magma has two:
+   - `Layer` is value-semantic and S4TF-like (`ValueLayers.swift`).
+   - `nn.Module` is reference-semantic and PyTorch-like (`Module.swift`).
 
-4. **Device Handling**: Magma uses explicit `on device:` parameter for tensor creation.
+4. **Device Handling**: tensor creation takes an explicit `on device:` parameter.
 
-5. **Lazy Execution**: Magma uses lazy tensor execution with `LazyTensorBarrier()` similar to S4TF x10 backend.
+5. **Lazy Execution**: execution is lazy, with `LazyTensorBarrier()`, as in the S4TF
+   x10 backend.
 
 ---
 
-## Testing Strategy
+## Operation Mapping (Magma → StableHLO)
 
-### Unit Tests (No XLA)
-- StableHLO MLIR generation
-- Shape inference
-- Type checking
+The `StableHLOEmitter` and `MLIRBuilder` lower Magma's tensor ops as follows:
 
-### Integration Tests (With XLA)
-- Compile and execute simple graphs
-- Verify numerical correctness
-- Memory management
+| Magma op | StableHLO | Notes |
+|----------|-----------|-------|
+| `matmul` | `stablehlo.dot` | `batchedMatmul` uses `stablehlo.dot_general` |
+| `+`, `-`, `*`, `/` | `stablehlo.add` / `subtract` / `multiply` / `divide` | Broadcasting via `broadcast_in_dim` |
+| `relu()` | `stablehlo.maximum(x, 0)` | Composite |
+| `sigmoid()` | `1 / (1 + exp(-x))` | Composite |
+| `softmax()` | `exp(x - max) / sum(exp(x - max))` | Max-shifted for stability |
+| `gelu()` | tanh approximation | Composite |
+| `sum()` | `stablehlo.reduce` | With an add reducer |
+| `mean()` | `reduce_sum / count` | Composite |
+| `conv2d` | `stablehlo.convolution` | NHWC |
+| `maxPool2d` / `avgPool2d` | `stablehlo.reduce_window` | |
+| while loops / `cond` | `stablehlo.while` / `stablehlo.if` | |
+| `crossReplicaSum` / `crossReplicaMean` | `stablehlo.all_reduce` | Multi-device (DDP) |
 
-### End-to-End Tests (Full Stack)
-- Train MNIST
-- Compare against PyTorch outputs
-- Performance benchmarks
+---
+
+## API Examples
+
+### PyTorch-style (`nn.*`)
+
+```swift
+// PyTorch
+# model = nn.Sequential(
+#     nn.Linear(784, 256),
+#     nn.ReLU(),
+#     nn.Linear(256, 10)
+# )
+
+// Magma (reference-semantic)
+let model = nn.sequential {
+    nn.Linear(inputSize: 784, outputSize: 256)
+    nn.ReLU()
+    nn.Linear(inputSize: 256, outputSize: 10)
+}
+```
+
+### S4TF-style (value-semantic)
+
+```swift
+// A typed, Differentiable model built from value layers
+func makeMLP() -> some Layer {
+    sequential {
+        Linear(weight: w1, bias: b1)
+        ReLU()
+        Linear(weight: w2, bias: b2)
+    }
+}
+
+var model = makeMLP()
+var optimizer = Adam(learningRate: 0.01)
+let grad = modelGradient(of: model, input: x, target: y, lossFn: mse)
+optimizer.update(&model, gradient: grad)
+
+// S4TF style (kept)
+LazyTensorBarrier()
+```
+
+---
+
+## Historical Migration Plan (complete, for reference only)
+
+The original plan had five phases. All of them are done, though the file layout
+differs from what the plan proposed:
+
+1. **Setup**: the plan was to clone TaylorTorch and SwiftIR into `Legacy/`. This
+   was never vendored into this repository.
+2. **XLARuntime (from SwiftIR)**: done. The PJRT headers and wrapper are in
+   `Sources/CXLARuntime`, and the Swift types are consolidated in
+   `Sources/XLARuntime/XLARuntime.swift`.
+3. **StableHLO (new, referencing SwiftIR)**: done. See `DType.swift`,
+   `TensorType.swift`, `Value.swift`, `MLIRBuilder.swift` (including convolution,
+   pooling via `reduce_window`, control flow and collectives) and `Sharding/`.
+4. **LazyTensor (new, inspired by x10)**: done. The handles, IR, graph, barrier and
+   compilation cache are in `LazyTensor.swift` rather than separate files.
+5. **User layer (from TaylorTorch)**: done, as `Sources/Core` (module `Magma`)
+   rather than `Sources/Torch`.
