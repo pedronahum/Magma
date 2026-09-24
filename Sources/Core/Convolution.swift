@@ -79,6 +79,68 @@ extension Tensor {
             outputShape: Tensor._conv2dOutputShape(
                 input: shape, kernel: kernel.shape, strides: strides, padding: padding))
     }
+
+    /// NHWC output shape of a transposed conv (see `convTranspose2d`).
+    static func _convTranspose2dOutputShape(
+        input: [Int], kernel: [Int], strides: [Int], padding: [[Int]], outputPadding: [Int]
+    ) -> [Int] {
+        let n = input[0], h = input[1], w = input[2]
+        let kh = kernel[0], kw = kernel[1], cout = kernel[2]
+        let oh = (h - 1) * strides[0] - padding[0][0] - padding[0][1] + kh + outputPadding[0]
+        let ow = (w - 1) * strides[1] - padding[1][0] - padding[1][1] + kw + outputPadding[1]
+        return [n, oh, ow, cout]
+    }
+
+    /// 2D transposed convolution ("deconvolution"): NHWC input (`self`) → NHWC
+    /// output, upsampling by `strides`. Differentiable with respect to both the
+    /// input and the kernel.
+    ///
+    /// This is the adjoint (input gradient) of `conv2d`: with the same `kernel`,
+    /// `strides` and `padding`, `x.convTranspose2d(k)` maps a `conv2d` output shape
+    /// back to its input shape. Matches PyTorch's `conv_transpose2d` semantics:
+    /// `out[i*s + u - pad] += x[i] * kernel[u]` per spatial axis.
+    ///
+    /// - Parameters:
+    ///   - kernel: `[kH, kW, Cout, Cin]` — the HWIO kernel of the forward
+    ///     convolution this op transposes (it maps `Cout` → `Cin` in `conv2d`).
+    ///   - strides: `[strideH, strideW]` (the upsampling factor).
+    ///   - padding: `[[padTop, padBottom], [padLeft, padRight]]`, removed from the
+    ///     full transposed output (PyTorch's `padding`).
+    ///   - outputPadding: `[extraH, extraW]` added to the bottom/right of the
+    ///     output; each must be smaller than the matching stride.
+    /// - Returns: `[N, (H-1)*sH - padTop - padBottom + kH + extraH, …, Cout]`.
+    public func convTranspose2d(
+        _ kernel: Tensor,
+        strides: [Int] = [1, 1],
+        padding: [[Int]] = [[0, 0], [0, 0]],
+        outputPadding: [Int] = [0, 0]
+    ) -> Tensor {
+        precondition(rank == 4 && kernel.rank == 4,
+            "convTranspose2d expects a 4D NHWC input and a 4D [kH, kW, Cout, Cin] kernel, " +
+            "got input \(shape) and kernel \(kernel.shape).")
+        precondition(shape[3] == kernel.shape[3],
+            "convTranspose2d: input channels (\(shape[3])) must match kernel.shape[3] (\(kernel.shape[3])); " +
+            "the kernel layout is [kH, kW, Cout, Cin].")
+        precondition(outputPadding[0] >= 0 && outputPadding[0] < strides[0]
+                     && outputPadding[1] >= 0 && outputPadding[1] < strides[1],
+            "convTranspose2d: outputPadding \(outputPadding) must be non-negative and smaller than strides \(strides).")
+        let (kH, kW) = (kernel.shape[0], kernel.shape[1])
+        // Scatter form == a stride-1 conv over the stride-dilated input with the
+        // spatially reversed kernel (in/out channels swapped to HWIO [.., Cin, Cout]).
+        let fullPad = [
+            [kH - 1 - padding[0][0], kH - 1 - padding[0][1] + outputPadding[0]],
+            [kW - 1 - padding[1][0], kW - 1 - padding[1][1] + outputPadding[1]],
+        ]
+        return _conv2dRaw(
+            kernel: kernel.transpose(2, 3),
+            strides: [1, 1],
+            padding: fullPad,
+            lhsDilation: strides,
+            reverseKernel: [true, true],
+            outputShape: Tensor._convTranspose2dOutputShape(
+                input: shape, kernel: kernel.shape, strides: strides,
+                padding: padding, outputPadding: outputPadding))
+    }
 }
 
 extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
@@ -154,6 +216,30 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
             let dW = dWPerm.transpose(0, 1).transpose(1, 2)  // [kH, kW, Cin, Cout]
 
             return (dX, dW)
+        })
+    }
+
+    /// VJP for `convTranspose2d`. Because the op is the adjoint of `conv2d` in its
+    /// input, both gradients come from the forward conv:
+    ///
+    /// - `dX = conv2d(dY, kernel)` with the same strides/padding (`outputPadding`
+    ///   is exactly the stride remainder, so the shape comes back to `X`).
+    /// - `dK`: `<dY, convT(X, K)> == <conv2d(dY, K), X>`, so the kernel gradient is
+    ///   the `conv2d` filter gradient at input `dY` with incoming gradient `X`.
+    @derivative(of: convTranspose2d)
+    public func vjpConvTranspose2d(
+        _ kernel: Tensor,
+        strides: [Int],
+        padding: [[Int]],
+        outputPadding: [Int]
+    ) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
+        let value = self.convTranspose2d(
+            kernel, strides: strides, padding: padding, outputPadding: outputPadding)
+        let input = self
+        return (value, { dY in
+            let dX = dY.conv2d(kernel, strides: strides, padding: padding)
+            let dK = dY.vjpConv2d(kernel, strides: strides, padding: padding).pullback(input).1
+            return (dX, dK)
         })
     }
 }

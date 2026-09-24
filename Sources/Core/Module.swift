@@ -862,26 +862,20 @@ extension nn {
             let batchSize = input.shape[0]
             let inLength = input.shape[1]
             let outLength = (inLength + 2 * padding - kernelSize) / stride + 1
+            precondition(outLength > 0,
+                "Conv1d: input length \(inLength) is too short for kernelSize \(kernelSize) " +
+                "with padding \(padding) (output length would be \(outLength)).")
 
-            // Create conv1d operation
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: [batchSize, outLength, outChannels],
-                dtype: input.dtype,
-                device: input.device
+            // Lower to the (differentiable) 2D convolution with a unit height:
+            // [N, L, Cin] -> [N, 1, L, Cin], kernel [k, Cin, Cout] -> [1, k, Cin, Cout].
+            let input2d = input.reshape([batchSize, 1, inLength, inChannels])
+            let kernel2d = weight.value.reshape([1, kernelSize, inChannels, outChannels])
+            let output2d = input2d.conv2d(
+                kernel2d,
+                strides: [1, stride],
+                padding: [[0, 0], [padding, padding]]
             )
-            handle.irNode = .operation(
-                op: .conv1d,
-                inputs: [input.handle, weight.value.handle],
-                attributes: [
-                    "stride": stride,
-                    "padding": [padding, padding]
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
-
-            var result = Tensor<Float>(handle: handle)
+            var result = output2d.reshape([batchSize, outLength, outChannels])
 
             if useBias {
                 // Broadcast bias to [1, 1, outChannels] and add
@@ -1169,6 +1163,10 @@ extension nn {
             bias: Bool = true,
             device: Device = .default
         ) {
+            precondition(outputPadding.0 >= 0 && outputPadding.0 < stride.0
+                         && outputPadding.1 >= 0 && outputPadding.1 < stride.1,
+                "ConvTranspose2d: outputPadding \(outputPadding) must be non-negative and smaller than " +
+                "stride \(stride) (as in PyTorch).")
             self.inChannels = inChannels
             self.outChannels = outChannels
             self.kernelSize = kernelSize
@@ -1220,26 +1218,19 @@ extension nn {
             let outHeight = (inHeight - 1) * stride.0 - 2 * padding.0 + kernelSize.0 + outputPadding.0
             let outWidth = (inWidth - 1) * stride.1 - 2 * padding.1 + kernelSize.1 + outputPadding.1
 
-            // Create convTranspose2d operation
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: [batchSize, outHeight, outWidth, outChannels],
-                dtype: input.dtype,
-                device: input.device
-            )
-            handle.irNode = .operation(
-                op: .convTranspose2d,
-                inputs: [input.handle, weight.value.handle],
-                attributes: [
-                    "strides": [stride.0, stride.1],
-                    "padding": [[padding.0, padding.0], [padding.1, padding.1]],
-                    "outputPadding": [outputPadding.0, outputPadding.1]
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
+            precondition(outHeight > 0 && outWidth > 0,
+                "ConvTranspose2d: padding \(padding) is too large for input \(input.shape) and kernel " +
+                "\(kernelSize) (output would be \(outHeight)x\(outWidth)).")
 
-            var result = Tensor<Float>(handle: handle)
+            // Differentiable transposed convolution (the adjoint of conv2d).
+            let output = input.convTranspose2d(
+                weight.value,
+                strides: [stride.0, stride.1],
+                padding: [[padding.0, padding.0], [padding.1, padding.1]],
+                outputPadding: [outputPadding.0, outputPadding.1]
+            )
+
+            var result = output
 
             if useBias {
                 // Broadcast bias to [1, 1, 1, outChannels] and add
@@ -2081,37 +2072,25 @@ extension nn {
             let width = input.shape[2]
             let channelsPerGroup = numChannels / numGroups
 
-            // Reshape to [batch, height, width, numGroups, channelsPerGroup]
-            let reshaped = input.reshape([batchSize, height, width, numGroups, channelsPerGroup])
+            // Split channels into groups: [batch, height, width, numGroups, channelsPerGroup]
+            let grouped = input.reshape([batchSize, height, width, numGroups, channelsPerGroup])
 
-            // Compute mean and variance over [height, width, channelsPerGroup] for each group
-            // We'll compute this manually for now
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: input.shape,
-                dtype: input.dtype,
-                device: input.device
-            )
+            // Statistics per (sample, group), over [height, width, channelsPerGroup]
+            let reduceDims = [1, 2, 4]
+            let mean = grouped.mean(dims: reduceDims, keepDims: true)
+            let variance = grouped.variance(dims: reduceDims, keepDims: true, unbiased: false)
 
-            // Use layerNorm operation with appropriate configuration
-            // GroupNorm normalizes over [H, W, C/G] for each group
-            handle.irNode = .operation(
-                op: .layerNorm,
-                inputs: [
-                    input.handle,
-                    weight.value.handle,
-                    bias.value.handle
-                ],
-                attributes: [
-                    "epsilon": eps,
-                    "normalizedDims": [height, width, channelsPerGroup],
-                    "numGroups": numGroups
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
+            let centered = grouped - mean.broadcast(to: grouped.shape)
+            let epsT = Tensor<Float>.full(variance.shape, eps, on: input.device)
+            let stddev = (variance + epsT).sqrt()
+            var normalized = (centered / stddev.broadcast(to: grouped.shape)).reshape(input.shape)
 
-            return Tensor<Float>(handle: handle)
+            // Per-channel affine transform
+            if affine {
+                normalized = normalized * weight.value.broadcast(to: input.shape)
+                normalized = normalized + bias.value.broadcast(to: input.shape)
+            }
+            return normalized
         }
 
         public func parameters() -> [Parameter] {
@@ -2199,36 +2178,21 @@ extension nn {
             precondition(input.shape[3] == numFeatures,
                 "InstanceNorm2d: channel count mismatch. Expected \(numFeatures), got \(input.shape[3]).")
 
-            let batchSize = input.shape[0]
-            let height = input.shape[1]
-            let width = input.shape[2]
+            // Statistics per (sample, channel), over [height, width]
+            let reduceDims = [1, 2]
+            let mean = input.mean(dims: reduceDims, keepDims: true)
+            let variance = input.variance(dims: reduceDims, keepDims: true, unbiased: false)
 
-            // Compute mean and variance over [height, width] for each channel
-            let id = TensorRegistry.shared.nextTensorId()
-            let handle = LazyTensorHandle(
-                id: id,
-                shape: input.shape,
-                dtype: input.dtype,
-                device: input.device
-            )
+            let centered = input - mean.broadcast(to: input.shape)
+            let epsT = Tensor<Float>.full(variance.shape, eps, on: input.device)
+            let stddev = (variance + epsT).sqrt()
+            var normalized = centered / stddev.broadcast(to: input.shape)
 
-            // Instance norm is GroupNorm with numGroups = numChannels
-            handle.irNode = .operation(
-                op: .layerNorm,
-                inputs: [
-                    input.handle,
-                    weight.value.handle,
-                    bias.value.handle
-                ],
-                attributes: [
-                    "epsilon": eps,
-                    "normalizedDims": [height, width],
-                    "numGroups": numFeatures  // Each channel is its own group
-                ]
-            )
-            TensorRegistry.shared.registerPending(handle)
-
-            return Tensor<Float>(handle: handle)
+            if affine {
+                normalized = normalized * weight.value.broadcast(to: input.shape)
+                normalized = normalized + bias.value.broadcast(to: input.shape)
+            }
+            return normalized
         }
 
         public func parameters() -> [Parameter] {
