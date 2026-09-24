@@ -19,11 +19,6 @@ struct XLAIntegrationTests {
     /// Check if XLA is available for testing
     static var xlaAvailable: Bool { PluginAvailability.cpu }
 
-    init() {
-        // Reset tensor registry between tests
-        TensorRegistry.shared.clearAll()
-    }
-
     // MARK: - PJRT Client Tests
 
     @Test("Client creation")

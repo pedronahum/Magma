@@ -303,23 +303,23 @@ struct InfinityHandlingTests {
 
 // MARK: - Softmax Numerical Stability Tests
 
-// NOTE: Some softmax tests may fail on certain backends due to MLIR syntax
-// compatibility issues with the reduce operation format. The core softmax
-// functionality works correctly when the backend supports the operation.
 @Suite("Softmax Stability Tests")
 struct SoftmaxStabilityTests {
 
-    @Test("Softmax with large values", .disabled("MLIR reduce syntax not fully compatible with all backends"))
+    @Test("Softmax with large values")
     func softmaxWithLargeValues() {
         // Softmax should be stable even with large input values
         // Due to the max subtraction trick: softmax(x) = softmax(x - max(x))
         let largeValues: [Float] = [100, 200, 300]
         let x = Tensor<Float>(largeValues, shape: [3])
         let result = x.softmax(dim: 0).scalars()
+        #expect(result.count == 3)
 
         // Sum should be 1
         let sum = result.reduce(0, +)
         #expect(abs(sum - 1.0) < 1e-5, "Softmax should sum to 1")
+        // exp(-100) and exp(-200) relative to the max: all mass on the last entry.
+        #expect(abs(result.last! - 1.0) < 1e-5)
 
         // All values should be valid probabilities
         for (i, p) in result.enumerated() {
@@ -329,15 +329,17 @@ struct SoftmaxStabilityTests {
         }
     }
 
-    @Test("Softmax with very large values", .disabled("MLIR reduce syntax not fully compatible with all backends"))
+    @Test("Softmax with very large values")
     func softmaxWithVeryLargeValues() {
         // Test with values that would overflow exp() without stabilization
         let veryLarge: [Float] = [700, 800, 900]  // exp(700) would overflow
         let x = Tensor<Float>(veryLarge, shape: [3])
         let result = x.softmax(dim: 0).scalars()
+        #expect(result.count == 3)
 
         let sum = result.reduce(0, +)
         #expect(abs(sum - 1.0) < 1e-4, "Softmax should sum to 1 even with large inputs")
+        #expect(abs(result.last! - 1.0) < 1e-5)
 
         for p in result {
             #expect(!p.isNaN, "Softmax should not produce NaN with large inputs")
@@ -345,14 +347,16 @@ struct SoftmaxStabilityTests {
         }
     }
 
-    @Test("Softmax with negative values", .disabled("MLIR reduce syntax not fully compatible with all backends"))
+    @Test("Softmax with negative values")
     func softmaxWithNegativeValues() {
         let negative: [Float] = [-100, -200, -300]
         let x = Tensor<Float>(negative, shape: [3])
         let result = x.softmax(dim: 0).scalars()
+        #expect(result.count == 3)
 
         let sum = result.reduce(0, +)
         #expect(abs(sum - 1.0) < 1e-5, "Softmax should sum to 1 with negative inputs")
+        #expect(abs(result[0] - 1.0) < 1e-5, "the largest input (-100) takes all the mass")
     }
 
     @Test("Softmax with identical values")
@@ -360,6 +364,7 @@ struct SoftmaxStabilityTests {
         let identical: [Float] = [1, 1, 1, 1]
         let x = Tensor<Float>(identical, shape: [4])
         let result = x.softmax(dim: 0).scalars()
+        #expect(result.count == 4)
 
         // All outputs should be equal (0.25)
         for p in result {
@@ -402,6 +407,7 @@ struct ExpLogStabilityTests {
         let x = Tensor<Float>([0, 1, -1, 10, -10], shape: [5])
         let roundtrip = x.exp().log().scalars()
         let original = x.scalars()
+        #expect(roundtrip.count == original.count)
 
         for (i, (orig, rt)) in zip(original, roundtrip).enumerated() {
             #expect(abs(rt - orig) < 1e-5,
@@ -415,6 +421,7 @@ struct ExpLogStabilityTests {
         let x = Tensor<Float>([0.01, 0.1, 1, 10, 100], shape: [5])
         let roundtrip = x.log().exp().scalars()
         let original = x.scalars()
+        #expect(roundtrip.count == original.count)
 
         for (i, (orig, rt)) in zip(original, roundtrip).enumerated() {
             #expect(abs(rt - orig) < orig * 1e-5,
@@ -591,6 +598,7 @@ struct MatrixEdgeCaseTests {
         let zeros = Tensor<Float>.zeros([3, 3])
         let ones = Tensor<Float>.ones([3, 3])
         let result = zeros.matmul(ones).scalars()
+        #expect(result.count == 9)
 
         for val in result {
             #expect(abs(val - 0.0) < 1e-10, "Zero matrix times anything should be zero")
@@ -604,6 +612,7 @@ struct MatrixEdgeCaseTests {
         let identity = Tensor<Float>([1, 0, 0, 0, 1, 0, 0, 0, 1], shape: [3, 3])
 
         let result = a.matmul(identity).scalars()
+        #expect(result.count == data.count)
 
         for (orig, res) in zip(data, result) {
             #expect(abs(res - orig) < 1e-5, "A * I should equal A")
@@ -615,6 +624,7 @@ struct MatrixEdgeCaseTests {
         let data: [Float] = [1, 2, 3, 4, 5, 6]
         let a = Tensor<Float>(data, shape: [2, 3])
         let result = a.transpose().transpose().scalars()
+        #expect(result.count == data.count)
 
         for (orig, res) in zip(data, result) {
             #expect(abs(res - orig) < 1e-10, "A^T^T should equal A")
