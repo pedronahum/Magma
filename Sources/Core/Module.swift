@@ -54,7 +54,12 @@ public protocol Module {
     /// Override for modules that own buffers; default is empty.
     func buffers() -> [Parameter]
 
-    /// Move all parameters to the specified device.
+    /// Move all parameters and buffers to the specified device.
+    ///
+    /// The default implementation moves every `Parameter` returned by
+    /// `parameters()` and `buffers()` (they are reference cells, so this updates
+    /// the module in place). Override only for modules holding device state that
+    /// is not a `Parameter`.
     ///
     /// - Parameter device: The target device.
     mutating func to(device: Device)
@@ -77,9 +82,14 @@ extension Module {
         return []
     }
 
-    /// Default implementation: no-op for modules without parameters.
+    /// Default implementation: moves every parameter and buffer.
+    ///
+    /// `Parameter` is a reference type, so this covers any module (including
+    /// containers) whose `parameters()` / `buffers()` enumerate its state.
     public mutating func to(device: Device) {
-        // Override in modules with parameters
+        for p in parameters() + buffers() {
+            p.to(device: device)
+        }
     }
 
     /// Default implementation: no-op for modules without mode-dependent behavior.
@@ -2276,6 +2286,14 @@ extension nn {
                 layer.setTraining(training)
             }
         }
+
+        /// Moves every child layer (and so all of their parameters, buffers and
+        /// any other device state they own) to `device`.
+        public mutating func to(device: Device) {
+            for layer in layers {
+                layer.to(device: device)
+            }
+        }
     }
 
     /// Type-erased layer wrapper for heterogeneous sequential containers
@@ -2287,6 +2305,7 @@ extension nn {
         private let _parameters: () -> [Parameter]
         private let _buffers: () -> [Parameter]
         private let _setTraining: (Bool) -> Void
+        private let _to: (Device) -> Void
 
         public init<L: Module>(_ layer: L) where L.Input == Tensor<Float>, L.Output == Tensor<Float> {
             // All four closures capture the same boxed `mutableLayer`, so
@@ -2301,6 +2320,7 @@ extension nn {
             self._parameters = { mutableLayer.parameters() }
             self._buffers = { mutableLayer.buffers() }
             self._setTraining = { mutableLayer.setTraining($0) }
+            self._to = { mutableLayer.to(device: $0) }
         }
 
         public func forward(_ input: Tensor<Float>) -> Tensor<Float> {
@@ -2318,6 +2338,11 @@ extension nn {
         // Non-mutating: mutates the shared captured layer box, not `self`.
         public func setTraining(_ training: Bool) {
             _setTraining(training)
+        }
+
+        // Non-mutating for the same reason as `setTraining(_:)`.
+        public func to(device: Device) {
+            _to(device)
         }
     }
 }
@@ -3248,11 +3273,14 @@ extension nn {
         /// Maximum sequence length
         public let maxLen: Int
 
-        /// Dropout probability
+        /// Dropout probability applied to the sum (training mode only)
         public let dropout: Float
 
+        /// Whether in training mode (enables dropout). Defaults to `true`.
+        public var training: Bool = true
+
         /// Pre-computed positional encodings [1, maxLen, dModel]
-        public let pe: Tensor<Float>
+        public private(set) var pe: Tensor<Float>
 
         /// Creates a Sinusoidal Positional Encoding layer.
         ///
@@ -3380,6 +3408,15 @@ extension nn {
 
         public func parameters() -> [Parameter] {
             [embedding]
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
+        }
+
+        /// Moves the precomputed encoding table (it is not a `Parameter`).
+        public mutating func to(device: Device) {
+            pe = pe.to(device: device)
         }
     }
 
