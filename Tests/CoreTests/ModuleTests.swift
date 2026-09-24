@@ -815,9 +815,10 @@ struct CheckpointTests {
     func checkpointCreation() {
         let checkpoint = Checkpoint(description: "Test checkpoint")
 
-        #expect(checkpoint.version == 1)
+        #expect(checkpoint.version == 2)  // v2 adds buffers; v1 files still load
         #expect(checkpoint.description == "Test checkpoint")
         #expect(checkpoint.parameters.isEmpty)
+        #expect(checkpoint.buffers?.isEmpty == true)
     }
 
     @Test("Save and load linear")
@@ -834,9 +835,11 @@ struct CheckpointTests {
         var loaded = nn.Linear(inputSize: 10, outputSize: 5)
         try loaded.load(from: tempURL)
 
-        // Verify shapes match
+        // Verify shapes and values match
         #expect(loaded.weight.shape == original.weight.shape)
         #expect(loaded.bias.shape == original.bias.shape)
+        #expect(loaded.weight.value.scalars() == original.weight.value.scalars())
+        #expect(loaded.bias.value.scalars() == original.bias.value.scalars())
 
         // Clean up
         try? FileManager.default.removeItem(at: tempURL)
@@ -862,8 +865,11 @@ struct CheckpointTests {
         }
         try loaded.load(from: tempURL)
 
-        // Verify parameter count
+        // Verify parameter count and values
         #expect(loaded.parameters().count == original.parameters().count)
+        for (a, b) in zip(loaded.parameters(), original.parameters()) {
+            #expect(a.value.scalars() == b.value.scalars())
+        }
 
         // Clean up
         try? FileManager.default.removeItem(at: tempURL)
@@ -968,9 +974,11 @@ struct CheckpointTests {
         var loaded = nn.Linear(inputSize: 20, outputSize: 10)
         try BinaryCheckpoint.load(&loaded, from: tempURL)
 
-        // Verify shapes match
+        // Verify shapes and values match
         #expect(loaded.weight.shape == original.weight.shape)
         #expect(loaded.bias.shape == original.bias.shape)
+        #expect(loaded.weight.value.scalars() == original.weight.value.scalars())
+        #expect(loaded.bias.value.scalars() == original.bias.value.scalars())
 
         // Clean up
         try? FileManager.default.removeItem(at: tempURL)

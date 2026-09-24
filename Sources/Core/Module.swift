@@ -4476,10 +4476,12 @@ extension nn {
 
 // MARK: - Model Checkpointing
 
-/// A checkpoint representing the state of a model's parameters.
+/// A checkpoint representing the state of a model's parameters and buffers.
 ///
 /// Checkpoints can be saved to disk and loaded later to restore model state.
-/// The format uses JSON for metadata and binary for tensor data.
+/// The file is JSON. Version 2 (current) also stores the module's `buffers()`
+/// (e.g. BatchNorm running statistics); version-1 files, which predate that,
+/// still load and leave the module's buffers untouched.
 ///
 /// Example:
 /// ```swift
@@ -4504,6 +4506,13 @@ public struct Checkpoint: Codable {
     /// Parameter entries with shapes and data
     public var parameters: [ParameterEntry]
 
+    /// Buffer entries (e.g. BatchNorm running statistics), in `buffers()` order.
+    /// `nil` in version-1 checkpoints, which did not store buffers.
+    public var buffers: [ParameterEntry]?
+
+    /// The format version written by this library.
+    static let currentVersion = 2
+
     /// A single parameter's data in the checkpoint
     public struct ParameterEntry: Codable {
         /// Parameter name (if available)
@@ -4524,10 +4533,50 @@ public struct Checkpoint: Codable {
     }
 
     public init(description: String? = nil) {
-        self.version = 1
+        self.version = Checkpoint.currentVersion
         self.timestamp = Date()
         self.description = description
         self.parameters = []
+        self.buffers = []
+    }
+}
+
+/// Materializes `params` into checkpoint entries, failing loudly if a value
+/// could not be read back (instead of writing an empty/short entry).
+private func checkpointEntries(_ params: [Parameter], kind: String) throws -> [Checkpoint.ParameterEntry] {
+    try params.enumerated().map { index, param in
+        let values = param.value.scalars()
+        guard values.count == param.elementCount else {
+            throw CheckpointError.saveFailed(
+                "could not materialize \(kind) \(index) (\(param.name ?? "unnamed"), shape \(param.shape)): " +
+                "got \(values.count) of \(param.elementCount) values")
+        }
+        return Checkpoint.ParameterEntry(name: param.name, index: index, shape: param.shape, values: values)
+    }
+}
+
+/// Validates checkpoint entries against a module's parameters (or buffers) and
+/// returns the tensors to assign, without mutating anything. Every index, shape
+/// and value count read from the file is checked so a corrupt file throws
+/// instead of trapping.
+private func stageCheckpointEntries(
+    _ entries: [Checkpoint.ParameterEntry], into targets: [Parameter], kind: String
+) throws -> [(Parameter, Tensor<Float>)] {
+    var seen = Set<Int>()
+    return try entries.map { entry in
+        guard targets.indices.contains(entry.index), seen.insert(entry.index).inserted else {
+            throw CheckpointError.loadFailed(
+                "\(kind) entry has invalid or duplicate index \(entry.index) (module has \(targets.count) \(kind)s)")
+        }
+        let target = targets[entry.index]
+        guard target.shape == entry.shape else {
+            throw CheckpointError.shapeMismatch(parameterIndex: entry.index, expected: target.shape, got: entry.shape)
+        }
+        guard entry.values.count == target.elementCount else {
+            throw CheckpointError.loadFailed(
+                "\(kind) \(entry.index) has \(entry.values.count) values for shape \(entry.shape)")
+        }
+        return (target, Tensor<Float>(entry.values, shape: entry.shape, on: target.value.device))
     }
 }
 
@@ -4556,12 +4605,13 @@ public enum CheckpointError: Error, CustomStringConvertible {
 }
 
 extension Module {
-    /// Save the module's parameters to a checkpoint file.
+    /// Save the module's parameters and buffers to a checkpoint file.
     ///
     /// - Parameters:
     ///   - url: File URL to save the checkpoint.
     ///   - description: Optional description to include in the checkpoint.
-    /// - Throws: CheckpointError if saving fails.
+    /// - Throws: CheckpointError if a value cannot be materialized or the file
+    ///   cannot be written.
     ///
     /// Example:
     /// ```swift
@@ -4571,20 +4621,10 @@ extension Module {
     public func save(to url: URL, description: String? = nil) throws {
         var checkpoint = Checkpoint(description: description)
 
-        let params = parameters()
-        for (index, param) in params.enumerated() {
-            // Materialize tensor to get values
-            LazyTensorBarrier()
-            let values = param.value.scalars()
-
-            let entry = Checkpoint.ParameterEntry(
-                name: param.name,
-                index: index,
-                shape: param.shape,
-                values: values
-            )
-            checkpoint.parameters.append(entry)
-        }
+        // Materialize everything pending before reading values back.
+        LazyTensorBarrier()
+        checkpoint.parameters = try checkpointEntries(parameters(), kind: "parameter")
+        checkpoint.buffers = try checkpointEntries(buffers(), kind: "buffer")
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -4597,10 +4637,15 @@ extension Module {
         }
     }
 
-    /// Load parameters from a checkpoint file into this module.
+    /// Load parameters (and, for version-2 files, buffers) from a checkpoint
+    /// file into this module.
+    ///
+    /// The file is fully validated before anything is assigned, so a failed
+    /// load leaves the module unchanged.
     ///
     /// - Parameter url: File URL to load the checkpoint from.
-    /// - Throws: CheckpointError if loading fails or parameters don't match.
+    /// - Throws: CheckpointError if the file is unreadable or corrupt, or if its
+    ///   parameters/buffers don't match this module.
     ///
     /// Example:
     /// ```swift
@@ -4624,7 +4669,7 @@ extension Module {
         }
 
         // Check version compatibility
-        if checkpoint.version > 1 {
+        guard (1...Checkpoint.currentVersion).contains(checkpoint.version) else {
             throw CheckpointError.incompatibleVersion(checkpoint.version)
         }
 
@@ -4634,22 +4679,20 @@ extension Module {
         if params.count != checkpoint.parameters.count {
             throw CheckpointError.parameterMismatch(expected: params.count, got: checkpoint.parameters.count)
         }
+        var staged = try stageCheckpointEntries(checkpoint.parameters, into: params, kind: "parameter")
 
-        // Load each parameter
-        for entry in checkpoint.parameters {
-            let param = params[entry.index]
-
-            // Check shape matches
-            if param.shape != entry.shape {
-                throw CheckpointError.shapeMismatch(
-                    parameterIndex: entry.index,
-                    expected: param.shape,
-                    got: entry.shape
-                )
+        // Version-1 files carry no buffers; keep the module's current ones.
+        if let bufferEntries = checkpoint.buffers {
+            let bufs = buffers()
+            guard bufs.count == bufferEntries.count else {
+                throw CheckpointError.loadFailed(
+                    "buffer count mismatch: module has \(bufs.count), checkpoint has \(bufferEntries.count)")
             }
+            staged += try stageCheckpointEntries(bufferEntries, into: bufs, kind: "buffer")
+        }
 
-            // Create new tensor with loaded values
-            param.value = Tensor<Float>(entry.values, shape: entry.shape)
+        for (target, value) in staged {
+            target.value = value
         }
     }
 }
@@ -4775,145 +4818,187 @@ extension Module {
 
 /// Binary checkpoint format for efficient storage of large models.
 ///
-/// Format:
+/// Format (all integers uint32 little endian, values float32):
 /// - 8 bytes: Magic number "STCHKPT\0"
-/// - 4 bytes: Version (uint32 little endian)
-/// - 4 bytes: Number of parameters (uint32 little endian)
-/// - For each parameter:
-///   - 4 bytes: Name length (uint32)
-///   - N bytes: Name (UTF-8)
-///   - 4 bytes: Rank (uint32)
-///   - 4*rank bytes: Shape (uint32 each)
-///   - 4*elementCount bytes: Values (float32)
+/// - 4 bytes: Version (currently 2)
+/// - 4 bytes: Number of parameters
+/// - For each parameter (in `parameters()` order):
+///   - 4 bytes: Name length, then N bytes: Name (UTF-8)
+///   - 4 bytes: Rank, then 4*rank bytes: Shape
+///   - 4*elementCount bytes: Values
+/// - Version 2 only: 4 bytes: Number of buffers, then each buffer (in
+///   `buffers()` order) encoded like a parameter.
+///
+/// Version-1 files (no buffer section) still load; the module's buffers are
+/// left untouched. Loading validates every length against the file size and
+/// throws `CheckpointError` on a truncated or corrupt file.
 public struct BinaryCheckpoint {
     private static let magic: [UInt8] = Array("STCHKPT\0".utf8)
-    private static let version: UInt32 = 1
+    private static let version: UInt32 = 2
 
-    /// Save module to binary format
+    /// Upper bound on a stored tensor rank, to reject garbage before allocating.
+    private static let maxRank: UInt32 = 64
+
+    /// Save module parameters and buffers to binary format
     public static func save<M: Module>(_ module: M, to url: URL) throws {
         var data = Data()
 
-        // Magic number
-        data.append(contentsOf: magic)
+        func appendUInt32(_ value: UInt32) {
+            var le = value.littleEndian
+            data.append(Data(bytes: &le, count: 4))
+        }
 
-        // Version
-        var version = self.version
-        data.append(Data(bytes: &version, count: 4))
-
-        let params = module.parameters()
-
-        // Number of parameters
-        var numParams = UInt32(params.count)
-        data.append(Data(bytes: &numParams, count: 4))
-
-        // Each parameter
-        for (index, param) in params.enumerated() {
-            // Materialize values
-            LazyTensorBarrier()
-            let values = param.value.scalars()
-
-            // Name
-            let name = param.name ?? "param_\(index)"
-            let nameData = name.data(using: .utf8)!
-            var nameLen = UInt32(nameData.count)
-            data.append(Data(bytes: &nameLen, count: 4))
-            data.append(nameData)
-
-            // Rank
-            var rank = UInt32(param.shape.count)
-            data.append(Data(bytes: &rank, count: 4))
-
-            // Shape
-            for dim in param.shape {
-                var dimVal = UInt32(dim)
-                data.append(Data(bytes: &dimVal, count: 4))
-            }
-
-            // Values (as float32)
-            values.withUnsafeBufferPointer { buffer in
-                data.append(buffer)
+        func appendEntries(_ entries: [Checkpoint.ParameterEntry], defaultPrefix: String) {
+            appendUInt32(UInt32(entries.count))
+            for entry in entries {
+                let nameData = Data((entry.name ?? "\(defaultPrefix)_\(entry.index)").utf8)
+                appendUInt32(UInt32(nameData.count))
+                data.append(nameData)
+                appendUInt32(UInt32(entry.shape.count))
+                for dim in entry.shape {
+                    appendUInt32(UInt32(dim))
+                }
+                entry.values.withUnsafeBufferPointer { buffer in
+                    data.append(buffer)
+                }
             }
         }
 
-        try data.write(to: url)
+        // Materialize everything pending before reading values back.
+        LazyTensorBarrier()
+        let params = try checkpointEntries(module.parameters(), kind: "parameter")
+        let bufs = try checkpointEntries(module.buffers(), kind: "buffer")
+
+        data.append(contentsOf: magic)
+        appendUInt32(version)
+        appendEntries(params, defaultPrefix: "param")
+        appendEntries(bufs, defaultPrefix: "buffer")
+
+        do {
+            try data.write(to: url)
+        } catch {
+            throw CheckpointError.saveFailed(error.localizedDescription)
+        }
     }
 
-    /// Load module from binary format
+    /// Load module parameters (and, for version-2 files, buffers) from binary
+    /// format. The file is fully parsed and validated before anything is
+    /// assigned, so a failed load leaves the module unchanged.
     public static func load<M: Module>(_ module: inout M, from url: URL) throws {
-        let data = try Data(contentsOf: url)
-        var offset = 0
-
-        // Helper to read UInt32 safely (handles unaligned access)
-        func readUInt32() -> UInt32 {
-            var value: UInt32 = 0
-            _ = withUnsafeMutableBytes(of: &value) { dest in
-                data.copyBytes(to: dest, from: offset..<offset+4)
-            }
-            offset += 4
-            return value
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw CheckpointError.loadFailed(error.localizedDescription)
         }
-
-        // Helper to read Float array safely
-        func readFloats(count: Int) -> [Float] {
-            var values = [Float](repeating: 0, count: count)
-            values.withUnsafeMutableBytes { dest in
-                data.copyBytes(to: dest, from: offset..<offset + count * 4)
-            }
-            offset += count * 4
-            return values
-        }
+        var reader = Reader(data)
 
         // Verify magic
-        let readMagic = [UInt8](data[offset..<offset+8])
-        guard readMagic == magic else {
-            throw CheckpointError.loadFailed("Invalid file format")
+        guard reader.remaining >= magic.count, [UInt8](try reader.bytes(magic.count, "magic")) == magic else {
+            throw CheckpointError.loadFailed("Invalid file format (bad magic number)")
         }
-        offset += 8
 
         // Version
-        let version = readUInt32()
-        guard version <= self.version else {
+        let version = try reader.uint32("version")
+        guard version >= 1 && version <= self.version else {
             throw CheckpointError.incompatibleVersion(Int(version))
         }
 
-        // Number of parameters
-        let numParams = readUInt32()
-
+        // Parameters
         let params = module.parameters()
+        let numParams = try reader.uint32("parameter count")
         guard params.count == Int(numParams) else {
             throw CheckpointError.parameterMismatch(expected: params.count, got: Int(numParams))
         }
+        let paramEntries = try (0..<params.count).map { try readEntry(&reader, index: $0, kind: "parameter") }
+        var staged = try stageCheckpointEntries(paramEntries, into: params, kind: "parameter")
 
-        // Load each parameter
-        for (index, param) in params.enumerated() {
-            // Name length
-            let nameLen = readUInt32()
-
-            // Name (skip, use for verification if needed)
-            _ = String(data: data[offset..<offset+Int(nameLen)], encoding: .utf8)
-            offset += Int(nameLen)
-
-            // Rank
-            let rank = readUInt32()
-
-            // Shape
-            var shape: [Int] = []
-            for _ in 0..<rank {
-                let dim = readUInt32()
-                shape.append(Int(dim))
+        // Buffers (version 2+)
+        if version >= 2 {
+            let bufs = module.buffers()
+            let numBuffers = try reader.uint32("buffer count")
+            guard bufs.count == Int(numBuffers) else {
+                throw CheckpointError.loadFailed(
+                    "buffer count mismatch: module has \(bufs.count), checkpoint has \(numBuffers)")
             }
+            let bufferEntries = try (0..<bufs.count).map { try readEntry(&reader, index: $0, kind: "buffer") }
+            staged += try stageCheckpointEntries(bufferEntries, into: bufs, kind: "buffer")
+        }
 
-            // Verify shape
-            guard param.shape == shape else {
-                throw CheckpointError.shapeMismatch(parameterIndex: index, expected: param.shape, got: shape)
+        guard reader.remaining == 0 else {
+            throw CheckpointError.loadFailed("\(reader.remaining) unexpected trailing bytes")
+        }
+
+        for (target, value) in staged {
+            target.value = value
+        }
+    }
+
+    /// Reads one name/shape/values record.
+    private static func readEntry(_ reader: inout Reader, index: Int, kind: String) throws -> Checkpoint.ParameterEntry {
+        let what = "\(kind) \(index)"
+        let nameLen = try reader.uint32("\(what) name length")
+        let name = String(decoding: try reader.bytes(Int(nameLen), "\(what) name"), as: UTF8.self)
+
+        let rank = try reader.uint32("\(what) rank")
+        guard rank <= maxRank else {
+            throw CheckpointError.loadFailed("\(what) has implausible rank \(rank) (corrupt file?)")
+        }
+        var shape: [Int] = []
+        var elementCount = 1
+        for _ in 0..<rank {
+            let dim = Int(try reader.uint32("\(what) shape"))
+            shape.append(dim)
+            let (product, overflow) = elementCount.multipliedReportingOverflow(by: dim)
+            guard !overflow else {
+                throw CheckpointError.loadFailed("\(what) shape \(shape) overflows (corrupt file?)")
             }
+            elementCount = product
+        }
 
-            // Values
-            let elementCount = shape.reduce(1, *)
-            let values = readFloats(count: elementCount)
+        let values = try reader.floats(elementCount, "\(what) values")
+        return Checkpoint.ParameterEntry(name: name, index: index, shape: shape, values: values)
+    }
 
-            // Create new tensor
-            param.value = Tensor<Float>(values, shape: shape)
+    /// Bounds-checked little-endian reader over the checkpoint bytes.
+    private struct Reader {
+        let data: Data
+        var offset: Int
+
+        init(_ data: Data) {
+            self.data = data
+            self.offset = data.startIndex
+        }
+
+        var remaining: Int { data.endIndex - offset }
+
+        mutating func bytes(_ count: Int, _ what: String) throws -> Data {
+            guard count >= 0 && count <= remaining else {
+                throw CheckpointError.loadFailed(
+                    "truncated file: need \(count) bytes for \(what) at offset \(offset - data.startIndex), " +
+                    "only \(remaining) left")
+            }
+            defer { offset += count }
+            return data[offset..<(offset + count)]
+        }
+
+        mutating func uint32(_ what: String) throws -> UInt32 {
+            let bytes = try bytes(4, what)
+            var value: UInt32 = 0
+            _ = withUnsafeMutableBytes(of: &value) { bytes.copyBytes(to: $0) }
+            return UInt32(littleEndian: value)
+        }
+
+        mutating func floats(_ count: Int, _ what: String) throws -> [Float] {
+            let (byteCount, overflow) = count.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
+            guard !overflow else {
+                throw CheckpointError.loadFailed("\(what): element count \(count) overflows (corrupt file?)")
+            }
+            // Bounds-checked before allocating, so a bogus shape cannot trigger a huge allocation.
+            let bytes = try bytes(byteCount, what)
+            var values = [Float](repeating: 0, count: count)
+            _ = values.withUnsafeMutableBytes { bytes.copyBytes(to: $0) }
+            return values
         }
     }
 }
