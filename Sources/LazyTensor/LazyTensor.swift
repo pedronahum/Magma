@@ -1198,6 +1198,109 @@ public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
     }
 }
 
+// MARK: - Host → Device Upload
+
+/// The PJRT element type that stores values of `dtype`.
+func elementType(for dtype: DType) -> ElementType {
+    switch dtype {
+    case .bool: return .bool
+    case .int8: return .int8
+    case .int16: return .int16
+    case .int32: return .int32
+    case .int64: return .int64
+    case .uint8: return .uint8
+    case .uint16: return .uint16
+    case .uint32: return .uint32
+    case .uint64: return .uint64
+    case .float16: return .float16
+    case .float32: return .float32
+    case .float64: return .float64
+    case .bfloat16: return .bfloat16
+    }
+}
+
+/// Convert to an integer, saturating out-of-range values and mapping NaN to 0
+/// (never traps, unlike `I(_:)`, e.g. on a constant-folded overflow).
+private func saturatingInteger<I: FixedWidthInteger>(_ value: Float) -> I {
+    if value.isNaN { return 0 }
+    if value >= Float(I.max) { return I.max }
+    if value <= Float(I.min) { return I.min }
+    return I(value.rounded(.towardZero))
+}
+
+/// IEEE 754 binary16 bits for `value`, rounded to nearest even. Portable:
+/// `Float16` is unavailable on some platforms Magma builds for.
+func halfPrecisionBits(_ value: Float) -> UInt16 {
+    let bits = value.bitPattern
+    let sign = UInt16((bits >> 16) & 0x8000)
+    let exponent = Int((bits >> 23) & 0xFF)
+    var mantissa = bits & 0x7F_FFFF
+    if exponent == 0xFF {                                   // inf / NaN
+        return sign | 0x7C00 | (mantissa != 0 ? 0x0200 : 0)
+    }
+    let halfExponent = exponent - 127 + 15
+    if halfExponent >= 0x1F { return sign | 0x7C00 }       // overflow → inf
+    if halfExponent <= 0 {                                  // subnormal / zero
+        if halfExponent < -10 { return sign }
+        mantissa |= 0x80_0000
+        let shift = UInt32(14 - halfExponent)
+        var half = mantissa >> shift
+        let remainder = mantissa & ((1 << shift) - 1)
+        let halfway = UInt32(1) << (shift - 1)
+        if remainder > halfway || (remainder == halfway && half & 1 == 1) { half += 1 }
+        return sign | UInt16(half)
+    }
+    var half = UInt32(halfExponent) << 10 | (mantissa >> 13)
+    let remainder = mantissa & 0x1FFF
+    // A carry out of the mantissa correctly bumps the exponent (up to inf).
+    if remainder > 0x1000 || (remainder == 0x1000 && half & 1 == 1) { half += 1 }
+    return sign | UInt16(half)
+}
+
+/// bfloat16 bits for `value`, rounded to nearest even.
+func bfloat16Bits(_ value: Float) -> UInt16 {
+    if value.isNaN { return 0x7FC0 }
+    let bits = value.bitPattern
+    let rounding = 0x7FFF + ((bits >> 16) & 1)
+    return UInt16((bits &+ rounding) >> 16)
+}
+
+/// Upload values held as `Float` in the IR (constants) to a device buffer whose
+/// element type matches `dtype`, the type the emitted program declares.
+func createDeviceBuffer(
+    _ values: [Float], shape: [Int], dtype: DType, client: PJRTClient
+) throws -> PJRTBuffer {
+    let type = elementType(for: dtype)
+    switch dtype {
+    case .float32:
+        return try client.createBuffer(values, shape: shape, elementType: type)
+    case .float64:
+        return try client.createBuffer(values.map(Double.init), shape: shape, elementType: type)
+    case .bool:
+        return try client.createBuffer(values.map { $0 != 0 }, shape: shape, elementType: type)
+    case .int8:
+        return try client.createBuffer(values.map { saturatingInteger($0) as Int8 }, shape: shape, elementType: type)
+    case .int16:
+        return try client.createBuffer(values.map { saturatingInteger($0) as Int16 }, shape: shape, elementType: type)
+    case .int32:
+        return try client.createBuffer(values.map { saturatingInteger($0) as Int32 }, shape: shape, elementType: type)
+    case .int64:
+        return try client.createBuffer(values.map { saturatingInteger($0) as Int64 }, shape: shape, elementType: type)
+    case .uint8:
+        return try client.createBuffer(values.map { saturatingInteger($0) as UInt8 }, shape: shape, elementType: type)
+    case .uint16:
+        return try client.createBuffer(values.map { saturatingInteger($0) as UInt16 }, shape: shape, elementType: type)
+    case .uint32:
+        return try client.createBuffer(values.map { saturatingInteger($0) as UInt32 }, shape: shape, elementType: type)
+    case .uint64:
+        return try client.createBuffer(values.map { saturatingInteger($0) as UInt64 }, shape: shape, elementType: type)
+    case .float16:
+        return try client.createBuffer(values.map(halfPrecisionBits), shape: shape, elementType: type)
+    case .bfloat16:
+        return try client.createBuffer(values.map(bfloat16Bits), shape: shape, elementType: type)
+    }
+}
+
 /// The result of compiling (or reusing) and executing one optimized graph.
 struct PJRTGraphRun {
     /// Output buffers, one per graph output, in order.
@@ -1279,16 +1382,13 @@ func compileAndRunOptimizedGraph(
         }
     }
 
-    // Second: promoted constants (need to create buffers for their values).
+    // Second: promoted constants (need to create buffers for their values),
+    // uploaded with the element type the emitted program declares for them.
     var promotedConstantBuffers: [PJRTBuffer] = []
     do {
         for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
-            let buffer = try client.createBuffer(
-                promoted.values,
-                shape: promoted.shape,
-                elementType: .float32,
-                device: nil
-            )
+            let buffer = try createDeviceBuffer(
+                promoted.values, shape: promoted.shape, dtype: promoted.dtype, client: client)
             inputBuffers.append(buffer)
             promotedConstantBuffers.append(buffer)
         }
