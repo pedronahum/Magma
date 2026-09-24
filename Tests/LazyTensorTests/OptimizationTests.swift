@@ -655,6 +655,62 @@ struct AlgebraicSimplificationTests {
 
         #expect(optimized.outputs.first?.id == relu1Id, "relu(relu(x)) should be simplified to relu(x)")
     }
+
+    // reshape(reshape(y)) is rewritten to reshape(<y's producer input>). When y
+    // is itself `x + 0` and gets replaced by x, the rewrite must use x: naming the
+    // dropped `add` left the emitter with "Missing inputs for reshape" (seen in
+    // the gradient of Examples/BuildingSimulation).
+    @Test("Reshape-of-reshape rewrite follows an earlier replacement")
+    func reshapeChainFollowsReplacement() {
+        let pass = AlgebraicSimplificationPass()
+        let graph = IRGraph()
+
+        let x = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [1], dtype: .float32, device: .default)
+        let zero = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [1], dtype: .float32, device: .default)
+        zero.irNode = .constant(values: [0], shape: [1])
+        let sum = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [1], dtype: .float32, device: .default)
+        sum.irNode = .operation(op: .add, inputs: [x, zero], attributes: [:])
+        let inner = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [], dtype: .float32, device: .default)
+        inner.irNode = .operation(op: .reshape, inputs: [sum], attributes: ["shape": [Int]()])
+        let outer = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [1, 1], dtype: .float32, device: .default)
+        outer.irNode = .operation(op: .reshape, inputs: [inner], attributes: ["shape": [1, 1]])
+
+        graph.nodes = [x, zero, sum, inner, outer]
+        graph.addOutput(outer)
+
+        let optimized = pass.run(on: graph)
+
+        let kept = Set(optimized.nodes.map { $0.id })
+        #expect(!kept.contains(sum.id), "x + 0 should be replaced by x")
+        guard case .operation(.reshape, let inputs, _) = outer.irNode else {
+            Issue.record("outer should still be a reshape")
+            return
+        }
+        #expect(inputs.map(\.id) == [x.id], "reshape must read x, not the dropped add")
+        #expect(inputs.allSatisfy { kept.contains($0.id) })
+    }
+
+    // Swift autodiff's zero cotangent is rank 0, so `v[3] * 0[]` is common in
+    // gradient graphs. Replacing it by the scalar zero would change its shape.
+    @Test("x * 0 is not replaced when the zero is a broadcast scalar")
+    func multiplyBroadcastZeroKeepsShape() {
+        let pass = AlgebraicSimplificationPass()
+        let graph = IRGraph()
+
+        let x = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [3], dtype: .float32, device: .default)
+        let zero = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [], dtype: .float32, device: .default)
+        zero.irNode = .constant(values: [0], shape: [])
+        let product = LazyTensorHandle(id: TensorRegistry.shared.nextTensorId(), shape: [3], dtype: .float32, device: .default)
+        product.irNode = .operation(op: .multiply, inputs: [x, zero], attributes: [:])
+
+        graph.nodes = [x, zero, product]
+        graph.addOutput(product)
+
+        let optimized = pass.run(on: graph)
+
+        #expect(optimized.outputs.first?.shape == [3])
+        #expect(optimized.outputs.first?.id == product.id)
+    }
 }
 
 // MARK: - ExpressionKey Tests

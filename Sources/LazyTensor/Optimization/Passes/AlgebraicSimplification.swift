@@ -55,6 +55,17 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
         var replacements: [UInt64: LazyTensorHandle] = [:]
         var simplifiedCount = 0
 
+        // Follow replacement chains. Patterns that look through a producer
+        // (e.g. reshape(reshape(x))) name the producer's original input, which
+        // may itself have been replaced and dropped from the graph.
+        func resolve(_ handle: LazyTensorHandle) -> LazyTensorHandle {
+            var current = handle
+            while let next = replacements[current.id], next !== current {
+                current = next
+            }
+            return current
+        }
+
         // Process each node looking for simplification opportunities
         for node in graph.nodes {
             guard let irNode = node.irNode else { continue }
@@ -62,7 +73,7 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
             switch irNode {
             case .operation(let opKind, let inputs, let attributes):
                 // Resolve any already-replaced inputs
-                let resolvedInputs = inputs.map { replacements[$0.id] ?? $0 }
+                let resolvedInputs = inputs.map(resolve)
 
                 // Try to simplify this operation
                 if let simplification = exactStandIn(simplify(
@@ -74,14 +85,21 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
                 ), for: node) {
                     switch simplification {
                     case .replace(let replacement):
-                        replacements[node.id] = replacement
-                        simplifiedCount += 1
+                        let replacement = resolve(replacement)
+                        // Identities such as x * 0 = 0 only hold when no
+                        // broadcasting is involved: never change the node's shape.
+                        if replacement.shape == node.shape && replacement.dtype == node.dtype {
+                            replacements[node.id] = replacement
+                            simplifiedCount += 1
+                        } else if resolvedInputs != inputs {
+                            node.irNode = .operation(op: opKind, inputs: resolvedInputs, attributes: attributes)
+                        }
 
                     case .updateInputs(let newInputs):
-                        node.irNode = .operation(op: opKind, inputs: newInputs, attributes: attributes)
+                        node.irNode = .operation(op: opKind, inputs: newInputs.map(resolve), attributes: attributes)
 
                     case .replaceOp(let newOp, let newInputs, let newAttrs):
-                        node.irNode = .operation(op: newOp, inputs: newInputs, attributes: newAttrs)
+                        node.irNode = .operation(op: newOp, inputs: newInputs.map(resolve), attributes: newAttrs)
                         simplifiedCount += 1
                     }
                 } else if resolvedInputs != inputs {
@@ -115,9 +133,7 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
         }
 
         // Update outputs with replacements
-        newGraph.outputs = graph.outputs.map { output -> LazyTensorHandle in
-            replacements[output.id] ?? output
-        }
+        newGraph.outputs = graph.outputs.map(resolve)
 
         return newGraph
     }
