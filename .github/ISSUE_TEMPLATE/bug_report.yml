@@ -1,0 +1,46 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest Swift program or test that shows the problem.
+      render: swift
+  - type: textarea
+    id: output
+    attributes:
+      label: Output / error messages
+      render: text
+  - type: input
+    id: magma
+    attributes:
+      label: Magma version or commit
+    validations:
+      required: true
+  - type: input
+    id: swift
+    attributes:
+      label: Swift toolchain (`swift --version`)
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: e.g. Ubuntu 24.04 aarch64, macOS 15.3 arm64
+    validations:
+      required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Backend and PJRT plugin
+      placeholder: e.g. CPU plugin built from XLA 9b635916, JAX CUDA plugin 0.10.1, Metal

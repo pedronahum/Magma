@@ -1,0 +1,29 @@
+Magma
+Copyright 2024-2026 Pedro N. Rodriguez
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by third parties, also under the
+Apache License, Version 2.0:
+
+- OpenXLA (https://github.com/openxla/xla)
+  Copyright 2022 The OpenXLA Authors.
+  Sources/CXLARuntime/include/pjrt_c_api.h is vendored from OpenXLA
+  (PJRT C API header, API version 0.81) and is unmodified apart from its
+  location in this repository.
+
+- Swift for TensorFlow (https://github.com/tensorflow/swift-apis)
+  Copyright 2019 The TensorFlow Authors.
+  Portions of the lazy tensor design, parameter initializers, loss functions,
+  optimizers (RMSProp, AdaGrad, AdaDelta), activation layers and the
+  KeyPathIterable reflection utilities are ported or adapted from
+  Swift for TensorFlow. Files containing such code carry the original
+  copyright notice.
+
+- SwiftIR (https://github.com/pedronahum/SwiftIR)
+  The PJRT C wrapper in Sources/CXLARuntime and the Shardy sharding types in
+  Sources/StableHLO/Sharding are adapted from SwiftIR.
+
+- OpenXLA Shardy (https://github.com/openxla/shardy)
+  The sharding model and its textual attribute syntax follow Shardy's
+  `sdy` dialect.
