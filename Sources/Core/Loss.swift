@@ -27,6 +27,7 @@ import XLARuntime
 extension Tensor where Scalar == Float {
 
     /// Element-wise squared
+    @differentiable(reverse)
     public func squared() -> Tensor {
         self * self
     }
@@ -57,6 +58,7 @@ extension Tensor where Scalar == Float {
     }
 
     /// Sum along a single axis
+    @differentiable(reverse)
     public func sum(alongAxes axis: Int) -> Tensor {
         sum(alongAxes: [axis])
     }
@@ -87,6 +89,7 @@ extension Tensor where Scalar == Float {
     }
 
     /// Maximum along a single axis
+    @differentiable(reverse)
     public func max(alongAxes axis: Int) -> Tensor {
         max(alongAxes: [axis])
     }
@@ -117,30 +120,23 @@ extension Tensor where Scalar == Float {
     }
 
     /// Minimum along a single axis
+    @differentiable(reverse)
     public func min(alongAxes axis: Int) -> Tensor {
         min(alongAxes: [axis])
-    }
-
-    /// Softplus activation: log(1 + exp(x))
-    ///
-    /// This is a smooth approximation to ReLU.
-    public func softplus() -> Tensor {
-        // softplus(x) = log(1 + exp(x))
-        // For numerical stability with large x: softplus(x) ≈ x when x >> 0
-        // Using log1p for better stability: softplus(x) = log1p(exp(x))
-        self.exp().log1p()
     }
 
     /// Log of 1 plus x: log(1 + x)
     ///
     /// For small x, this is more numerically stable than log(1 + x).
     /// Note: Uses the identity log1p(x) = log(1 + x).
+    @differentiable(reverse)
     public func log1p() -> Tensor {
         let one = Tensor<Float>.ones(shape, on: device)
         return (self + one).log()
     }
 
     /// Add a dimension at the specified axis
+    @differentiable(reverse)
     public func expandingShape(at axis: Int) -> Tensor {
         let normalizedAxis = axis < 0 ? rank + axis + 1 : axis
         var newShape = shape
@@ -160,6 +156,7 @@ extension Tensor where Scalar == Float {
     /// let x = Tensor<Float>.ones([2, 1, 3])
     /// let squeezed = x.squeeze(dim: 1)  // shape: [2, 3]
     /// ```
+    @differentiable(reverse)
     public func squeeze(dim: Int) -> Tensor {
         let normalizedDim = dim < 0 ? rank + dim : dim
         precondition(normalizedDim >= 0 && normalizedDim < rank,
@@ -182,6 +179,7 @@ extension Tensor where Scalar == Float {
     /// let x = Tensor<Float>.ones([1, 2, 1, 3, 1])
     /// let squeezed = x.squeeze()  // shape: [2, 3]
     /// ```
+    @differentiable(reverse)
     public func squeeze() -> Tensor {
         let newShape = shape.filter { $0 != 1 }
         return reshape(newShape.isEmpty ? [1] : newShape)
@@ -191,16 +189,19 @@ extension Tensor where Scalar == Float {
 // MARK: - Free Functions for Element-wise Operations
 
 /// Element-wise absolute value
+@differentiable(reverse)
 public func abs(_ x: Tensor<Float>) -> Tensor<Float> {
     x.abs()
 }
 
 /// Element-wise natural logarithm
+@differentiable(reverse)
 public func log(_ x: Tensor<Float>) -> Tensor<Float> {
     x.log()
 }
 
 /// Element-wise exponential
+@differentiable(reverse)
 public func exp(_ x: Tensor<Float>) -> Tensor<Float> {
     x.exp()
 }
@@ -234,8 +235,87 @@ public func min(_ x: Tensor<Float>, _ y: Tensor<Float>) -> Tensor<Float> {
 }
 
 /// Softplus activation: log(1 + exp(x))
+@differentiable(reverse)
 public func softplus(_ x: Tensor<Float>) -> Tensor<Float> {
     x.softplus()
+}
+
+// MARK: - Derivatives
+
+extension Tensor where Scalar == Float {
+
+    /// VJP for sum along axes: the cotangent is broadcast back over the
+    /// reduced axes.
+    @derivative(of: sum(alongAxes:))
+    public func vjpSumAlongAxes(_ axes: [Int]) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.sum(alongAxes: axes)
+        let kept = keptReductionShape(axes.map { $0 < 0 ? rank + $0 : $0 })
+        let shape = self.shape, resultShape = result.shape
+        return (result, { v in
+            v.broadcastCotangent(to: resultShape).reshape(kept).broadcast(to: shape)
+        })
+    }
+
+    /// VJP for max along axes (subgradient; ties share the gradient).
+    @derivative(of: max(alongAxes:))
+    public func vjpMaxAlongAxes(_ axes: [Int]) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.max(alongAxes: axes)
+        return (result, extremumAlongAxesPullback(result: result, axes: axes))
+    }
+
+    /// VJP for min along axes (subgradient; ties share the gradient).
+    @derivative(of: min(alongAxes:))
+    public func vjpMinAlongAxes(_ axes: [Int]) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.min(alongAxes: axes)
+        return (result, extremumAlongAxesPullback(result: result, axes: axes))
+    }
+
+    private func extremumAlongAxesPullback(result: Tensor, axes: [Int]) -> (Tensor) -> Tensor {
+        let normalizedAxes = axes.map { $0 < 0 ? rank + $0 : $0 }
+        let kept = keptReductionShape(normalizedAxes)
+        let resultShape = result.shape
+        return { v in
+            self.extremumPullback(
+                keptResult: result.reshape(kept),
+                keptCotangent: v.broadcastCotangent(to: resultShape).reshape(kept),
+                axes: normalizedAxes)
+        }
+    }
+}
+
+/// VJP for the element-wise `max(x, y)`: the cotangent goes to the larger
+/// operand, split evenly on ties.
+@derivative(of: max)
+@usableFromInline
+func vjpElementwiseMax(
+    _ x: Tensor<Float>, _ y: Tensor<Float>
+) -> (value: Tensor<Float>, pullback: (Tensor<Float>) -> (Tensor<Float>, Tensor<Float>)) {
+    elementwiseExtremumVJP(max(x, y), x, y, xWins: x.greaterThan(y))
+}
+
+/// VJP for the element-wise `min(x, y)`: the cotangent goes to the smaller
+/// operand, split evenly on ties.
+@derivative(of: min)
+@usableFromInline
+func vjpElementwiseMin(
+    _ x: Tensor<Float>, _ y: Tensor<Float>
+) -> (value: Tensor<Float>, pullback: (Tensor<Float>) -> (Tensor<Float>, Tensor<Float>)) {
+    elementwiseExtremumVJP(min(x, y), x, y, xWins: x.lessThan(y))
+}
+
+private func elementwiseExtremumVJP(
+    _ result: Tensor<Float>, _ x: Tensor<Float>, _ y: Tensor<Float>, xWins: Tensor<Float>
+) -> (value: Tensor<Float>, pullback: (Tensor<Float>) -> (Tensor<Float>, Tensor<Float>)) {
+    let half = Tensor<Float>.full([], 0.5, on: x.device)
+    let one = Tensor<Float>.ones([], on: x.device)
+    let xShare = xWins + x.equalTo(y) * half
+    let yShare = one - xShare
+    let shape = result.shape, xShape = x.shape, yShape = y.shape
+    return (result, { v in
+        let v = v.broadcastCotangent(to: shape)
+        return ((v * xShare).sumAlongBroadcastDims(to: xShape),
+                (v * yShare).sumAlongBroadcastDims(to: yShape))
+    })
 }
 
 // MARK: - Reduction Type
@@ -261,6 +341,7 @@ public enum LossReduction {
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The L1 loss.
+@differentiable(reverse, wrt: (predicted, expected))
 public func l1Loss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -283,6 +364,7 @@ public func l1Loss(
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The L2 loss.
+@differentiable(reverse, wrt: (predicted, expected))
 public func l2Loss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -304,6 +386,7 @@ public func l2Loss(
 ///   - predicted: Predicted outputs from a neural network.
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 /// - Returns: The mean absolute error.
+@differentiable(reverse, wrt: (predicted, expected))
 public func meanAbsoluteError(
     predicted: Tensor<Float>,
     expected: Tensor<Float>
@@ -319,6 +402,7 @@ public func meanAbsoluteError(
 ///   - predicted: Predicted outputs from a neural network.
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 /// - Returns: The mean squared error.
+@differentiable(reverse, wrt: (predicted, expected))
 public func meanSquaredError(
     predicted: Tensor<Float>,
     expected: Tensor<Float>
@@ -337,6 +421,7 @@ public func meanSquaredError(
 ///   - predicted: Predicted outputs from a neural network.
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 /// - Returns: The mean squared logarithmic error.
+@differentiable(reverse, wrt: (predicted, expected))
 public func meanSquaredLogarithmicError(
     predicted: Tensor<Float>,
     expected: Tensor<Float>
@@ -356,6 +441,7 @@ public func meanSquaredLogarithmicError(
 ///   - predicted: Predicted outputs from a neural network.
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 /// - Returns: The mean absolute percentage error.
+@differentiable(reverse, wrt: (predicted, expected))
 public func meanAbsolutePercentageError(
     predicted: Tensor<Float>,
     expected: Tensor<Float>
@@ -375,6 +461,7 @@ public func meanAbsolutePercentageError(
 ///   - expected: Expected values, i.e. targets (-1 or 1).
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The hinge loss.
+@differentiable(reverse, wrt: predicted)
 public func hingeLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -401,6 +488,7 @@ public func hingeLoss(
 ///   - expected: Expected values, i.e. targets (-1 or 1).
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The squared hinge loss.
+@differentiable(reverse, wrt: predicted)
 public func squaredHingeLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -425,6 +513,7 @@ public func squaredHingeLoss(
 ///   - expected: Expected values (one-hot encoded targets).
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The categorical hinge loss.
+@differentiable(reverse, wrt: predicted)
 public func categoricalHingeLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -456,6 +545,7 @@ public func categoricalHingeLoss(
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The log-cosh loss.
+@differentiable(reverse, wrt: (predicted, expected))
 public func logCoshLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -484,6 +574,7 @@ public func logCoshLoss(
 ///   - expected: Expected values, i.e. targets, that correspond to the correct output.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The Poisson loss.
+@differentiable(reverse, wrt: predicted)
 public func poissonLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -506,6 +597,7 @@ public func poissonLoss(
 ///   - expected: Expected probability distribution (target).
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The KL divergence.
+@differentiable(reverse, wrt: predicted)
 public func kullbackLeiblerDivergence(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -531,6 +623,7 @@ public func kullbackLeiblerDivergence(
 ///                    Each row must be a valid probability distribution.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The softmax cross entropy loss.
+@differentiable(reverse, wrt: logits)
 public func softmaxCrossEntropy(
     logits: Tensor<Float>,
     probabilities: Tensor<Float>,
@@ -578,6 +671,7 @@ public func softmaxCrossEntropy(
 ///   - numClasses: The number of classes.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The sparse softmax cross entropy loss.
+@differentiable(reverse, wrt: logits)
 public func softmaxCrossEntropyWithLabels(
     logits: Tensor<Float>,
     labels: [Int],
@@ -615,6 +709,7 @@ public func softmaxCrossEntropyWithLabels(
 ///   - labels: Float values (0.0 or 1.0) that correspond to the correct output.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The sigmoid cross entropy loss.
+@differentiable(reverse, wrt: logits)
 public func sigmoidCrossEntropy(
     logits: Tensor<Float>,
     labels: Tensor<Float>,
@@ -658,6 +753,7 @@ public func sigmoidCrossEntropy(
 ///            changes from quadratic to linear.
 ///   - reduction: Reduction to apply on the computed element-wise loss values.
 /// - Returns: The Huber loss.
+@differentiable(reverse, wrt: (predicted, expected))
 public func huberLoss(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -692,6 +788,7 @@ public func huberLoss(
 ///   - b: Second tensor.
 ///   - epsilon: Small value for numerical stability.
 /// - Returns: Cosine similarity value(s).
+@differentiable(reverse, wrt: (a, b))
 public func cosineSimilarity(
     _ a: Tensor<Float>,
     _ b: Tensor<Float>,
@@ -711,6 +808,7 @@ public func cosineSimilarity(
 ///   - expected: Expected embedding.
 ///   - reduction: Reduction to apply.
 /// - Returns: The cosine distance.
+@differentiable(reverse, wrt: (predicted, expected))
 public func cosineDistance(
     predicted: Tensor<Float>,
     expected: Tensor<Float>,
@@ -737,6 +835,7 @@ public func cosineDistance(
 ///   - margin: The margin for dissimilar pairs.
 ///   - reduction: Reduction to apply.
 /// - Returns: The contrastive loss.
+@differentiable(reverse, wrt: (anchor, sample))
 public func contrastiveLoss(
     anchor: Tensor<Float>,
     sample: Tensor<Float>,
@@ -780,6 +879,7 @@ public func contrastiveLoss(
 ///   - margin: Minimum desired margin between positive and negative distances.
 ///   - reduction: Reduction to apply.
 /// - Returns: The triplet margin loss.
+@differentiable(reverse, wrt: (anchor, positive, negative))
 public func tripletMarginLoss(
     anchor: Tensor<Float>,
     positive: Tensor<Float>,
