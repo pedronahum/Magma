@@ -418,6 +418,238 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     }
 }
 
+// MARK: - VJPs for Parameterized Activations
+
+// These activations are single lazy ops (or have a numerically better
+// gradient than differentiating their definition), so they get custom VJPs.
+// A registered derivative is visible to other modules, which is what lets user
+// code differentiate through them.
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// Broadcast a cotangent to `shape`. Autodiff passes the rank-0
+    /// `Tensor.zero` for an output that does not reach the result.
+    internal func broadcastCotangent(to shape: [Int]) -> Tensor {
+        self.shape == shape ? self : self.broadcast(to: shape)
+    }
+
+    /// VJP for leakyRelu: 1 for x > 0, `negativeSlope` otherwise.
+    @derivative(of: leakyRelu, wrt: self)
+    public func vjpLeakyRelu(negativeSlope: Float) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let positive = self.greaterThan(Scalar(0))
+        let slope = Tensor.full([], Scalar(negativeSlope), on: device)
+        let one = Tensor.ones([], on: device)
+        let grad = positive + (one - positive) * slope
+        return (self.leakyRelu(negativeSlope: negativeSlope), { v in v * grad })
+    }
+
+    /// VJP for elu: 1 for x > 0, `alpha * exp(x)` otherwise.
+    @derivative(of: elu, wrt: self)
+    public func vjpElu(alpha: Float) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let grad = eluGradient(alpha: Scalar(alpha))
+        return (self.elu(alpha: alpha), { v in v * grad })
+    }
+
+    /// VJP for selu: `scale` for x > 0, `scale * alpha * exp(x)` otherwise.
+    @derivative(of: selu)
+    public func vjpSelu() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let alpha = Scalar(1.6732632423543772848170429916717)
+        let scale = Tensor.full([], Scalar(1.0507009873554804934193349852946), on: device)
+        let grad = eluGradient(alpha: alpha) * scale
+        return (self.selu(), { v in v * grad })
+    }
+
+    private func eluGradient(alpha: Scalar) -> Tensor {
+        let positive = self.greaterThan(Scalar(0))
+        let one = Tensor.ones([], on: device)
+        let negativeBranch = self.exp() * Tensor.full([], alpha, on: device)
+        return positive + (one - positive) * negativeBranch
+    }
+
+    /// VJP for hardtanh (and `clamp`): 1 strictly inside `(minVal, maxVal)`,
+    /// 0 outside, where the output is constant.
+    @derivative(of: hardtanh, wrt: self)
+    public func vjpHardtanh(minVal: Float, maxVal: Float) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let inside = self.greaterThan(Scalar(minVal)) * self.lessThan(Scalar(maxVal))
+        return (self.hardtanh(minVal: minVal, maxVal: maxVal), { v in v * inside })
+    }
+
+    /// VJP for pow: `exponent * x^(exponent - 1)`.
+    @derivative(of: pow, wrt: self)
+    public func vjpPow(_ exponent: Float) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.pow(exponent)
+        let grad: Tensor
+        if exponent == 0 {
+            grad = Tensor.zeros(shape, on: device)
+        } else {
+            grad = self.pow(exponent - 1) * Tensor.full([], Scalar(exponent), on: device)
+        }
+        return (result, { v in v * grad })
+    }
+
+    /// VJP for softplus: `sigmoid(x)`, which stays finite where `exp(x)`
+    /// overflows.
+    @derivative(of: softplus)
+    public func vjpSoftplus() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let grad = self.sigmoid()
+        return (self.softplus(), { v in v * grad })
+    }
+
+    /// VJP for logSoftmax: `v - softmax(x) * sum(v, dim)`.
+    @derivative(of: logSoftmax)
+    public func vjpLogSoftmax(dim: Int) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.logSoftmax(dim: dim)
+        let axis = dim < 0 ? rank + dim : dim
+        let shape = self.shape
+        return (result, { v in
+            let v = v.broadcastCotangent(to: shape)
+            let sumV = v.sum(dims: [axis], keepDims: true).broadcast(to: shape)
+            return v - result.exp() * sumV
+        })
+    }
+}
+
+// MARK: - VJPs for Max Reductions
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// Pullback shared by max/min reductions (a subgradient): the cotangent
+    /// goes to the elements equal to the extremum, split evenly among ties.
+    ///
+    /// - Parameters:
+    ///   - keptResult: the reduced value with the reduced axes kept as size 1.
+    ///   - keptCotangent: the cotangent in the same kept shape.
+    ///   - axes: the (non-negative) reduced axes.
+    internal func extremumPullback(keptResult: Tensor, keptCotangent: Tensor, axes: [Int]) -> Tensor {
+        let hits = self.equalTo(keptResult.broadcast(to: shape))
+        let count = hits.sum(dims: axes, keepDims: true).broadcast(to: shape)
+        return keptCotangent.broadcast(to: shape) * hits / count
+    }
+
+    /// Shape of a reduction over `axes` with the reduced axes kept as size 1.
+    internal func keptReductionShape(_ axes: [Int]) -> [Int] {
+        var kept = shape
+        for axis in axes { kept[axis] = 1 }
+        return kept
+    }
+
+    /// VJP for the full max reduction (subgradient; ties share the gradient).
+    @derivative(of: max)
+    public func vjpMax() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.max()
+        let axes = Array(0..<rank)
+        let kept = keptReductionShape(axes)
+        return (result, { v in
+            self.extremumPullback(
+                keptResult: result.reshape(kept),
+                keptCotangent: v.broadcastCotangent(to: []).reshape(kept),
+                axes: axes)
+        })
+    }
+
+    /// VJP for max along dimensions (subgradient; ties share the gradient).
+    @derivative(of: max(dims:keepDims:))
+    public func vjpMaxDims(dims: [Int], keepDims: Bool) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.max(dims: dims, keepDims: keepDims)
+        let axes = dims.map { $0 < 0 ? rank + $0 : $0 }
+        let kept = keptReductionShape(axes)
+        let resultShape = result.shape
+        return (result, { v in
+            self.extremumPullback(
+                keptResult: result.reshape(kept),
+                keptCotangent: v.broadcastCotangent(to: resultShape).reshape(kept),
+                axes: axes)
+        })
+    }
+}
+
+// MARK: - VJP for Variance
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for variance: `2 * (x - mean(x)) / d`, with `d = N - 1` when
+    /// `unbiased` (and N > 1), else `N`, where N is the number of reduced
+    /// elements. (A custom VJP: differentiating the body crashes the
+    /// Differentiation pass on Swift 6.3.)
+    @derivative(of: variance)
+    public func vjpVariance(
+        dims: [Int], keepDims: Bool, unbiased: Bool
+    ) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let result = self.variance(dims: dims, keepDims: keepDims, unbiased: unbiased)
+        let axes = dims.map { $0 < 0 ? rank + $0 : $0 }
+        let count = axes.reduce(1) { $0 * shape[$1] }
+        let denominator = unbiased && count > 1 ? count - 1 : count
+        let kept = keptReductionShape(axes)
+        let inputShape = self.shape, resultShape = result.shape
+        let centered = self - self.mean(dims: axes, keepDims: true).broadcast(to: inputShape)
+        let scale = Tensor.full([], Scalar(2) / Scalar(denominator), on: device)
+        return (result, { v in
+            let vFull = v.broadcastCotangent(to: resultShape).reshape(kept).broadcast(to: inputShape)
+            return vFull * centered * scale
+        })
+    }
+}
+
+// MARK: - VJPs for Masking
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for maskedFill: masked positions route the cotangent to `value`,
+    /// the others to `self`. The mask is not differentiated.
+    @derivative(of: maskedFill, wrt: (self, value))
+    public func vjpMaskedFill(
+        mask: Tensor, value: Tensor
+    ) -> (value: Tensor, pullback: (Tensor) -> (Tensor, Tensor)) {
+        let result = self.maskedFill(mask: mask, value: value)
+        let selected = mask.notEqual(Scalar(0))
+        let one = Tensor.ones([], on: device)
+        let shape = self.shape, valueShape = value.shape
+        return (result, { v in
+            let v = v.broadcastCotangent(to: shape)
+            return (v * (one - selected), (v * selected).sumAlongBroadcastDims(to: valueShape))
+        })
+    }
+}
+
+// MARK: - VJPs for Device and Precision Conversions
+
+extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
+
+    /// VJP for moving a tensor between devices: the cotangent moves back.
+    @derivative(of: to(device:))
+    public func vjpToDevice(_ targetDevice: Device) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let sourceDevice = device
+        return (self.to(device: targetDevice), { v in v.to(device: sourceDevice) })
+    }
+}
+
+extension Tensor where Scalar == Float {
+
+    /// VJP for toReducedPrecision: the cotangent is converted back to the
+    /// input's dtype.
+    @derivative(of: toReducedPrecision)
+    public func vjpToReducedPrecision() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let sourceDtype = dtype
+        return (self.toReducedPrecision(), { v in v.to(sourceDtype) })
+    }
+
+    /// VJP for toFullPrecision: the cotangent is converted back to the
+    /// input's dtype.
+    @derivative(of: toFullPrecision)
+    public func vjpToFullPrecision() -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let sourceDtype = dtype
+        return (self.toFullPrecision(), { v in v.to(sourceDtype) })
+    }
+
+    /// VJP for a dtype conversion: the cotangent is converted back to the
+    /// input's dtype.
+    @derivative(of: to(_:))
+    public func vjpToDtype(_ targetDtype: DType) -> (value: Tensor, pullback: (Tensor) -> Tensor) {
+        let sourceDtype = dtype
+        return (self.to(targetDtype), { v in v.to(sourceDtype) })
+    }
+}
+
 // MARK: - Gradient Computation Functions
 
 /// Compute the gradient of a scalar-valued function at a point.

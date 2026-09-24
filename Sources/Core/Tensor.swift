@@ -310,6 +310,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     /// //  [1, 1, 0],
     /// //  [1, 1, 1]]
     /// ```
+    @differentiable(reverse)
     public func tril(k: Int = 0) -> Tensor where Scalar == Float {
         precondition(rank == 2, "tril requires a 2D tensor, got rank \(rank)")
         let rows = shape[0]
@@ -339,6 +340,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     /// //  [0, 1, 1],
     /// //  [0, 0, 1]]
     /// ```
+    @differentiable(reverse)
     public func triu(k: Int = 0) -> Tensor where Scalar == Float {
         precondition(rank == 2, "triu requires a 2D tensor, got rank \(rank)")
         let rows = shape[0]
@@ -1211,6 +1213,7 @@ extension Tensor {
     /// Transpose the last two dimensions.
     ///
     /// Useful for attention mechanisms where we need K^T.
+    @differentiable(reverse where Scalar: BinaryFloatingPoint)
     public func transposeLastTwo() -> Tensor {
         precondition(rank >= 2,
             "transposeLastTwo requires at least 2D tensor, got rank \(rank) with shape \(shape).")
@@ -1557,6 +1560,7 @@ extension Tensor {
     }
 
     /// SiLU (Swish) activation: x * sigmoid(x)
+    @differentiable(reverse where Scalar: BinaryFloatingPoint)
     public func silu() -> Tensor {
         self * self.sigmoid()
     }
@@ -1605,10 +1609,6 @@ extension Tensor {
 
     /// Element-wise power
     public func pow(_ exponent: Float) -> Tensor {
-        let id = TensorRegistry.shared.nextTensorId()
-        let handle = LazyTensorHandle(
-            id: id,
-            shape: shape,
         // `power` is a binary op: the exponent is a constant of the same shape.
         let exponentHandle = LazyTensorHandle(
             id: TensorRegistry.shared.nextTensorId(),
@@ -1619,6 +1619,10 @@ extension Tensor {
         exponentHandle.irNode = .constant(values: Array(repeating: exponent, count: elementCount), shape: shape)
         TensorRegistry.shared.registerPending(exponentHandle)
 
+        let id = TensorRegistry.shared.nextTensorId()
+        let handle = LazyTensorHandle(
+            id: id,
+            shape: shape,
             dtype: dtype,
             device: device
         )
@@ -1628,6 +1632,7 @@ extension Tensor {
     }
 
     /// Clamp values to a range
+    @differentiable(reverse, wrt: self where Scalar: BinaryFloatingPoint)
     public func clamp(min: Float, max: Float) -> Tensor {
         hardtanh(minVal: min, maxVal: max)
     }
@@ -1661,6 +1666,7 @@ extension Tensor {
     /// `mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))`
     ///
     /// A smooth, non-monotonic activation function.
+    @differentiable(reverse where Scalar: BinaryFloatingPoint)
     public func mish() -> Tensor {
         // mish(x) = x * tanh(softplus(x))
         self * self.softplus().tanh()
@@ -1672,10 +1678,10 @@ extension Tensor {
     ///
     /// A smooth approximation to ReLU.
     public func softplus() -> Tensor {
-        // softplus(x) = log(1 + exp(x))
-        // For numerical stability, we use: softplus(x) = max(0, x) + log(1 + exp(-|x|))
+        // softplus(x) = log(1 + exp(x)), computed as max(0, x) + log(1 + exp(-|x|))
+        // so that exp never overflows. The gradient is a custom VJP (sigmoid).
         let one = Tensor<Scalar>.ones(shape, on: device)
-        return (one + self.exp()).log()
+        return self.relu() + (one + self.abs().negated().exp()).log()
     }
 
     /// Softsign activation
@@ -1683,6 +1689,7 @@ extension Tensor {
     /// `softsign(x) = x / (1 + |x|)`
     ///
     /// A smooth approximation to the sign function.
+    @differentiable(reverse where Scalar: BinaryFloatingPoint)
     public func softsign() -> Tensor {
         let one = Tensor<Scalar>.ones(shape, on: device)
         return self / (one + self.abs())
@@ -1845,6 +1852,7 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     /// let mask = x.greaterThan(2.0)      // [0, 0, 1, 1, 1]
     /// let result = x.maskedSelect(mask)  // [0, 0, 3, 4, 5], shape [5]
     /// ```
+    @differentiable(reverse, wrt: self)
     public func maskedSelect(_ mask: Tensor) -> Tensor {
         precondition(shape == mask.shape,
             "maskedSelect: mask shape \(mask.shape) must match tensor shape \(shape).")
@@ -1864,6 +1872,7 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     ///   - trueValue: Values to use where mask is true.
     ///   - falseValue: Values to use where mask is false.
     /// - Returns: Tensor with conditionally selected values.
+    @differentiable(reverse, wrt: (trueValue, falseValue))
     public static func where_(
         _ mask: Tensor,
         _ trueValue: Tensor,
@@ -1873,6 +1882,7 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     }
 
     /// Conditionally select elements: self where mask is true, other where false.
+    @differentiable(reverse, wrt: (self, other))
     public func where_(_ mask: Tensor, _ other: Tensor) -> Tensor {
         Tensor.where_(mask, self, other)
     }
@@ -2287,6 +2297,7 @@ extension nn {
 
             let numClasses = logits.shape[1]
 
+        @differentiable(reverse, wrt: logits)
             // Compute log softmax for numerical stability
             let logProbs = logits.logSoftmax(dim: -1)
 
@@ -2407,6 +2418,7 @@ extension nn {
             // Select target log probs by multiplying with one-hot and summing
             let targetLogProbs = (logProbs * oneHot).sum(dims: [1], keepDims: false)
 
+        @differentiable(reverse, wrt: logProbs)
             // Return negative mean
             return (-targetLogProbs).mean()
         }
