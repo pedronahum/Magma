@@ -103,7 +103,7 @@ extension Tensor where Scalar == Float {
         // Generate normal samples and reject those more than 2 standard
         // deviations from the mean. Rejection sampling runs on the host, drawing
         // from the global stream (reproducible under `manualSeed(_:)`).
-        let count = shape.isEmpty ? 1 : shape.reduce(1, *)
+        let count = checkedElementCount(shape, "Tensor.truncatedNormal")
         var values: [Float] = []
         values.reserveCapacity(count)
 

@@ -77,8 +77,12 @@ public struct TensorDataset: Dataset {
     ///   - inputs: Input tensor, first dimension is batch.
     ///   - targets: Target tensor, first dimension is batch.
     public init(inputs: Tensor<Float>, targets: Tensor<Float>) {
+        precondition(inputs.rank >= 1 && targets.rank >= 1,
+                    "TensorDataset: inputs and targets need a leading sample dimension; " +
+                    "got shapes \(inputs.shape) and \(targets.shape)")
         precondition(inputs.shape[0] == targets.shape[0],
-                    "Inputs and targets must have same number of samples")
+                    "TensorDataset: inputs and targets must have the same number of samples; " +
+                    "got \(inputs.shape[0]) and \(targets.shape[0])")
         self.inputs = inputs
         self.targets = targets
     }

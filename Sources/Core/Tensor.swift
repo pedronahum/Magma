@@ -73,7 +73,17 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     }
 
     /// Create a tensor from data
+    ///
+    /// - Parameters:
+    ///   - data: The elements in row-major order. Must contain exactly
+    ///     `shape.reduce(1, *)` values (one value for a scalar shape `[]`).
+    ///   - shape: The tensor shape. Every dimension must be non-negative.
+    ///   - device: The device to create the tensor on.
     public init(_ data: [Scalar], shape: [Int], on device: Device = .default) {
+        let expectedCount = Tensor.checkedElementCount(shape, "Tensor(_:shape:)")
+        precondition(data.count == expectedCount,
+            "Tensor(_:shape:): got \(data.count) values for shape \(shape), which needs \(expectedCount); " +
+            "pass exactly one value per element (row-major), or fix the shape")
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
             id: id,
@@ -111,10 +121,19 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         self.handle = handle
     }
 
+    /// The element count of `shape`, trapping with an actionable message when a
+    /// dimension is negative.
+    internal static func checkedElementCount(_ shape: [Int], _ caller: String) -> Int {
+        precondition(shape.allSatisfy { $0 >= 0 },
+            "\(caller): shape \(shape) has a negative dimension; every dimension must be >= 0")
+        return shape.reduce(1, *)
+    }
+
     // MARK: - Factory Methods
 
     /// Create a tensor filled with zeros
     public static func zeros(_ shape: [Int], on device: Device = .default) -> Tensor {
+        let count = checkedElementCount(shape, "Tensor.zeros")
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
             id: id,
@@ -122,13 +141,14 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             dtype: Scalar.dtype,
             device: device
         )
-        handle.irNode = .constant(values: Array(repeating: 0, count: shape.reduce(1, *)), shape: shape)
+        handle.irNode = .constant(values: Array(repeating: 0, count: count), shape: shape)
         TensorRegistry.shared.registerPending(handle)
         return Tensor(handle: handle)
     }
 
     /// Create a tensor filled with ones
     public static func ones(_ shape: [Int], on device: Device = .default) -> Tensor {
+        let count = checkedElementCount(shape, "Tensor.ones")
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
             id: id,
@@ -136,13 +156,14 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             dtype: Scalar.dtype,
             device: device
         )
-        handle.irNode = .constant(values: Array(repeating: 1, count: shape.reduce(1, *)), shape: shape)
+        handle.irNode = .constant(values: Array(repeating: 1, count: count), shape: shape)
         TensorRegistry.shared.registerPending(handle)
         return Tensor(handle: handle)
     }
 
     /// Create a tensor filled with a specific value
     public static func full(_ shape: [Int], _ value: Scalar, on device: Device = .default) -> Tensor where Scalar: BinaryFloatingPoint {
+        let count = checkedElementCount(shape, "Tensor.full")
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
             id: id,
@@ -150,7 +171,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             dtype: Scalar.dtype,
             device: device
         )
-        handle.irNode = .constant(values: Array(repeating: Float(value), count: shape.reduce(1, *)), shape: shape)
+        handle.irNode = .constant(values: Array(repeating: Float(value), count: count), shape: shape)
         TensorRegistry.shared.registerPending(handle)
         return Tensor(handle: handle)
     }
@@ -169,6 +190,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     /// let indices = Tensor<Float>.arange(5)  // [0, 1, 2, 3, 4]
     /// ```
     public static func arange(_ n: Int, on device: Device = .default) -> Tensor where Scalar: BinaryFloatingPoint {
+        precondition(n >= 0, "Tensor.arange: n must be non-negative, got \(n)")
         let values = (0..<n).map { Float($0) }
         let id = TensorRegistry.shared.nextTensorId()
         let handle = LazyTensorHandle(
@@ -470,7 +492,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
 
         // Generate random values on the host (Box-Muller) from the global,
         // seedable stream (see `manualSeed(_:)`).
-        let count = shape.isEmpty ? 1 : shape.reduce(1, *)
+        let count = checkedElementCount(shape, "Tensor.randn")
         let values = HostRandom.withGenerator { hostNormalSamples(count: count, using: &$0) }
 
         // Create tensor from the random values
@@ -1962,7 +1984,7 @@ extension Tensor where Scalar: BinaryFloatingPoint {
         precondition(low < high, "Tensor.uniform: low (\(low)) must be less than high (\(high))")
         // Generate random values on the host from the global, seedable stream
         // (see `manualSeed(_:)`), avoiding backend RNG issues.
-        let count = shape.isEmpty ? 1 : shape.reduce(1, *)
+        let count = checkedElementCount(shape, "Tensor.uniform")
         let values: [Float] = HostRandom.withGenerator { rng in
             (0..<count).map { _ in Float.random(in: low..<high, using: &rng) }
         }
