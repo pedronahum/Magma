@@ -638,7 +638,11 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         // If this is a Metal device buffer, transfer to host lazily (only when user reads)
         #if os(macOS) && canImport(MetalHLO)
         if case .metalData(let metalBuffer) = handle.irNode {
-            return try hostScalars(ofMetal: metalBuffer)
+            do {
+                return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
+            } catch {
+                throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
+            }
         }
         #endif
 
@@ -659,7 +663,11 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         // Check for Metal buffer (fallback after barrier)
         #if os(macOS) && canImport(MetalHLO)
         if case .metalData(let metalBuffer) = handle.irNode {
-            return try hostScalars(ofMetal: metalBuffer)
+            do {
+                return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
+            } catch {
+                throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
+            }
         }
         #endif
 
@@ -683,16 +691,6 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
         }
     }
-
-    #if os(macOS) && canImport(MetalHLO)
-    private func hostScalars(ofMetal metalBuffer: MetalHLOBuffer) throws -> [Scalar] {
-        do {
-            return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
-        } catch {
-            throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
-        }
-    }
-    #endif
 
     /// The PJRT element type whose host layout is exactly `Scalar`, if any.
     private static var hostElementType: ElementType? {
