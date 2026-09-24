@@ -5,6 +5,7 @@
 // shuffles and the random data transforms) comes from one process-wide
 // generator. Unseeded it is backed by the system RNG; `manualSeed(_:)` switches
 // it to a deterministic SplitMix64 stream so runs can be reproduced.
+// `withManualSeed(_:_:)` gives one task a private seeded stream instead.
 
 import Foundation
 
@@ -32,17 +33,93 @@ import Foundation
 ///   the global stream.
 /// - Note: The generator is shared by all threads. Draws from concurrent tasks
 ///   interleave in an unspecified order, so determinism is only guaranteed when
-///   random values are drawn from one thread (or in a fixed order).
+///   random values are drawn from one thread (or in a fixed order). Use
+///   `withManualSeed(_:_:)` for a stream private to one task.
+/// - Note: Inside a `withManualSeed(_:_:)` scope this reseeds that scope's
+///   stream instead of the global one.
 ///
 /// - Parameter seed: The seed for the host random stream.
 public func manualSeed(_ seed: UInt64) {
-    HostRandom.seed(seed)
+    if let scoped = HostRandom.scoped {
+        scoped.reseed(seed)
+    } else {
+        HostRandom.seed(seed)
+    }
+}
+
+/// Runs `body` with a private host random stream seeded with `seed`.
+///
+/// Every host-side random draw made by `body` on the current task, and by child
+/// tasks it creates, comes from a fresh SplitMix64 stream started from `seed`
+/// instead of the global stream. Draws made concurrently elsewhere in the
+/// process neither consume nor reseed it, so the result is reproducible even
+/// while other threads use randomness (for example under parallel tests). The
+/// global stream is left untouched.
+///
+/// ```swift
+/// let a = withManualSeed(42) { Tensor<Float>.randn([3]).scalars() }
+/// let b = withManualSeed(42) { Tensor<Float>.randn([3]).scalars() }
+/// // a == b
+/// ```
+///
+/// Device-side RNG ops are not affected (see `manualSeed(_:)`). Work handed to
+/// threads outside Swift structured concurrency (e.g. `DispatchQueue`) does not
+/// inherit the scope.
+///
+/// - Parameters:
+///   - seed: The seed for the scoped stream.
+///   - body: The code whose host random draws use the scoped stream.
+/// - Returns: The value returned by `body`.
+public func withManualSeed<R>(_ seed: UInt64, _ body: () throws -> R) rethrows -> R {
+    try HostRandom.$scoped.withValue(ScopedHostGenerator(seed: seed)) {
+        try body()
+    }
+}
+
+/// Async variant of `withManualSeed(_:_:)`.
+///
+/// - Parameters:
+///   - seed: The seed for the scoped stream.
+///   - body: The code whose host random draws use the scoped stream.
+/// - Returns: The value returned by `body`.
+public func withManualSeed<R>(_ seed: UInt64, _ body: () async throws -> R) async rethrows -> R {
+    try await HostRandom.$scoped.withValue(ScopedHostGenerator(seed: seed)) {
+        try await body()
+    }
+}
+
+/// A seeded stream bound to one `withManualSeed(_:_:)` scope.
+///
+/// Child tasks inherit the scope, so the stream carries its own lock.
+final class ScopedHostGenerator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generator: HostGenerator
+
+    init(seed: UInt64) {
+        generator = HostGenerator(seeded: SeededGenerator(seed: seed))
+    }
+
+    func reseed(_ seed: UInt64) {
+        lock.lock()
+        generator = HostGenerator(seeded: SeededGenerator(seed: seed))
+        lock.unlock()
+    }
+
+    func withGenerator<R>(_ body: (inout HostGenerator) throws -> R) rethrows -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&generator)
+    }
 }
 
 /// The process-wide host random stream behind `manualSeed(_:)`.
 enum HostRandom {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var generator = HostGenerator()
+
+    /// The innermost `withManualSeed(_:_:)` stream, if any; it takes precedence
+    /// over the global generator.
+    @TaskLocal static var scoped: ScopedHostGenerator?
 
     /// Replaces the stream with a deterministic one started from `seed`.
     static func seed(_ seed: UInt64) {
@@ -56,6 +133,9 @@ enum HostRandom {
     /// Hold the generator for a whole batch of draws (e.g. all elements of one
     /// tensor) so that concurrent callers cannot interleave inside it.
     static func withGenerator<R>(_ body: (inout HostGenerator) throws -> R) rethrows -> R {
+        if let scoped {
+            return try scoped.withGenerator(body)
+        }
         lock.lock()
         defer { lock.unlock() }
         return try body(&generator)

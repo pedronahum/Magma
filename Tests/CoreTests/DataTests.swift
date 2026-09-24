@@ -142,15 +142,17 @@ struct SimpleBatchLoaderTests {
         let targets = Tensor<Float>.zeros([10, 2])
         let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 5, shuffle: true)
 
+        // withManualSeed keeps the stream private to this test under parallel runs.
         func sampleOrder(seed: UInt64) -> [Float] {
-            manualSeed(seed)
-            var order: [Float] = []
-            for batch in loader {
-                #expect(batch.input.shape == [5, 4])
-                let values = batch.input.scalars()
-                order.append(contentsOf: stride(from: 0, to: values.count, by: 4).map { values[$0] })
+            withManualSeed(seed) {
+                var order: [Float] = []
+                for batch in loader {
+                    #expect(batch.input.shape == [5, 4])
+                    let values = batch.input.scalars()
+                    order.append(contentsOf: stride(from: 0, to: values.count, by: 4).map { values[$0] })
+                }
+                return order
             }
-            return order
         }
 
         let a = sampleOrder(seed: 123)
@@ -172,8 +174,7 @@ struct SimpleBatchLoaderTests {
                                 batchSize: 4, shuffle: true)
 
         func sampleOrder(seed: UInt64) -> [Float] {
-            manualSeed(seed)
-            return loader.flatMap { $0.input.scalars() }
+            withManualSeed(seed) { loader.flatMap { $0.input.scalars() } }
         }
 
         let a = sampleOrder(seed: 9)
