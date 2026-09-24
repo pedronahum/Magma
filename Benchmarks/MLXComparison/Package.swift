@@ -1,9 +1,9 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 import PackageDescription
 
 let package = Package(
     name: "MagmaMLXBenchmark",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     dependencies: [
         .package(path: "../.."),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),

@@ -1,52 +1,45 @@
-// swift-tools-version:5.9
-// The swift-tools-version declares the minimum version of Swift required to build this package.
+// swift-tools-version:6.0
+// Magma requires a Swift 6.0+ toolchain from swift.org (the `_Differentiation`
+// module used for autodiff is not shipped with Xcode's toolchain).
 
 import PackageDescription
 
 // MARK: - Build Configuration
+//
+// The PJRT plugin (CPU/GPU/TPU) is loaded at runtime with dlopen from
+// $MAGMA_XLA_PATH, so no XLA libraries are needed at build time and the
+// default build is fully functional once a plugin is installed.
 
-/// Set via environment: MAGMA_XLA_PATH=/path/to/xla
-let xlaPath = Context.environment["MAGMA_XLA_PATH"] ?? "/opt/xla"
-
-/// Set MAGMA_ENABLE_XLA=1 to enable XLA linking
-/// When not set, builds without XLA (stub-only mode for development)
-let enableXLA = Context.environment["MAGMA_ENABLE_XLA"] == "1"
-
-/// Set MAGMA_ENABLE_METAL=1 to enable Metal backend via MetalHLO
-/// Automatically enabled on macOS if MetalHLO is available
+/// Metal backend via MetalHLO (macOS only, opt-in).
+///
+/// Set MAGMA_ENABLE_METAL=1 to add the MetalHLO dependency. By default it comes
+/// from GitHub; set MAGMA_METALHLO_PATH to use a local checkout instead. It is
+/// opt-in so that the default package graph has no unversioned dependencies and
+/// Magma can be consumed as a tagged release.
 #if os(macOS)
-let enableMetal = Context.environment["MAGMA_ENABLE_METAL"] != "0"
+let enableMetal = Context.environment["MAGMA_ENABLE_METAL"] == "1"
 #else
 let enableMetal = false
 #endif
 
-// Conditionally add linker settings for XLA
-// Note: The PJRT plugin is loaded dynamically via dlopen, so we don't need
-// to link against it at build time. We just need the -ldl flag on Linux.
-var xlaRuntimeLinkerSettings: [LinkerSetting] = []
-if enableXLA {
-    #if os(Linux)
-    xlaRuntimeLinkerSettings = [
-        .linkedLibrary("dl"),  // For dlopen/dlsym
-    ]
-    #endif
-}
-
-// MetalHLO is only available/needed on macOS. The manifest runs on the host,
-// so on Linux we omit the package dependency and its product entirely.
 var packageDependencies: [Package.Dependency] = []
 var xlaRuntimeDependencies: [Target.Dependency] = ["CXLARuntime"]
-#if os(macOS)
-packageDependencies.append(.package(path: "../MetalHLO"))
-xlaRuntimeDependencies.append(
-    .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS]))
-)
-#endif
+if enableMetal {
+    if let metalHLOPath = Context.environment["MAGMA_METALHLO_PATH"] {
+        packageDependencies.append(.package(path: metalHLOPath))
+    } else {
+        packageDependencies.append(
+            .package(url: "https://github.com/pedronahum/MetalHLO.git", branch: "main"))
+    }
+    xlaRuntimeDependencies.append(
+        .product(name: "MetalHLO", package: "MetalHLO", condition: .when(platforms: [.macOS]))
+    )
+}
 
 let package = Package(
     name: "Magma",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         // ════════════════════════════════════════════════════════════════════
@@ -72,31 +65,11 @@ let package = Package(
             name: "XLARuntime",
             targets: ["XLARuntime"]
         ),
-
-        // ════════════════════════════════════════════════════════════════════
-        // EXECUTABLES - Examples
-        // ════════════════════════════════════════════════════════════════════
-        .executable(
-            name: "MNISTExample",
-            targets: ["MNISTExample"]
-        ),
-        .executable(
-            name: "BuildingSimulation",
-            targets: ["BuildingSimulation"]
-        ),
-        .executable(
-            name: "Benchmarks",
-            targets: ["Benchmarks"]
-        ),
-        .executable(
-            name: "ValueLayersExample",
-            targets: ["ValueLayersExample"]
-        ),
     ],
     dependencies: packageDependencies,
     targets: [
         // ════════════════════════════════════════════════════════════════════
-        // LAYER 0: C Bindings to PJRT (header-only when XLA not enabled)
+        // LAYER 0: C Bindings to PJRT (plugin loaded at runtime via dlopen)
         // ════════════════════════════════════════════════════════════════════
         .target(
             name: "CXLARuntime",
@@ -113,12 +86,9 @@ let package = Package(
             path: "Sources/XLARuntime",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
-                // Define HAS_XLA when XLA is available
-                enableXLA ? .define("HAS_XLA") : nil,
-                // Define HAS_METAL when Metal backend is available
-                enableMetal ? .define("HAS_METAL") : nil,
-            ].compactMap { $0 },
-            linkerSettings: xlaRuntimeLinkerSettings
+            ],
+            // dlopen/dlsym live in libdl on glibc < 2.34.
+            linkerSettings: [.linkedLibrary("dl", .when(platforms: [.linux]))]
         ),
 
         // ════════════════════════════════════════════════════════════════════
@@ -158,7 +128,7 @@ let package = Package(
         ),
 
         // ════════════════════════════════════════════════════════════════════
-        // EXAMPLES
+        // EXAMPLES - run with `swift run <TargetName>` (not exported as products)
         // ════════════════════════════════════════════════════════════════════
         .executableTarget(
             name: "MNISTExample",
@@ -213,19 +183,16 @@ let package = Package(
             path: "Tests/CoreTests"
         ),
     ],
-    swiftLanguageVersions: [.v5]
+    swiftLanguageModes: [.v5]
 )
 
-// The Metal example is macOS-only (it exercises the Metal backend).
-#if os(macOS)
-package.products.append(
-    .executable(name: "MetalExample", targets: ["MetalExample"])
-)
-package.targets.append(
-    .executableTarget(
-        name: "MetalExample",
-        dependencies: ["Magma"],
-        path: "Examples/Metal"
+// The Metal example needs the (opt-in) MetalHLO backend.
+if enableMetal {
+    package.targets.append(
+        .executableTarget(
+            name: "MetalExample",
+            dependencies: ["Magma"],
+            path: "Examples/Metal"
+        )
     )
-)
-#endif
+}
