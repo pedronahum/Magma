@@ -13,7 +13,8 @@ import Testing
 @testable import StableHLO
 @testable import XLARuntime
 
-@Suite("Tensor Parallel Tests", .serialized)
+@Suite("Tensor Parallel Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorParallelTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

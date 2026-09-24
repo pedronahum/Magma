@@ -7,7 +7,8 @@ import Testing
 @testable import LazyTensor
 @testable import XLARuntime
 
-@Suite("High-Level Multi-Device Barrier Tests", .serialized)
+@Suite("High-Level Multi-Device Barrier Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MultiDeviceBarrierTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

@@ -10,7 +10,8 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Shardy Compile Tests", .serialized)
+@Suite("Shardy Compile Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ShardyCompileTests {
     static let cpuClient: PJRTClient? = try? PJRTClient.create(backend: .cpu)
 

@@ -7,7 +7,8 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Buffer Distribution Tests", .serialized)
+@Suite("Buffer Distribution Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BufferDistributionTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

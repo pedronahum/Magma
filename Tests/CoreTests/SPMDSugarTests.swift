@@ -9,7 +9,8 @@ import Testing
 @testable import StableHLO
 @testable import XLARuntime
 
-@Suite("SPMD Sugar Tests", .serialized)
+@Suite("SPMD Sugar Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SPMDSugarTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

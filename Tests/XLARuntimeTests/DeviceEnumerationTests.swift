@@ -7,7 +7,8 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Device Enumeration Tests", .serialized)
+@Suite("Device Enumeration Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DeviceEnumerationTests {
     static let cpuClient: PJRTClient? = try? PJRTClient.create(backend: .cpu)
 

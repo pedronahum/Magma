@@ -9,7 +9,8 @@ import Testing
 @testable import StableHLO
 @testable import XLARuntime
 
-@Suite("DDP Gradient Sync Tests", .serialized)
+@Suite("DDP Gradient Sync Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DDPGradSyncTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

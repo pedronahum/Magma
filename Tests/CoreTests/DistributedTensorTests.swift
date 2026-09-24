@@ -9,7 +9,8 @@ import Testing
 @testable import LazyTensor
 @testable import XLARuntime
 
-@Suite("Distributed Tensor Ops Tests", .serialized)
+@Suite("Distributed Tensor Ops Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DistributedTensorTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

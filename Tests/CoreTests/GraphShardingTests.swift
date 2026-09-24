@@ -79,9 +79,9 @@ struct GraphShardingTests {
         #expect(throws: ShardingError.self) { try graph.validateShardings() }
     }
 
-    @Test("sharded data input becomes a {sdy.sharding} argument attribute")
+    @Test("sharded data input becomes a {sdy.sharding} argument attribute",
+          .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
     func argSharding() throws {
-        try #require((try? PJRTClient.create(backend: .cpu)) != nil, "CPU PJRT plugin not available")
         let client = try PJRTClient.create(backend: .cpu)
         let buf = try client.createBuffer([1, 2, 3, 4] as [Float], shape: [4],
                                           elementType: .float32, device: client.devices[0])

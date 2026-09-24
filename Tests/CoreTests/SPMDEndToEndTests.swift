@@ -13,7 +13,8 @@ import Testing
 @testable import StableHLO
 @testable import XLARuntime
 
-@Suite("SPMD End-to-End Tests", .serialized)
+@Suite("SPMD End-to-End Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SPMDEndToEndTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 

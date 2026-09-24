@@ -7,7 +7,8 @@
 import Testing
 @testable import XLARuntime
 
-@Suite("Multi-Device Execute Tests", .serialized)
+@Suite("Multi-Device Execute Tests", .serialized,
+       .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MultiDeviceExecuteTests {
     static var cpuAvailable: Bool { PluginAvailability.cpu }
 
