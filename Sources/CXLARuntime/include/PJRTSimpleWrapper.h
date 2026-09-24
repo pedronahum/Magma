@@ -335,7 +335,12 @@ SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
 /// Destroy a loaded executable
 void PJRT_DestroyExecutable(void* executable);
 
-/// Execute a loaded executable with input buffers
+/// Execute a loaded executable with input buffers.
+///
+/// On success *out_outputs points to *out_num_outputs output buffer handles in
+/// thread-local storage sized for the executable (any output count). The
+/// handles are owned by the caller; the array itself is reused by the next
+/// execute on the same thread, so copy the handles out before then.
 SW_PJRT_Error_Code PJRT_ExecuteWrapper(
     void* executable,
     void** inputs,

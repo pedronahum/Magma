@@ -1143,31 +1143,6 @@ SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
     return code;
 }
 
-void PJRT_DestroyExecutable(void* executable) {
-    if (executable == NULL || g_api == NULL) {
-        return;
-    }
-
-    PJRT_LoadedExecutable_Destroy_Args args;
-    memset(&args, 0, sizeof(args));
-    args.struct_size = sizeof(args);
-    args.executable = executable;
-
-    if (g_api->PJRT_LoadedExecutable_Destroy) {
-        PJRT_Error* error = g_api->PJRT_LoadedExecutable_Destroy(&args);
-        if (error != NULL) {
-            PJRT_DestroyError(error);
-        }
-    }
-}
-
-// Thread-local static storage for execute wrapper to avoid malloc/free per call
-// Max 16 outputs should be sufficient for most use cases
-#define PJRT_MAX_OUTPUTS 16
-static __thread PJRT_Buffer* g_output_buffer_array[PJRT_MAX_OUTPUTS];
-static __thread PJRT_Buffer** g_output_lists_array[1];
-static __thread bool g_execute_storage_initialized = false;
-
 // Cache for number of outputs per executable (avoids repeated queries)
 // Simple hash map with executable pointer as key
 #define PJRT_NUM_OUTPUTS_CACHE_SIZE 32
@@ -1203,6 +1178,137 @@ static void SetCachedNumOutputs(void* executable, size_t num_outputs) {
     pthread_mutex_unlock(&g_num_outputs_cache_mutex);
 }
 
+// Drop `executable`'s entry. Called when it is destroyed: the allocator may
+// hand the same address to a later executable with a different output count.
+static void EvictCachedNumOutputs(void* executable) {
+    pthread_mutex_lock(&g_num_outputs_cache_mutex);
+    for (size_t i = 0; i < PJRT_NUM_OUTPUTS_CACHE_SIZE; i++) {
+        if (g_num_outputs_cache[i].executable == executable) {
+            g_num_outputs_cache[i].executable = NULL;
+            g_num_outputs_cache[i].num_outputs = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_num_outputs_cache_mutex);
+}
+
+void PJRT_DestroyExecutable(void* executable) {
+    if (executable == NULL || g_api == NULL) {
+        return;
+    }
+
+    EvictCachedNumOutputs(executable);
+
+    PJRT_LoadedExecutable_Destroy_Args args;
+    memset(&args, 0, sizeof(args));
+    args.struct_size = sizeof(args);
+    args.executable = executable;
+
+    if (g_api->PJRT_LoadedExecutable_Destroy) {
+        PJRT_Error* error = g_api->PJRT_LoadedExecutable_Destroy(&args);
+        if (error != NULL) {
+            PJRT_DestroyError(error);
+        }
+    }
+}
+
+// Query the number of outputs an executable produces per device (uses the cache).
+static SW_PJRT_Error_Code QueryNumOutputs(void* executable, size_t* out_num_outputs) {
+    size_t cached = GetCachedNumOutputs(executable);
+    if (cached != (size_t)-1) {
+        *out_num_outputs = cached;
+        return SW_PJRT_Error_OK;
+    }
+
+    PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
+        .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
+        .loaded_executable = (PJRT_LoadedExecutable*)executable
+    };
+    PJRT_Error* error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = sw_record_error(error);
+        PJRT_DestroyError(error);
+        return code;
+    }
+
+    PJRT_Executable_NumOutputs_Args num_outputs_args = {
+        .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
+        .executable = get_exec_args.executable
+    };
+    error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
+
+    // GetExecutable hands back an owned PJRT_Executable; release it.
+    if (g_api->PJRT_Executable_Destroy) {
+        PJRT_Executable_Destroy_Args destroy_args = {
+            .struct_size = sizeof(PJRT_Executable_Destroy_Args),
+            .executable = get_exec_args.executable
+        };
+        PJRT_Error* destroy_error = g_api->PJRT_Executable_Destroy(&destroy_args);
+        if (destroy_error != NULL) {
+            PJRT_DestroyError(destroy_error);
+        }
+    }
+
+    if (error != NULL) {
+        SW_PJRT_Error_Code code = sw_record_error(error);
+        PJRT_DestroyError(error);
+        return code;
+    }
+
+    *out_num_outputs = num_outputs_args.num_outputs;
+    SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
+    return SW_PJRT_Error_OK;
+}
+
+// Thread-local output storage for the single-device execute wrappers, to avoid
+// malloc/free per call. PJRT writes one PJRT_Buffer* per output into
+// caller-owned storage, so it must hold the executable's full output count:
+// the fixed array covers the common case and a grow-only heap array takes over
+// for executables with more outputs. The returned pointer stays valid until
+// the next execute on the same thread.
+#define PJRT_MAX_OUTPUTS 16
+static __thread PJRT_Buffer* g_output_buffer_array[PJRT_MAX_OUTPUTS];
+static __thread PJRT_Buffer** g_output_lists_array[1];
+static __thread bool g_execute_storage_initialized = false;
+static __thread PJRT_Buffer** g_output_heap_array = NULL;
+static __thread size_t g_output_heap_capacity = 0;
+
+// Returns zeroed storage for `num_outputs` output handles, or NULL on OOM.
+static PJRT_Buffer** AcquireOutputStorage(size_t num_outputs) {
+    PJRT_Buffer** storage = g_output_buffer_array;
+    if (num_outputs > PJRT_MAX_OUTPUTS) {
+        if (num_outputs > g_output_heap_capacity) {
+            PJRT_Buffer** grown = (PJRT_Buffer**)realloc(
+                g_output_heap_array, num_outputs * sizeof(PJRT_Buffer*));
+            if (grown == NULL) {
+                sw_set_last_errorf("out of memory allocating %zu output handles", num_outputs);
+                return NULL;
+            }
+            g_output_heap_array = grown;
+            g_output_heap_capacity = num_outputs;
+        }
+        storage = g_output_heap_array;
+    }
+    memset(storage, 0, (num_outputs > 0 ? num_outputs : 1) * sizeof(PJRT_Buffer*));
+    return storage;
+}
+
+// Fails (without executing) when an executable has more outputs than a
+// fixed-capacity fast path can hold, instead of letting PJRT overflow it.
+static SW_PJRT_Error_Code CheckOutputCapacity(void* executable, size_t capacity) {
+    size_t num_outputs = 0;
+    SW_PJRT_Error_Code code = QueryNumOutputs(executable, &num_outputs);
+    if (code != SW_PJRT_Error_OK) {
+        return code;
+    }
+    if (num_outputs > capacity) {
+        sw_set_last_errorf(
+            "executable has %zu outputs but this execute path supports at most %zu; "
+            "use PJRT_ExecuteWrapper instead", num_outputs, capacity);
+        return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+    return SW_PJRT_Error_OK;
+}
+
 SW_PJRT_Error_Code PJRT_ExecuteWrapper(
     void* executable,
     void** inputs,
@@ -1214,11 +1320,17 @@ SW_PJRT_Error_Code PJRT_ExecuteWrapper(
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
-    // Initialize thread-local storage on first use
-    if (!g_execute_storage_initialized) {
-        g_output_lists_array[0] = g_output_buffer_array;
-        g_execute_storage_initialized = true;
+    // Size the output storage before executing: PJRT writes every output.
+    size_t num_outputs = 0;
+    SW_PJRT_Error_Code query_code = QueryNumOutputs(executable, &num_outputs);
+    if (query_code != SW_PJRT_Error_OK) {
+        return query_code;
     }
+    PJRT_Buffer** output_storage = AcquireOutputStorage(num_outputs);
+    if (output_storage == NULL) {
+        return SW_PJRT_Error_RESOURCE_EXHAUSTED;
+    }
+    PJRT_Buffer** output_lists[1] = { output_storage };
 
     // Cast input buffers to PJRT_Buffer** array
     PJRT_Buffer** input_buffers = (num_inputs > 0 && inputs != NULL)
@@ -1239,7 +1351,7 @@ SW_PJRT_Error_Code PJRT_ExecuteWrapper(
         .options = &execute_options,
         .num_devices = 1,
         .num_args = num_inputs,
-        .output_lists = g_output_lists_array
+        .output_lists = output_lists
     };
 
     // Workaround for const qualifier warnings
@@ -1251,82 +1363,16 @@ SW_PJRT_Error_Code PJRT_ExecuteWrapper(
     PJRT_Error* error = g_api->PJRT_LoadedExecutable_Execute(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
 
-    // Check cache for number of outputs first
-    size_t cached_num_outputs = GetCachedNumOutputs(executable);
-    if (cached_num_outputs != (size_t)-1) {
-        *out_num_outputs = cached_num_outputs;
-    } else {
-        // Query number of outputs (only on first call for this executable)
-        PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
-            .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
-            .loaded_executable = (PJRT_LoadedExecutable*)executable
-        };
+    // Return pointer to thread-local output storage (caller copies the handles
+    // out before the next execute on this thread).
+    *out_num_outputs = num_outputs;
+    *out_outputs = (void**)output_storage;
 
-        error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
-
-        if (error != NULL) {
-            PJRT_DestroyError(error);
-            *out_num_outputs = 0;
-        } else {
-            PJRT_Executable_NumOutputs_Args num_outputs_args = {
-                .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
-                .executable = get_exec_args.executable
-            };
-
-            error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
-
-            if (error != NULL) {
-                PJRT_DestroyError(error);
-                *out_num_outputs = 0;
-            } else {
-                *out_num_outputs = num_outputs_args.num_outputs;
-                SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
-            }
-        }
-    }
-
-    // Return pointer to static output array (caller should copy if needed)
-    // NOTE: This is safe because we're single-threaded per executable
-    *out_outputs = (void**)g_output_buffer_array;
-
-    return SW_PJRT_Error_OK;
-}
-
-// Query the number of outputs an executable produces per device (uses the cache).
-static SW_PJRT_Error_Code QueryNumOutputs(void* executable, size_t* out_num_outputs) {
-    size_t cached = GetCachedNumOutputs(executable);
-    if (cached != (size_t)-1) {
-        *out_num_outputs = cached;
-        return SW_PJRT_Error_OK;
-    }
-
-    PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
-        .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
-        .loaded_executable = (PJRT_LoadedExecutable*)executable
-    };
-    PJRT_Error* error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
-    if (error != NULL) {
-        PJRT_DestroyError(error);
-        return SW_PJRT_Error_INTERNAL;
-    }
-
-    PJRT_Executable_NumOutputs_Args num_outputs_args = {
-        .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
-        .executable = get_exec_args.executable
-    };
-    error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
-    if (error != NULL) {
-        PJRT_DestroyError(error);
-        return SW_PJRT_Error_INTERNAL;
-    }
-
-    *out_num_outputs = num_outputs_args.num_outputs;
-    SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
     return SW_PJRT_Error_OK;
 }
 
@@ -1467,11 +1513,17 @@ SW_PJRT_Error_Code PJRT_ExecuteWithDonation(
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
-    // Initialize thread-local storage on first use
-    if (!g_execute_storage_initialized) {
-        g_output_lists_array[0] = g_output_buffer_array;
-        g_execute_storage_initialized = true;
+    // Size the output storage before executing: PJRT writes every output.
+    size_t num_outputs = 0;
+    SW_PJRT_Error_Code query_code = QueryNumOutputs(executable, &num_outputs);
+    if (query_code != SW_PJRT_Error_OK) {
+        return query_code;
     }
+    PJRT_Buffer** output_storage = AcquireOutputStorage(num_outputs);
+    if (output_storage == NULL) {
+        return SW_PJRT_Error_RESOURCE_EXHAUSTED;
+    }
+    PJRT_Buffer** output_lists[1] = { output_storage };
 
     // Cast input buffers to PJRT_Buffer** array
     PJRT_Buffer** input_buffers = (num_inputs > 0 && inputs != NULL)
@@ -1494,7 +1546,7 @@ SW_PJRT_Error_Code PJRT_ExecuteWithDonation(
         .options = &execute_options,
         .num_devices = 1,
         .num_args = num_inputs,
-        .output_lists = g_output_lists_array
+        .output_lists = output_lists
     };
 
     // Workaround for const qualifier warnings
@@ -1506,47 +1558,14 @@ SW_PJRT_Error_Code PJRT_ExecuteWithDonation(
     PJRT_Error* error = g_api->PJRT_LoadedExecutable_Execute(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
 
-    // Check cache for number of outputs first
-    size_t cached_num_outputs = GetCachedNumOutputs(executable);
-    if (cached_num_outputs != (size_t)-1) {
-        *out_num_outputs = cached_num_outputs;
-    } else {
-        // Query number of outputs (only on first call for this executable)
-        PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
-            .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
-            .loaded_executable = (PJRT_LoadedExecutable*)executable
-        };
-
-        error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
-
-        if (error != NULL) {
-            PJRT_DestroyError(error);
-            *out_num_outputs = 0;
-        } else {
-            PJRT_Executable_NumOutputs_Args num_outputs_args = {
-                .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
-                .executable = get_exec_args.executable
-            };
-
-            error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
-
-            if (error != NULL) {
-                PJRT_DestroyError(error);
-                *out_num_outputs = 0;
-            } else {
-                *out_num_outputs = num_outputs_args.num_outputs;
-                SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
-            }
-        }
-    }
-
-    // Return pointer to static output array
-    *out_outputs = (void**)g_output_buffer_array;
+    // Return pointer to thread-local output storage
+    *out_num_outputs = num_outputs;
+    *out_outputs = (void**)output_storage;
 
     return SW_PJRT_Error_OK;
 }
@@ -1578,6 +1597,12 @@ SW_PJRT_Error_Code PJRT_ExecuteAndTransfer(
 
     if (num_outputs > PJRT_MAX_COMBINED_OUTPUTS) {
         return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    // The executable's real output count must fit this path's fixed storage.
+    SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_MAX_COMBINED_OUTPUTS);
+    if (capacity_code != SW_PJRT_Error_OK) {
+        return capacity_code;
     }
 
     // Initialize thread-local storage on first use
@@ -1744,6 +1769,12 @@ SW_PJRT_Error_Code PJRT_ExecuteHotPath(
 
     if (num_inputs > 8 || num_outputs > PJRT_MAX_COMBINED_OUTPUTS) {
         return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    // The executable's real output count must fit this path's fixed storage.
+    SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_MAX_COMBINED_OUTPUTS);
+    if (capacity_code != SW_PJRT_Error_OK) {
+        return capacity_code;
     }
 
     // Thread-local storage for input buffers
@@ -1957,11 +1988,17 @@ SW_PJRT_Error_Code PJRT_ExecuteWithTiming(
 
     uint64_t total_start = get_time_ns();
 
-    // Initialize thread-local storage on first use
-    if (!g_execute_storage_initialized) {
-        g_output_lists_array[0] = g_output_buffer_array;
-        g_execute_storage_initialized = true;
+    // Size the output storage before executing: PJRT writes every output.
+    size_t num_outputs = 0;
+    SW_PJRT_Error_Code query_code = QueryNumOutputs(executable, &num_outputs);
+    if (query_code != SW_PJRT_Error_OK) {
+        return query_code;
     }
+    PJRT_Buffer** output_storage = AcquireOutputStorage(num_outputs);
+    if (output_storage == NULL) {
+        return SW_PJRT_Error_RESOURCE_EXHAUSTED;
+    }
+    PJRT_Buffer** output_lists[1] = { output_storage };
 
     // Cast input buffers to PJRT_Buffer** array
     PJRT_Buffer** input_buffers = (num_inputs > 0 && inputs != NULL)
@@ -1982,7 +2019,7 @@ SW_PJRT_Error_Code PJRT_ExecuteWithTiming(
         .options = &execute_options,
         .num_devices = 1,
         .num_args = num_inputs,
-        .output_lists = g_output_lists_array
+        .output_lists = output_lists
     };
 
     PJRT_Buffer*const* input_list_const = (PJRT_Buffer*const*)input_buffers;
@@ -1995,41 +2032,13 @@ SW_PJRT_Error_Code PJRT_ExecuteWithTiming(
     uint64_t exec_end = get_time_ns();
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
 
-    // Get number of outputs
-    size_t cached_num_outputs = GetCachedNumOutputs(executable);
-    if (cached_num_outputs != (size_t)-1) {
-        *out_num_outputs = cached_num_outputs;
-    } else {
-        PJRT_LoadedExecutable_GetExecutable_Args get_exec_args = {
-            .struct_size = sizeof(PJRT_LoadedExecutable_GetExecutable_Args),
-            .loaded_executable = (PJRT_LoadedExecutable*)executable
-        };
-        error = g_api->PJRT_LoadedExecutable_GetExecutable(&get_exec_args);
-        if (error == NULL) {
-            PJRT_Executable_NumOutputs_Args num_outputs_args = {
-                .struct_size = sizeof(PJRT_Executable_NumOutputs_Args),
-                .executable = get_exec_args.executable
-            };
-            error = g_api->PJRT_Executable_NumOutputs(&num_outputs_args);
-            if (error == NULL) {
-                *out_num_outputs = num_outputs_args.num_outputs;
-                SetCachedNumOutputs(executable, num_outputs_args.num_outputs);
-            } else {
-                PJRT_DestroyError(error);
-                *out_num_outputs = 0;
-            }
-        } else {
-            PJRT_DestroyError(error);
-            *out_num_outputs = 0;
-        }
-    }
-
-    *out_outputs = (void**)g_output_buffer_array;
+    *out_num_outputs = num_outputs;
+    *out_outputs = (void**)output_storage;
 
     uint64_t total_end = get_time_ns();
 
@@ -2065,6 +2074,12 @@ SW_PJRT_Error_Code PJRT_ExecuteProfiled(
 
     if (num_inputs > 8 || num_outputs > PJRT_MAX_COMBINED_OUTPUTS) {
         return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    // The executable's real output count must fit this path's fixed storage.
+    SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_MAX_COMBINED_OUTPUTS);
+    if (capacity_code != SW_PJRT_Error_OK) {
+        return capacity_code;
     }
 
     uint64_t total_start = get_time_ns();
@@ -2371,6 +2386,12 @@ SW_PJRT_Error_Code PJRT_ExecuteAsync(
 
     if (num_inputs > 8 || num_outputs > PJRT_MAX_COMBINED_OUTPUTS) {
         return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    // The executable's real output count must fit this path's fixed storage.
+    SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_MAX_COMBINED_OUTPUTS);
+    if (capacity_code != SW_PJRT_Error_OK) {
+        return capacity_code;
     }
 
     // Initialize async context
@@ -3073,6 +3094,14 @@ SW_PJRT_Error_Code PJRT_BufferPoolCreate(
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
+    // PJRT_ExecutePooled writes outputs into fixed per-thread storage.
+    if (executable != NULL) {
+        SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_MAX_COMBINED_OUTPUTS);
+        if (capacity_code != SW_PJRT_Error_OK) {
+            return capacity_code;
+        }
+    }
+
     // Initialize pool structure
     memset(out_pool, 0, sizeof(SW_PJRT_BufferPool));
     out_pool->client = client;
@@ -3388,6 +3417,12 @@ SW_PJRT_Error_Code PJRT_BufferPoolV2Create(
 
     if (num_inputs > PJRT_BUFFER_POOL_V2_MAX_INPUTS || num_outputs > PJRT_BUFFER_POOL_V2_MAX_OUTPUTS) {
         return SW_PJRT_Error_INVALID_ARGUMENT;
+    }
+
+    // The V2 execute paths write outputs into fixed per-thread storage.
+    SW_PJRT_Error_Code capacity_code = CheckOutputCapacity(executable, PJRT_BUFFER_POOL_V2_MAX_OUTPUTS);
+    if (capacity_code != SW_PJRT_Error_OK) {
+        return capacity_code;
     }
 
     // Initialize pool structure
