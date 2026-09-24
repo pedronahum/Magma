@@ -531,20 +531,46 @@ func extractWeights(from model: GPT2, config: GPT2Config) -> GPT2Weights {
     )
 }
 
-func flattenGradients(_ grad: GPT2Weights.TangentVector) -> [Tensor<Float>] {
-    var grads: [Tensor<Float>] = []
-    grads.append(grad.wte)
-    grads.append(grad.wpe)
-    for bg in grad.blocks.base {
-        grads.append(contentsOf: [
-            bg.ln1W, bg.ln1B,
-            bg.wQW, bg.wQB, bg.wKW, bg.wKB, bg.wVW, bg.wVB, bg.wOW, bg.wOB,
-            bg.ln2W, bg.ln2B,
-            bg.fcW, bg.fcB, bg.projW, bg.projB
+/// Pairs each gradient with the `Parameter` it belongs to.
+///
+/// Mirrors `extractWeights(from:config:)` field by field, so each gradient is
+/// keyed to the same `Parameter` its weight was read from, independent of the
+/// order `model.parameters()` returns.
+func gradientsByParameter(
+    _ grad: GPT2Weights.TangentVector,
+    model: GPT2
+) -> [(param: Parameter, grad: Tensor<Float>)] {
+    var pairs: [(param: Parameter, grad: Tensor<Float>)] = []
+    pairs.append((model.wte.parameters()[0], grad.wte))
+    pairs.append((model.wpe.parameters()[0], grad.wpe))
+    precondition(model.blocks.count == grad.blocks.base.count,
+                 "gradient has \(grad.blocks.base.count) blocks, model has \(model.blocks.count)")
+    for (block, bg) in zip(model.blocks, grad.blocks.base) {
+        pairs.append(contentsOf: [
+            (block.ln1.parameters()[0], bg.ln1W),
+            (block.ln1.parameters()[1], bg.ln1B),
+            (block.attn.wQ.parameters()[0], bg.wQW),
+            (block.attn.wQ.parameters()[1], bg.wQB),
+            (block.attn.wK.parameters()[0], bg.wKW),
+            (block.attn.wK.parameters()[1], bg.wKB),
+            (block.attn.wV.parameters()[0], bg.wVW),
+            (block.attn.wV.parameters()[1], bg.wVB),
+            (block.attn.wO.parameters()[0], bg.wOW),
+            (block.attn.wO.parameters()[1], bg.wOB),
+            (block.ln2.parameters()[0], bg.ln2W),
+            (block.ln2.parameters()[1], bg.ln2B),
+            (block.mlp.cFc.parameters()[0], bg.fcW),
+            (block.mlp.cFc.parameters()[1], bg.fcB),
+            (block.mlp.cProj.parameters()[0], bg.projW),
+            (block.mlp.cProj.parameters()[1], bg.projB),
         ])
     }
-    grads.append(contentsOf: [grad.lnFW, grad.lnFB, grad.lmHeadW])
-    return grads
+    pairs.append(contentsOf: [
+        (model.lnF.parameters()[0], grad.lnFW),
+        (model.lnF.parameters()[1], grad.lnFB),
+        (model.lmHead.parameters()[0], grad.lmHeadW),
+    ])
+    return pairs
 }
 
 // MARK: - Data Loading
@@ -821,8 +847,9 @@ func trainShakespeare() {
         LazyTensorBarrier(on: device)
         let lossVal = loss.scalars()[0]
 
-        // Flatten and materialize gradients
-        let grads = flattenGradients(grad)
+        // Pair each gradient with its Parameter and materialize the gradients
+        let pairs = gradientsByParameter(grad, model: model)
+        let grads = pairs.map(\.grad)
         for g in grads { g.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
@@ -831,19 +858,20 @@ func trainShakespeare() {
         for g in clippedGrads { g.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
-        // Optimizer step, matching gradients to parameters by identity.
-        // flattenGradients mirrors the order of model.parameters(); check the
-        // pairing so a drift in either fails loudly instead of training the
-        // wrong tensor.
-        let params = model.parameters()
-        precondition(params.count == clippedGrads.count,
-                     "flattenGradients produced \(clippedGrads.count) gradients for \(params.count) parameters")
+        // Optimizer step with gradients keyed by the Parameter they were
+        // computed for. Every trainable parameter must receive exactly one
+        // gradient of its own shape.
         var gradsByParam: [Parameter: Tensor<Float>] = [:]
-        for (param, g) in zip(params, clippedGrads) {
+        for ((param, _), g) in zip(pairs, clippedGrads) {
             precondition(param.value.shape == g.shape,
                          "gradient shape \(g.shape) does not match parameter shape \(param.value.shape)")
-            gradsByParam[param] = g
+            precondition(gradsByParam.updateValue(g, forKey: param) == nil,
+                         "parameter received more than one gradient")
         }
+        let params = model.parameters()
+        precondition(gradsByParam.count == params.count
+                         && params.allSatisfy { gradsByParam[$0] != nil },
+                     "gradients cover \(gradsByParam.count) of \(params.count) model parameters")
         optimizer.step(gradsByParam)
 
         // Materialize updated parameters
