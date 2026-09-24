@@ -818,6 +818,10 @@ public final class PJRTBuffer: @unchecked Sendable {
     public let elementType: ElementType
     public let device: PJRTDevice
 
+    /// The client that owns this buffer's device memory. Held strongly so the
+    /// client (and its PJRT_Client) outlives every buffer it allocated.
+    private let owningClient: PJRTClient?
+
     public var elementCount: Int {
         shape.isEmpty ? 1 : shape.reduce(1, *)
     }
@@ -831,6 +835,7 @@ public final class PJRTBuffer: @unchecked Sendable {
         self.shape = shape
         self.elementType = elementType
         self.device = device
+        self.owningClient = device.client
     }
 
     deinit {
