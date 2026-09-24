@@ -584,6 +584,15 @@ public func softmaxCrossEntropyWithLabels(
     numClasses: Int,
     reduction: LossReduction = .mean
 ) -> Tensor<Float> {
+    precondition(logits.rank == 2 && logits.shape[1] == numClasses,
+        "softmaxCrossEntropyWithLabels: logits must be [batch, \(numClasses)], got shape \(logits.shape)")
+    precondition(labels.count == logits.shape[0],
+        "softmaxCrossEntropyWithLabels: got \(labels.count) labels for a batch of \(logits.shape[0])")
+    if let bad = labels.first(where: { $0 < 0 || $0 >= numClasses }) {
+        preconditionFailure(
+            "softmaxCrossEntropyWithLabels: label \(bad) out of range 0..<\(numClasses)")
+    }
+
     // Convert labels to one-hot encoding
     let batchSize = logits.shape[0]
     var oneHotData = Array(repeating: Float(0), count: batchSize * numClasses)

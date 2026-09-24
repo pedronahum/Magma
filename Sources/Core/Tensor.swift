@@ -2248,13 +2248,18 @@ extension nn {
         ///
         /// Expects:
         /// - `logits`: Raw model outputs (before softmax), shape [batch, numClasses]
-        /// - `targets`: Class indices (integers as Float), shape [batch]
+        /// - `targets`: either class indices (integers as Float), shape [batch], or
+        ///   per-class target probabilities (e.g. one-hot labels, such as the
+        ///   default `MNIST` labels), shape [batch, numClasses]
         ///
-        /// Computes: -mean(log(softmax(logits))[target_indices])
+        /// Computes `-mean(log(softmax(logits))[target_indices])` for class
+        /// indices and `-mean(sum(targets * log(softmax(logits)), classes))` for
+        /// probability targets; the two agree when `targets` is one-hot.
         ///
         /// - Parameters:
         ///   - logits: Unnormalized log probabilities, shape [batch, numClasses].
-        ///   - targets: Target class indices (0 to numClasses-1), shape [batch].
+        ///   - targets: Class indices (0 to numClasses-1), shape [batch], or target
+        ///     probabilities, shape [batch, numClasses].
         /// - Returns: Scalar cross-entropy loss.
         ///
         /// Example:
@@ -2266,8 +2271,9 @@ extension nn {
         public static func crossEntropy(_ logits: Tensor<Float>, _ targets: Tensor<Float>) -> Tensor<Float> {
             precondition(logits.rank == 2,
                 "crossEntropy: logits must be 2D [batch, numClasses], got shape \(logits.shape)")
-            precondition(targets.rank == 1,
-                "crossEntropy: targets must be 1D [batch], got shape \(targets.shape)")
+            precondition(targets.rank == 1 || targets.rank == 2,
+                "crossEntropy: targets must be class indices [batch] or probabilities [batch, numClasses], " +
+                "got shape \(targets.shape)")
             precondition(logits.shape[0] == targets.shape[0],
                 "crossEntropy: batch size mismatch. logits batch=\(logits.shape[0]), targets batch=\(targets.shape[0])")
 
@@ -2276,12 +2282,22 @@ extension nn {
             // Compute log softmax for numerical stability
             let logProbs = logits.logSoftmax(dim: -1)
 
-            // Create one-hot encoding of targets: [batch, numClasses]
-            let oneHot = Tensor<Float>.oneHot(targets, numClasses: numClasses, on: logits.device)
+            // Target distribution [batch, numClasses]: the given probabilities,
+            // or the one-hot encoding of class indices.
+            let targetProbs: Tensor<Float>
+            if targets.rank == 2 {
+                precondition(targets.shape[1] == numClasses,
+                    "crossEntropy: probability targets must be [batch, \(numClasses)] to match logits, " +
+                    "got shape \(targets.shape)")
+                targetProbs = targets
+            } else {
+                targetProbs = Tensor<Float>.oneHot(targets, numClasses: numClasses, on: logits.device)
+            }
 
-            // Select target log probs by multiplying with one-hot and summing
-            // This gives us log(softmax(logits)[target]) for each sample
-            let targetLogProbs = (logProbs * oneHot).sum(dims: [1], keepDims: false)
+            // Select target log probs by multiplying with the target distribution
+            // and summing over classes: log(softmax(logits)[target]) per sample
+            // for one-hot targets.
+            let targetLogProbs = (logProbs * targetProbs).sum(dims: [1], keepDims: false)
 
             // Return negative mean
             return (-targetLogProbs).mean()
@@ -2313,19 +2329,24 @@ extension nn {
             return loss.mean()
         }
 
-        /// Binary cross-entropy with logits (more numerically stable).
+        /// Binary cross-entropy with logits.
         ///
-        /// Combines sigmoid and BCE into a single operation.
+        /// Combines sigmoid and BCE into a single, numerically stable operation:
+        /// `mean(max(x, 0) - x * y + log(1 + exp(-|x|)))`. Unlike
+        /// `binaryCrossEntropy(sigmoid(x), y)`, it neither saturates nor loses
+        /// its gradient for large `|x|`. Differentiable with respect to `logits`.
         ///
         /// - Parameters:
         ///   - logits: Raw model outputs (before sigmoid).
-        ///   - target: Binary target values (0 or 1).
+        ///   - target: Binary target values (0 or 1), same shape as `logits`.
         /// - Returns: Scalar BCE with logits loss.
+        @differentiable(reverse, wrt: logits)
         public static func binaryCrossEntropyWithLogits(_ logits: Tensor<Float>, _ target: Tensor<Float>) -> Tensor<Float> {
-            // BCE with logits: max(x, 0) - x*y + log(1 + exp(-|x|))
-            // For simplicity, use: sigmoid then BCE
-            let prediction = logits.sigmoid()
-            return binaryCrossEntropy(prediction, target)
+            // max(x, 0) - x*y + log(1 + exp(-|x|)); exp(-|x|) is in (0, 1], so
+            // nothing overflows, and every op here has a registered derivative.
+            let one = withoutDerivative(at: Tensor<Float>.ones(logits.shape, on: logits.device))
+            let softplusNegAbs = (one + (-logits.abs()).exp()).log()
+            return (logits.relu() - logits * target + softplusNegAbs).mean()
         }
 
         /// Negative log likelihood loss.
