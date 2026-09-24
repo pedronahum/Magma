@@ -519,6 +519,7 @@ to try it.
 - [Distributed & Multi-Device](Documentation/MULTI_DEVICE_ASSESSMENT.md)
 - [TPU Deployment (untested)](Documentation/TPU_DEPLOYMENT.md)
 - [Known Compiler Issues](Documentation/KNOWN_COMPILER_ISSUES.md)
+- [Releasing](Documentation/RELEASING.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security Policy](SECURITY.md)
 
