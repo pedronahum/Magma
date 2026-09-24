@@ -65,6 +65,9 @@ typedef enum {
     SW_PJRT_Buffer_Type_BF16 = 12,
     SW_PJRT_Buffer_Type_C64 = 13,
     SW_PJRT_Buffer_Type_C128 = 14,
+    // A PJRT element type this wrapper does not model (F8 variants, S4/U4,
+    // token, tuple, ...). Only ever produced by queries; never accepted.
+    SW_PJRT_Buffer_Type_UNSUPPORTED = 255,
 } SW_PJRT_Buffer_Type;
 
 //===------------------------------------------------------------------===//

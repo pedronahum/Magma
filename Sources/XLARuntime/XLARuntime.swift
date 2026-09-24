@@ -356,8 +356,9 @@ public enum ElementType: Sendable {
         }
     }
 
-    /// Construct from the C API type (device -> host query path).
-    init(cType: SW_PJRT_Buffer_Type) {
+    /// Construct from the C API type (device -> host query path). Nil for
+    /// element types Magma does not model (F8 variants, S4/U4, token, ...).
+    init?(cType: SW_PJRT_Buffer_Type) {
         switch cType {
         case SW_PJRT_Buffer_Type_PRED: self = .bool
         case SW_PJRT_Buffer_Type_S8:   self = .int8
@@ -374,7 +375,7 @@ public enum ElementType: Sendable {
         case SW_PJRT_Buffer_Type_BF16: self = .bfloat16
         case SW_PJRT_Buffer_Type_C64:  self = .complex64
         case SW_PJRT_Buffer_Type_C128: self = .complex128
-        default: self = .float32
+        default: return nil
         }
     }
 
@@ -924,10 +925,27 @@ public final class PJRTBuffer: @unchecked Sendable {
 public final class PJRTExecutable: @unchecked Sendable {
 
     internal var handle: UnsafeMutableRawPointer?
-    public weak var client: PJRTClient?
+    /// The client that compiled this executable. Held strongly so the client
+    /// (and its PJRT_Client) outlives every executable it compiled.
+    public let client: PJRTClient?
     public let devices: [PJRTDevice]
 
-    public private(set) var executionCount: Int = 0
+    private let executionCountLock = NSLock()
+    private var _executionCount = 0
+
+    /// Number of successful executions (single- or multi-device). Safe to read
+    /// while other threads execute this executable.
+    public var executionCount: Int {
+        executionCountLock.lock()
+        defer { executionCountLock.unlock() }
+        return _executionCount
+    }
+
+    private func recordExecution() {
+        executionCountLock.lock()
+        _executionCount += 1
+        executionCountLock.unlock()
+    }
 
     init(handle: UnsafeMutableRawPointer, client: PJRTClient, devices: [PJRTDevice]) {
         self.handle = handle
@@ -956,6 +974,7 @@ public final class PJRTExecutable: @unchecked Sendable {
         var outputsPtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
         var numOutputs: Int = 0
 
+        PJRT_ClearLastErrorMessage()
         let errorCode = inputHandles.withUnsafeMutableBufferPointer { inputsPtr in
             PJRT_ExecuteWrapper(
                 execHandle,
@@ -967,64 +986,63 @@ public final class PJRTExecutable: @unchecked Sendable {
         }
 
         if errorCode != SW_PJRT_Error_OK {
-            throw XLAError.executionFailed("Execution failed with code \(errorCode.rawValue)")
+            throw XLAError.executionFailed(pjrtFailureDescription("PJRT_LoadedExecutable_Execute", errorCode))
         }
 
-        executionCount += 1
+        recordExecution()
 
-        // Create output buffers
+        // The wrapper's output array is thread-local and reused by the next
+        // execute, so copy the handles out before wrapping them.
+        guard let outputHandles = outputsPtr else { return [] }
+        let handles = (0..<numOutputs).map { outputHandles[$0] }
+        return try wrapOutputs(handles, device: device)
+    }
+
+    /// Wrap raw output handles in PJRTBuffers, querying each one's shape and
+    /// element type. If an output cannot be wrapped (e.g. an element type
+    /// Magma does not support), the handles not yet wrapped are destroyed so
+    /// nothing leaks, and the error is thrown.
+    private func wrapOutputs(_ handles: [UnsafeMutableRawPointer?], device: PJRTDevice) throws -> [PJRTBuffer] {
         var outputs: [PJRTBuffer] = []
-        if let outputHandles = outputsPtr {
-            for i in 0..<numOutputs {
-                if let outputHandle = outputHandles[i] {
-                    // Query dimensions
-                    var dimsPtr: UnsafePointer<Int64>?
-                    var numDims: Int = 0
-                    PJRT_GetBufferDimensions(outputHandle, &dimsPtr, &numDims)
-
-                    var shape: [Int] = []
-                    if let dims = dimsPtr {
-                        for j in 0..<numDims {
-                            shape.append(Int(dims[j]))
-                        }
-                    }
-
-                    // Query the real output element type; fall back to .float32
-                    // only if the query fails (preserves prior behavior on error).
-                    var elementType: ElementType = .float32
-                    var cType = SW_PJRT_Buffer_Type_F32
-                    if PJRT_GetBufferElementType(outputHandle, &cType) == SW_PJRT_Error_OK {
-                        elementType = ElementType(cType: cType)
-                    }
-
-                    let buffer = PJRTBuffer(
-                        handle: outputHandle,
-                        shape: shape,
-                        elementType: elementType,
-                        device: device
-                    )
-                    outputs.append(buffer)
+        outputs.reserveCapacity(handles.count)
+        for (index, handle) in handles.enumerated() {
+            guard let handle else { continue }
+            do {
+                outputs.append(try makeOutputBuffer(handle, device: device))
+            } catch {
+                PJRT_DestroyBuffer(handle)
+                for rest in handles[(index + 1)...] {
+                    if let rest { PJRT_DestroyBuffer(rest) }
                 }
+                throw error
             }
         }
-
         return outputs
     }
 
     /// Build a PJRTBuffer around a raw output handle, querying its shape and
-    /// element type. Shared by single- and multi-device execute.
-    private func makeOutputBuffer(_ handle: UnsafeMutableRawPointer, device: PJRTDevice) -> PJRTBuffer {
+    /// element type. Shared by single- and multi-device execute. Does not take
+    /// ownership of `handle` when it throws.
+    private func makeOutputBuffer(_ handle: UnsafeMutableRawPointer, device: PJRTDevice) throws -> PJRTBuffer {
         var dimsPtr: UnsafePointer<Int64>?
         var numDims = 0
-        PJRT_GetBufferDimensions(handle, &dimsPtr, &numDims)
+        PJRT_ClearLastErrorMessage()
+        let dimsCode = PJRT_GetBufferDimensions(handle, &dimsPtr, &numDims)
+        guard dimsCode == SW_PJRT_Error_OK else {
+            throw XLAError.executionFailed(pjrtFailureDescription("Querying output dimensions", dimsCode))
+        }
         var shape: [Int] = []
         if let dims = dimsPtr {
             for j in 0..<numDims { shape.append(Int(dims[j])) }
         }
-        var elementType: ElementType = .float32
+
         var cType = SW_PJRT_Buffer_Type_F32
-        if PJRT_GetBufferElementType(handle, &cType) == SW_PJRT_Error_OK {
-            elementType = ElementType(cType: cType)
+        PJRT_ClearLastErrorMessage()
+        let typeCode = PJRT_GetBufferElementType(handle, &cType)
+        guard typeCode == SW_PJRT_Error_OK, let elementType = ElementType(cType: cType) else {
+            throw XLAError.executionFailed(pjrtFailureDescription(
+                "Querying output element type",
+                typeCode == SW_PJRT_Error_OK ? SW_PJRT_Error_UNIMPLEMENTED : typeCode))
         }
         return PJRTBuffer(handle: handle, shape: shape, elementType: elementType, device: device)
     }
@@ -1058,29 +1076,37 @@ public final class PJRTExecutable: @unchecked Sendable {
 
         var outputsFlat: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
         var numOutputs = 0
+        PJRT_ClearLastErrorMessage()
         let errorCode = inputHandles.withUnsafeMutableBufferPointer { ptr in
             PJRT_ExecuteMultiDevice(
                 execHandle, ptr.baseAddress, numDevices, numArgs, &outputsFlat, &numOutputs)
         }
         if errorCode != SW_PJRT_Error_OK {
-            throw XLAError.executionFailed("Multi-device execution failed with code \(errorCode.rawValue)")
+            throw XLAError.executionFailed(pjrtFailureDescription(
+                "Multi-device PJRT_LoadedExecutable_Execute (\(numDevices) devices)", errorCode))
         }
-        executionCount += 1
+        recordExecution()
         defer { if let outputsFlat { PJRT_FreeOutputList(outputsFlat) } }
 
+        guard let flat = outputsFlat else {
+            return Array(repeating: [], count: numDevices)
+        }
         var result: [[PJRTBuffer]] = []
         result.reserveCapacity(numDevices)
         for d in 0..<numDevices {
             let device = devices.indices.contains(d) ? devices[d] : devices[0]
-            var devOutputs: [PJRTBuffer] = []
-            if let flat = outputsFlat {
-                for o in 0..<numOutputs {
-                    if let h = flat[d * numOutputs + o] {
-                        devOutputs.append(makeOutputBuffer(h, device: device))
+            let handles = (0..<numOutputs).map { flat[d * numOutputs + $0] }
+            do {
+                result.append(try wrapOutputs(handles, device: device))
+            } catch {
+                // Devices after `d` were never wrapped; release their outputs.
+                for later in (d + 1)..<numDevices {
+                    for o in 0..<numOutputs {
+                        if let h = flat[later * numOutputs + o] { PJRT_DestroyBuffer(h) }
                     }
                 }
+                throw error
             }
-            result.append(devOutputs)
         }
         return result
     }

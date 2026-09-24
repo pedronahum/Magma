@@ -489,7 +489,7 @@ static SW_PJRT_Buffer_Type MapFromPJRTElementType(PJRT_Buffer_Type type) {
         case PJRT_Buffer_Type_BF16: return SW_PJRT_Buffer_Type_BF16;
         case PJRT_Buffer_Type_C64:  return SW_PJRT_Buffer_Type_C64;
         case PJRT_Buffer_Type_C128: return SW_PJRT_Buffer_Type_C128;
-        default: return SW_PJRT_Buffer_Type_F32; // Default to F32
+        default: return SW_PJRT_Buffer_Type_UNSUPPORTED;  // F8, S4/U4, token, tuple, ...
     }
 }
 
@@ -959,12 +959,17 @@ SW_PJRT_Error_Code PJRT_GetBufferElementType(
     PJRT_Error* error = g_api->PJRT_Buffer_ElementType(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
 
     *out_type = MapFromPJRTElementType(args.type);
+    if (*out_type == SW_PJRT_Buffer_Type_UNSUPPORTED) {
+        sw_set_last_errorf("unsupported PJRT element type %d (e.g. F8, S4/U4 or token)",
+                           (int)args.type);
+        return SW_PJRT_Error_UNIMPLEMENTED;
+    }
     return SW_PJRT_Error_OK;
 }
 
