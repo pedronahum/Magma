@@ -82,8 +82,8 @@ public struct MaterializationError: Error, CustomStringConvertible, Sendable {
         case execution
         /// Copying a result from the device to the host failed.
         case outputTransfer = "output transfer"
-        /// The tensor has no value after its barrier ran (e.g. its device's
-        /// backend does not report per-output errors).
+        /// The tensor has no value after its barrier ran, although no error
+        /// was reported for it.
         case notMaterialized = "not materialized"
     }
 
@@ -1335,14 +1335,6 @@ public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
     _barrierLock.lock()
     defer { _barrierLock.unlock() }
 
-    // Route to Metal-specific barrier if using Metal backend
-    #if os(macOS) && canImport(MetalHLO)
-    if device.backend == .metal {
-        MetalLazyTensorBarrier(on: device)
-        return
-    }
-    #endif
-
     // 1. Collect all pending tensors for this device
     let pending = TensorRegistry.shared.takePending(for: device)
     if pending.isEmpty {
@@ -1362,7 +1354,7 @@ public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
     }
 
     do {
-        try runPJRTBarrier(outputs: outputs, device: device)
+        try runBarrier(outputs: outputs, device: device)
     } catch {
         let failure = error as? MaterializationError
             ?? MaterializationError(stage: .execution, device: device, underlying: error)
@@ -1371,6 +1363,18 @@ public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
         }
         throw failure
     }
+}
+
+/// Compute `outputs` on `device` with its backend's barrier body (Metal, or
+/// PJRT for CPU/GPU/TPU). Throws `MaterializationError`.
+private func runBarrier(outputs: [LazyTensorHandle], device: Device) throws {
+    #if os(macOS) && canImport(MetalHLO)
+    if device.backend == .metal {
+        try runMetalBarrier(outputs: outputs, device: device)
+        return
+    }
+    #endif
+    try runPJRTBarrier(outputs: outputs, device: device)
 }
 
 /// Materialize one tensor, as a read (`scalars()`, `materialize()`) does.
@@ -1388,29 +1392,16 @@ public func LazyTensorMaterialize(_ handle: LazyTensorHandle, on device: Device 
 
     if handle.isMaterialized { return }
     TensorRegistry.shared.markForMaterialization(handle)
-    let batchError: Error?
-    do {
-        try LazyTensorBarrierThrowing(on: device)
-        batchError = nil
-    } catch {
-        batchError = error
-    }
+    // A batch failure need not be this tensor's own (another tensor in the
+    // batch may have failed); the retry below reports this tensor's error.
+    _ = try? LazyTensorBarrierThrowing(on: device)
     if handle.isMaterialized { return }
-
-    #if os(macOS) && canImport(MetalHLO)
-    if device.backend == .metal {
-        // The Metal barrier stores results in the IR node and does not
-        // record per-tensor errors; the caller inspects the handle.
-        if let batchError { throw batchError }
-        return
-    }
-    #endif
 
     // Retry this tensor alone.
     handle.isLive = true
     handle.materializationError = nil
     do {
-        try runPJRTBarrier(outputs: [handle], device: device)
+        try runBarrier(outputs: [handle], device: device)
     } catch {
         let failure = error as? MaterializationError
             ?? MaterializationError(stage: .execution, device: device, underlying: error)
@@ -1930,32 +1921,17 @@ private func collectDataInputsFastPath(
 }
 
 
-/// Metal-specific lazy tensor barrier
+/// The Metal barrier body. Throws `MaterializationError`; the caller records
+/// it on the outputs.
 ///
 /// Uses a two-tier cache: the fast path checks the incremental (pre-optimization) hash
 /// and skips graph building, optimization, and MLIR emission entirely on cache hit.
-/// The slow path falls through to the full pipeline on cache miss.
-
-private func MetalLazyTensorBarrier(on device: Device) {
-    // 1. Collect all pending tensors for this device
-    let pending = TensorRegistry.shared.takePending(for: device)
-    if pending.isEmpty {
-        return
-    }
-
-    let outputs = pending.filter { !$0.isMaterialized }
-    if outputs.isEmpty {
-        return
-    }
-
-    for output in outputs {
-        output.isLive = true
-    }
-
+/// The slow path runs the full pipeline on a cache miss, or when the fast path fails.
+private func runMetalBarrier(outputs: [LazyTensorHandle], device: Device) throws {
     let debugEnabled = ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
     let cache = MetalCompilationCache.shared
 
-    // 2. Fast-path: check incremental hash before building any graph
+    // 1. Fast-path: check incremental hash before building any graph
     let fastHash = computeFastPathHash(outputs: outputs)
 
     if let entry = cache.getFast(hash: fastHash) {
@@ -1964,8 +1940,6 @@ private func MetalLazyTensorBarrier(on device: Device) {
 
         // Sanity check: data input count must match
         if dataInputHandles.count == entry.metadata.dataInputCount {
-            cache.recordFastHit()
-
             if debugEnabled {
                 magmaDiagnostic("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
             }
@@ -1973,7 +1947,8 @@ private func MetalLazyTensorBarrier(on device: Device) {
             // Assemble input buffers: data inputs first, then cached constant values
             var inputBuffers: [MetalHLOBuffer] = []
 
-            // Data inputs
+            // Any failure below falls through to the slow path, which rebuilds
+            // everything from scratch (and reports errors).
             var fastPathFailed = false
             for handle in dataInputHandles {
                 if case .metalData(let metalBuffer) = handle.irNode {
@@ -1985,7 +1960,9 @@ private func MetalLazyTensorBarrier(on device: Device) {
                         let metalBuffer = client.createBuffer(hostData, shape: handle.shape)
                         inputBuffers.append(metalBuffer)
                     } catch {
-                        magmaDiagnostic("Magma [Metal]: Fast-path PJRT conversion failed: \(error)")
+                        if debugEnabled {
+                            magmaDiagnostic("Magma [Metal]: Fast-path PJRT conversion failed, using slow path: \(error)")
+                        }
                         fastPathFailed = true
                         break
                     }
@@ -2002,7 +1979,9 @@ private func MetalLazyTensorBarrier(on device: Device) {
                         inputBuffers.append(buffer)
                     }
                 } catch {
-                    magmaDiagnostic("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
+                    if debugEnabled {
+                        magmaDiagnostic("Magma [Metal]: Fast-path constant buffer creation failed, using slow path: \(error)")
+                    }
                     fastPathFailed = true
                 }
             }
@@ -2011,40 +1990,41 @@ private func MetalLazyTensorBarrier(on device: Device) {
                 // Execute and update handles
                 do {
                     let outputBuffers = try entry.executable.execute(inputBuffers)
-                    for (i, output) in outputs.enumerated() {
-                        if i < outputBuffers.count {
+                    if outputBuffers.count >= outputs.count {
+                        for (i, output) in outputs.enumerated() {
                             output.materializedBuffer = nil
                             output.irNode = .metalData(outputBuffers[i])
                         }
+                        cache.recordFastHit()
+                        return  // Fast path succeeded
                     }
-                    return  // Fast path succeeded
                 } catch {
-                    magmaDiagnostic("Magma [Metal]: Fast-path execution failed: \(error)")
-                    return
+                    if debugEnabled {
+                        magmaDiagnostic("Magma [Metal]: Fast-path execution failed, using slow path: \(error)")
+                    }
                 }
             }
         }
-        // Fall through to slow path if data count mismatches or execution failed
+        // Fall through to slow path if data count mismatches or anything failed
     }
 
     // ── Slow path: full graph build → optimize → emit → compile ──
 
-    // 3. Build IR graph
+    // 2. Build IR graph
     let graph = IRGraph()
     for output in outputs {
         graph.addOutput(output)
     }
     graph.buildTopologicalOrder()
 
-    // 4. Validate graph
+    // 3. Validate graph
     do {
         try graph.validate()
     } catch {
-        magmaDiagnostic("Magma [Metal]: Graph validation failed: \(error)")
-        return
+        throw MaterializationError(stage: .validation, device: device, underlying: error)
     }
 
-    // 5. Run optimization passes
+    // 4. Run optimization passes
     let optimizedGraph: IRGraph
     if ProcessInfo.processInfo.environment["MAGMA_NO_OPT"] != "1" {
         let passManager = PassManager.shared
@@ -2059,6 +2039,15 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
     } else {
         optimizedGraph = graph
+    }
+
+    // 5. Resolve the client first, so a missing Metal backend is reported as
+    // such instead of as a compilation failure.
+    let client: MetalHLOClient
+    do {
+        client = try getMetalHLOClient()
+    } catch {
+        throw MaterializationError(stage: .backendUnavailable, device: device, underlying: error)
     }
 
     // 6. Analyze for constant promotion
@@ -2098,20 +2087,18 @@ private func MetalLazyTensorBarrier(on device: Device) {
 
         // 9. Compile
         do {
-            let client = try getMetalHLOClient()
             executable = try client.compile(mlir)
-
-            if debugEnabled {
-                magmaDiagnostic("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
-            }
-
-            cache.put(hash: structuralHash, executable: executable)
         } catch {
-            let dumpPath = dumpFailingMLIR(mlir, name: "metal_graph_\(structuralHash.prefix(8))")
-            magmaDiagnostic("Magma [Metal]: Compilation failed: \(error)"
-                + (dumpPath.map { " (failing MLIR written to \($0))" } ?? ""))
-            return
+            throw MaterializationError(
+                stage: .compilation, device: device, underlying: error,
+                mlirDumpPath: dumpFailingMLIR(mlir, name: "metal_graph_\(structuralHash.prefix(8))"))
         }
+
+        if debugEnabled {
+            magmaDiagnostic("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
+        }
+
+        cache.put(hash: structuralHash, executable: executable)
     }
 
     // Store in fast cache for future iterations
@@ -2133,7 +2120,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
         promotedConstantValues: promotedConstantValues
     ))
 
-    // 10. Collect input buffers
+    // 10. Collect input buffers: data inputs, then promoted constants
     var inputBuffers: [MetalHLOBuffer] = []
 
     for node in optimizedGraph.nodes {
@@ -2141,46 +2128,41 @@ private func MetalLazyTensorBarrier(on device: Device) {
             inputBuffers.append(metalBuffer)
         } else if case .data(let pjrtBuffer) = node.irNode {
             do {
-                let client = try getMetalHLOClient()
                 let hostData = try pjrtBuffer.toFloatArray()
-                let metalBuffer = client.createBuffer(hostData, shape: node.shape)
-                inputBuffers.append(metalBuffer)
+                inputBuffers.append(client.createBuffer(hostData, shape: node.shape))
             } catch {
-                magmaDiagnostic("Magma [Metal]: Failed to convert PJRT buffer to Metal: \(error)")
-                return
+                throw MaterializationError(stage: .inputTransfer, device: device, underlying: error)
             }
         }
     }
 
-    if promotionResult.wasPromoted {
-        do {
-            let client = try getMetalHLOClient()
-            for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
-                let buffer = client.createBuffer(promoted.values, shape: promoted.shape)
-                inputBuffers.append(buffer)
-            }
-        } catch {
-            magmaDiagnostic("Magma [Metal]: Failed to create constant buffers: \(error)")
-            return
-        }
+    for promoted in sortedPromoted {
+        inputBuffers.append(client.createBuffer(promoted.values, shape: promoted.shape))
     }
 
     // 11. Execute
+    let outputBuffers: [MetalHLOBuffer]
     do {
-        let outputBuffers = try executable.execute(inputBuffers)
-        for (i, output) in outputs.enumerated() {
-            if i < outputBuffers.count {
-                output.materializedBuffer = nil
-                output.irNode = .metalData(outputBuffers[i])
-
-                if debugEnabled {
-                    let hostData = try outputBuffers[i].toFloatArray()
-                    magmaDiagnostic("Magma [Metal]: Output \(i) - shape: \(output.shape), first few: \(Array(hostData.prefix(5)))")
-                }
-            }
-        }
+        outputBuffers = try executable.execute(inputBuffers)
     } catch {
-        magmaDiagnostic("Magma [Metal]: Execution failed: \(error)")
+        throw MaterializationError(stage: .execution, device: device, underlying: error)
+    }
+    guard outputBuffers.count >= outputs.count else {
+        throw MaterializationError(
+            stage: .execution, device: device,
+            underlying: XLAError.executionFailed(
+                "executable returned \(outputBuffers.count) outputs for "
+                + "\(outputs.count) requested tensors"))
+    }
+
+    // 12. Update tensor handles with results
+    for (i, output) in outputs.enumerated() {
+        output.materializedBuffer = nil
+        output.irNode = .metalData(outputBuffers[i])
+
+        if debugEnabled, let hostData = try? outputBuffers[i].toFloatArray() {
+            magmaDiagnostic("Magma [Metal]: Output \(i) - shape: \(output.shape), first few: \(Array(hostData.prefix(5)))")
+        }
     }
 }
 
