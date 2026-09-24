@@ -226,6 +226,12 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
         // Left-pad target shape with 1s if ranks differ
         let selfRank = self.shape.count
         let targetRank = targetShape.count
+        // A lower-rank cotangent is broadcastable to the target: typically the
+        // rank-0 `Tensor.zero` that autodiff passes for an output that does not
+        // reach the result. Expand it rather than reducing.
+        if selfRank < targetRank {
+            return self.broadcast(to: targetShape)
+        }
         let paddedTarget = Array(repeating: 1, count: selfRank - targetRank) + targetShape
 
         var reduceDims: [Int] = []

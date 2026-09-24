@@ -66,4 +66,28 @@ struct BroadcastGradientTests {
         #expect(gx.scalars() == [1, 1, 1, 1, 1, 1])
         #expect(gy.scalars() == [1, 1, 1, 1, 1, 1])
     }
+
+    // Swift autodiff seeds the pullback of an output that does not reach the
+    // result with `Tensor.zero`, a rank-0 tensor. The broadcast reduction must
+    // expand that lower-rank cotangent instead of trapping ("Can't construct
+    // Array with count < 0"), which crashed Examples/BuildingSimulation.
+    @Test("unused tuple output: rank-0 zero cotangent reaches a broadcast pullback")
+    func unusedOutputZeroCotangent() {
+        let a = Tensor<Float>([1, 2, 3], shape: [3])
+        let b = Tensor<Float>([4, 5, 6], shape: [3])
+
+        let grad = gradient(at: a) { x in productAndSum(x, b).product.sum() }
+
+        // Only the product reaches the loss: d(sum(a*b))/da = b.
+        #expect(grad.shape == [3])
+        #expect(grad.scalars() == [4, 5, 6])
+    }
+}
+
+/// Two outputs from one differentiable function; tests use only `product`.
+@differentiable(reverse)
+private func productAndSum(
+    _ a: Tensor<Float>, _ b: Tensor<Float>
+) -> (product: Tensor<Float>, total: Tensor<Float>) {
+    (a * b, a + b)
 }
