@@ -1,6 +1,7 @@
 // Magma - XLA Integration Tests
 // End-to-end tests with real XLA execution
-// Requires: MAGMA_XLA_PATH environment variable set to /opt/swiftir-deps
+// Requires a CPU PJRT plugin: set MAGMA_XLA_PATH to the directory containing
+// pjrt_c_api_cpu_plugin.so (or MAGMA_PJRT_PLUGIN_CPU to the plugin file).
 
 import Testing
 @testable import XLARuntime

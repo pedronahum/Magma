@@ -1,6 +1,6 @@
 //===-- PJRTProtoHelper.cpp - PJRT Protobuf Helper ----------*- C++ -*-===//
 //
-// SwiftIR - Phase 11B: PJRT Integration
+// Magma - XLA runtime. Originally derived from SwiftIR (Apache-2.0).
 // C++ helper to construct XLA CompileOptionsProto using manual protobuf encoding
 // This version avoids XLA proto library dependencies by encoding directly
 //

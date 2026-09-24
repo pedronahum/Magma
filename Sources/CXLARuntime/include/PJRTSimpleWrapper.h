@@ -1,6 +1,6 @@
 //===-- PJRTSimpleWrapper.h - Simplified PJRT C Wrapper ------*- C -*-===//
 //
-// SwiftIR - Phase 11B: PJRT Integration
+// Magma - XLA runtime. Originally derived from SwiftIR (Apache-2.0).
 // Simplified C wrapper for PJRT C API to ease Swift interop
 //
 //===------------------------------------------------------------------===//

@@ -1,6 +1,6 @@
 //===-- PJRTProtoHelper.h - PJRT Protobuf Helper ------------*- C++ -*-===//
 //
-// SwiftIR - Phase 11B: PJRT Integration
+// Magma - XLA runtime. Originally derived from SwiftIR (Apache-2.0).
 // C helper functions for creating XLA protobuf messages
 //
 //===------------------------------------------------------------------===//
