@@ -652,9 +652,8 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         }
         #endif
 
-        // Mark this tensor for materialization and trigger computation
-        TensorRegistry.shared.markForMaterialization(handle)
-        try LazyTensorBarrierThrowing(on: device)
+        // Compute this tensor (batched with anything else marked on the device)
+        try LazyTensorMaterialize(handle, on: device)
 
         // Check for PJRT buffer (CPU/GPU/TPU backends)
         if let buffer = handle.materializedBuffer {
@@ -882,10 +881,9 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             return self
         }
 
-        // Mark for materialization and execute barrier
-        TensorRegistry.shared.markForMaterialization(handle)
+        // Compute this tensor (batched with anything else marked on the device)
         do {
-            try LazyTensorBarrierThrowing(on: device)
+            try LazyTensorMaterialize(handle, on: device)
         } catch {
             fatalError("Could not materialize tensor of shape \(shape) (\(dtype)): \(error)")
         }

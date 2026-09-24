@@ -422,6 +422,58 @@ struct TraceCacheKeyTests {
     }
 }
 
+@Suite("Concurrent Materialization Tests", .enabled(if: PluginAvailability.cpu))
+struct ConcurrentMaterializationTests {
+    @Test("tensors read from many threads at once all materialize")
+    func concurrentReads() {
+        let threads = 8
+        let rounds = 20
+        let results = LockedArray(count: threads)
+        DispatchQueue.concurrentPerform(iterations: threads) { t in
+            var ok = true
+            for r in 0..<rounds {
+                let scale = Float(t * rounds + r)
+                let x = Tensor<Float>([1, 2, 3], shape: [3]) * Tensor<Float>([scale], shape: [1]).broadcast(to: [3])
+                ok = ok && x.sum().item() == 6 * scale
+            }
+            results.set(t, ok)
+        }
+        #expect(results.values == Array(repeating: true, count: threads))
+    }
+
+    @Test("one thread's failing tensor does not fail other threads' reads")
+    func failuresStayWithTheirTensor() {
+        let threads = 6
+        let rounds = 20
+        let results = LockedArray(count: threads)
+        DispatchQueue.concurrentPerform(iterations: threads) { t in
+            var ok = true
+            for r in 0..<rounds {
+                if t == 0 {
+                    // Keeps putting an invalid tensor into shared barriers.
+                    let bad = invalidReshape(of: Tensor<Float>([1, 2], shape: [2]))
+                    ok = ok && (try? bad.fetchScalars()) == nil
+                } else {
+                    let scale = Float(t * rounds + r)
+                    let x = Tensor<Float>([1, 2], shape: [2]) * Tensor<Float>([scale], shape: [1]).broadcast(to: [2])
+                    ok = ok && (try? x.sum().fetchItem()) == 3 * scale
+                }
+            }
+            results.set(t, ok)
+        }
+        #expect(results.values == Array(repeating: true, count: threads))
+    }
+}
+
+/// A fixed-size array of Bools that threads can write to safely.
+private final class LockedArray: @unchecked Sendable {
+    private let lock = Foundation.NSLock()
+    private var storage: [Bool]
+    init(count: Int) { storage = Array(repeating: false, count: count) }
+    func set(_ index: Int, _ value: Bool) { lock.lock(); storage[index] = value; lock.unlock() }
+    var values: [Bool] { lock.lock(); defer { lock.unlock() }; return storage }
+}
+
 /// The `MaterializationError` thrown by `body`, or nil if it did not throw one.
 /// (`#expect(throws:)` only returns the error on Swift 6.1+ toolchains.)
 private func materializationError(_ body: () throws -> Void) -> MaterializationError? {

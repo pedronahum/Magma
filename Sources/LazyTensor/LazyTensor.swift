@@ -1277,6 +1277,13 @@ public func LazyTensorBarrier(on device: Device = .default) {
 ///   `.backendUnavailable` when the PJRT plugin cannot be loaded, or
 ///   `.compilation` with the backend's diagnostic.
 public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
+    // One barrier at a time, process-wide. A barrier takes every tensor marked
+    // on the device, including tensors another thread marked and is about to
+    // read; without this lock that thread's own barrier would find nothing
+    // pending and read its tensor before this barrier had materialized it.
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
+
     // Route to Metal-specific barrier if using Metal backend
     #if os(macOS) && canImport(MetalHLO)
     if device.backend == .metal {
@@ -1311,6 +1318,52 @@ public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
         for output in outputs {
             output.materializationError = failure
         }
+        throw failure
+    }
+}
+
+/// Materialize one tensor, as a read (`scalars()`, `materialize()`) does.
+///
+/// Marks `handle` and runs a barrier on `device`, so it is computed together
+/// with everything else marked there. If that barrier does not materialize
+/// `handle` — for example because another tensor in the same batch (possibly
+/// marked by another thread) failed to compile — `handle` is retried on its
+/// own, so the result or error reported is always this tensor's own.
+///
+/// - Throws: `MaterializationError` if `handle` itself cannot be materialized.
+public func LazyTensorMaterialize(_ handle: LazyTensorHandle, on device: Device = .default) throws {
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
+
+    if handle.isMaterialized { return }
+    TensorRegistry.shared.markForMaterialization(handle)
+    let batchError: Error?
+    do {
+        try LazyTensorBarrierThrowing(on: device)
+        batchError = nil
+    } catch {
+        batchError = error
+    }
+    if handle.isMaterialized { return }
+
+    #if os(macOS) && canImport(MetalHLO)
+    if device.backend == .metal {
+        // The Metal barrier stores results in the IR node and does not
+        // record per-tensor errors; the caller inspects the handle.
+        if let batchError { throw batchError }
+        return
+    }
+    #endif
+
+    // Retry this tensor alone.
+    handle.isLive = true
+    handle.materializationError = nil
+    do {
+        try runPJRTBarrier(outputs: [handle], device: device)
+    } catch {
+        let failure = error as? MaterializationError
+            ?? MaterializationError(stage: .execution, device: device, underlying: error)
+        handle.materializationError = failure
         throw failure
     }
 }
@@ -2340,6 +2393,37 @@ public func PrintMetrics() {
     print("Hit rate: \(hitRatePercent)%")
     print("Promotion hits: \(cache.promotionHitCount) (\(promotionBenefitPercent)% of hits from constant promotion)")
     print("Pending tensors: \(TensorRegistry.shared.pendingCount)")
+}
+
+// MARK: - Barrier lock
+
+/// Serializes barriers across threads (see `LazyTensorBarrierThrowing`).
+/// Recursive, because materializing inputs inside a barrier may run a
+/// nested barrier on the same thread.
+private let _barrierLock = RecursiveLock()
+
+final class RecursiveLock: @unchecked Sendable {
+    private var mutex = pthread_mutex_t()
+
+    init() {
+        var attributes = pthread_mutexattr_t()
+        pthread_mutexattr_init(&attributes)
+        pthread_mutexattr_settype(&attributes, Int32(PTHREAD_MUTEX_RECURSIVE))
+        pthread_mutex_init(&mutex, &attributes)
+        pthread_mutexattr_destroy(&attributes)
+    }
+
+    deinit {
+        pthread_mutex_destroy(&mutex)
+    }
+
+    func lock() {
+        pthread_mutex_lock(&mutex)
+    }
+
+    func unlock() {
+        pthread_mutex_unlock(&mutex)
+    }
 }
 
 // MARK: - NSLock (for cross-platform)
