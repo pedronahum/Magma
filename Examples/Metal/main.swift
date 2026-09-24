@@ -6,6 +6,12 @@
 // 2. Basic tensor operations on Metal
 // 3. Matrix multiplication performance
 // 4. Comparison with CPU backend
+//
+// Run (macOS on Apple Silicon only; the target exists only when MetalHLO is enabled):
+//   MAGMA_ENABLE_METAL=1 swift run MetalExample [--diagnostics | --sweep]
+//
+// Set MAGMA_METALHLO_PATH to build against a local MetalHLO checkout, and
+// MAGMA_XLA_PATH=/opt/xla/lib to include the CPU comparison.
 
 import Foundation
 import Magma
@@ -195,8 +201,9 @@ if Backend.cpu.isAvailable {
     let speedup = cpuAvgTime / metalAvgTime
     print("Metal speedup over CPU: \(String(format: "%.2f", speedup))x")
 } else {
-    print("  CPU backend not available (XLA not installed)")
-    print("  To enable CPU backend, set MAGMA_ENABLE_XLA=1 and install XLA")
+    print("  CPU backend not available (no PJRT CPU plugin found)")
+    print("  To compare with the CPU, set MAGMA_XLA_PATH to the directory containing")
+    print("  pjrt_c_api_cpu_plugin.dylib, e.g. MAGMA_XLA_PATH=/opt/xla/lib")
 }
 
 print()
@@ -242,5 +249,6 @@ print("Done! Metal GPU acceleration is working correctly.")
 
 print("This example requires macOS with Metal and MetalHLO support.")
 print("Metal GPU acceleration is only available on Apple platforms.")
+exit(1)
 
 #endif  // os(macOS) && canImport(MetalHLO)
