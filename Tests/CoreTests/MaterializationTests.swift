@@ -283,6 +283,30 @@ struct CompilationCacheBoundTests {
     }
 }
 
+// Moving a materialized tensor copies its buffer through the host; the copy
+// must keep the element type rather than assume f32.
+@Suite("Device Transfer Tests", .serialized, .enabled(if: PluginAvailability.cpu))
+struct DeviceTransferTests {
+
+    private let target = Device(backend: .cpu, index: 1)
+
+    @Test("materialized Float, Double and Int32 tensors keep their values")
+    func transferKeepsValues() {
+        let f = Tensor<Float>([1.5, -2.5], shape: [2]).materialize().to(device: target)
+        #expect(f.device == target)
+        #expect(f.handle.materializedBuffer?.elementType == .float32)
+        #expect(f.scalars() == [1.5, -2.5])
+
+        let d = Tensor<Double>([0.5, -3.25], shape: [2]).materialize().to(device: target)
+        #expect(d.handle.materializedBuffer?.elementType == .float64)
+        #expect(d.scalars() == [0.5, -3.25])
+
+        let i = Tensor<Int32>([7, -9, 123456], shape: [3]).materialize().to(device: target)
+        #expect(i.handle.materializedBuffer?.elementType == .int32)
+        #expect(i.scalars() == [7, -9, 123456])
+    }
+}
+
 @Suite("LRU Map Tests")
 struct LRUMapTests {
 

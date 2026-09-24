@@ -913,9 +913,6 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         // If materialized, copy data through host and create new buffer on target device
         if let buffer = handle.materializedBuffer {
             do {
-                // Extract data from current buffer
-                let data = try buffer.toFloatArray()
-
                 // Create new tensor on target device
                 let newId = TensorRegistry.shared.nextTensorId()
                 let newHandle = LazyTensorHandle(
@@ -925,14 +922,11 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
                     device: targetDevice
                 )
 
-                // Create buffer on target device
+                // Copy through the host into a buffer of the same element type
+                // (not always f32: e.g. a Tensor<Double> or an i32 tensor).
                 let client = try getGlobalClient(backend: targetDevice.backend)
-                let newBuffer = try client.createBuffer(
-                    data,
-                    shape: shape,
-                    elementType: .float32,
-                    device: nil
-                )
+                let newBuffer = try copyBuffer(
+                    buffer, to: client, device: client.device(at: targetDevice.index))
                 newHandle.materializedBuffer = newBuffer
                 newHandle.irNode = .data(newBuffer)
 

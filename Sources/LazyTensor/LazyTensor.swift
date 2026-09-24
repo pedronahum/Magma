@@ -134,8 +134,10 @@ public struct MaterializationError: Error, CustomStringConvertible, Sendable {
 /// Handle to a lazy tensor value in the computation graph
 ///
 /// LazyTensorHandle represents a tensor that may or may not be materialized.
-/// Operations on lazy tensors build up a computation graph that is
-/// compiled and executed when `LazyTensorBarrier()` is called.
+/// Operations on lazy tensors build up a computation graph that is compiled
+/// and executed when the tensor is read, or when a barrier
+/// (`LazyTensorBarrier(on:)`) runs after the tensor was marked for
+/// materialization.
 public final class LazyTensorHandle: @unchecked Sendable {
 
     /// Unique identifier for this handle
@@ -1410,6 +1412,26 @@ func createDeviceBuffer(
         return try client.createBuffer(values.map(halfPrecisionBits), shape: shape, elementType: type)
     case .bfloat16:
         return try client.createBuffer(values.map(bfloat16Bits), shape: shape, elementType: type)
+    }
+}
+
+/// Copy a device buffer through the host into a new buffer on `client`,
+/// preserving its element type and bytes exactly.
+package func copyBuffer(
+    _ buffer: PJRTBuffer, to client: PJRTClient, device: PJRTDevice? = nil
+) throws -> PJRTBuffer {
+    let type = buffer.elementType
+    switch type.sizeInBytes {
+    case 1:
+        return try client.createBuffer(buffer.toHost(UInt8.self), shape: buffer.shape, elementType: type, device: device)
+    case 2:
+        return try client.createBuffer(buffer.toHost(UInt16.self), shape: buffer.shape, elementType: type, device: device)
+    case 4:
+        return try client.createBuffer(buffer.toHost(UInt32.self), shape: buffer.shape, elementType: type, device: device)
+    case 8:
+        return try client.createBuffer(buffer.toHost(UInt64.self), shape: buffer.shape, elementType: type, device: device)
+    default:
+        throw XLAError.bufferTransferFailed("cannot copy a \(type) buffer between devices")
     }
 }
 
