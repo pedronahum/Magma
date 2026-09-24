@@ -941,27 +941,45 @@ public struct MetalCacheEntry: Sendable {
     /// the (pre-optimization) graph — which would find different constants than the
     /// post-optimization graph the executable was compiled from.
     public let promotedConstantValues: [[Float]]
+
+    /// Host bytes held by `promotedConstantValues`.
+    var constantBytes: Int {
+        promotedConstantValues.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride }
+    }
 }
 
 /// Cache for compiled Metal executables
+///
+/// Like `CompilationCache`, every tier is a bounded LRU cache (with the same
+/// default bounds), so a long-running process that keeps producing new graphs
+/// or new constant data does not grow without limit.
 public final class MetalCompilationCache: @unchecked Sendable {
 
     /// Shared cache instance
     public static let shared = MetalCompilationCache()
 
     /// Slow-path cache keyed by post-optimization structural hash
-    private var cache: [String: MetalHLOExecutable] = [:]
+    private var cache = LRUMap<String, MetalHLOExecutable>(maxEntries: CompilationCache.defaultMaxExecutables)
 
-    /// Fast-path cache keyed by incremental (pre-optimization) hash
-    private var fastCache: [UInt64: MetalCacheEntry] = [:]
+    /// Fast-path cache keyed by incremental (pre-optimization) hash plus
+    /// constant values.
+    ///
+    /// Because the key includes constant values, a loop that feeds fresh
+    /// constant data every step (e.g. a new dropout mask or input batch) adds
+    /// an entry per step that is never hit again, each holding its promoted
+    /// constant values. The LRU bound on entries and on those values' bytes
+    /// keeps that from growing without limit.
+    private var fastCache = LRUMap<UInt64, MetalCacheEntry>(
+        maxEntries: CompilationCache.defaultMaxTraceEntries,
+        maxCost: CompilationCache.defaultMaxTracePinnedBytes)
 
     /// MLIR text cache keyed by post-optimization structural hash.
     ///
-    /// Stores the emitted MLIR alongside compiled executables so that if the
-    /// executable cache is cleared (or future eviction is added), re-compilation
-    /// can skip re-emission — the most expensive CPU-side step before compilation.
+    /// Stores the emitted MLIR alongside compiled executables so that if an
+    /// executable is evicted (or the cache is cleared), re-compilation can skip
+    /// re-emission — the most expensive CPU-side step before compilation.
     /// Inspired by TensorFlow Swift's TFFunctionBuilder node-level caching strategy.
-    private var mlirCache: [String: String] = [:]
+    private var mlirCache = LRUMap<String, String>(maxEntries: CompilationCache.defaultMaxExecutables)
 
     /// Lock for thread safety
     private let lock = NSLock()
@@ -972,42 +990,46 @@ public final class MetalCompilationCache: @unchecked Sendable {
     public func get(hash: String) -> MetalHLOExecutable? {
         lock.lock()
         defer { lock.unlock() }
-        return cache[hash]
+        return cache.get(hash)
     }
 
-    /// Store an executable in the cache (slow path)
+    /// Store an executable in the cache (slow path), evicting the least
+    /// recently used one when full
     public func put(hash: String, executable: MetalHLOExecutable) {
         lock.lock()
         defer { lock.unlock() }
-        cache[hash] = executable
+        cache.set(hash, executable)
     }
 
     /// Look up a cached entry by incremental hash (fast path)
     public func getFast(hash: UInt64) -> MetalCacheEntry? {
         lock.lock()
         defer { lock.unlock() }
-        return fastCache[hash]
+        return fastCache.get(hash)
     }
 
-    /// Store a cache entry by incremental hash (fast path)
+    /// Store a cache entry by incremental hash (fast path). The cache is bounded
+    /// by entry count and by the bytes of its entries' constant values; least
+    /// recently used entries are evicted, and an entry holding more than the
+    /// byte bound is not stored.
     public func putFast(hash: UInt64, entry: MetalCacheEntry) {
         lock.lock()
         defer { lock.unlock() }
-        fastCache[hash] = entry
+        fastCache.set(hash, entry, cost: entry.constantBytes)
     }
 
     /// Look up cached MLIR text (slow path, post-optimization hash)
     public func getMlir(hash: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        return mlirCache[hash]
+        return mlirCache.get(hash)
     }
 
     /// Store MLIR text in the cache alongside the executable
     public func putMlir(hash: String, mlir: String) {
         lock.lock()
         defer { lock.unlock() }
-        mlirCache[hash] = mlir
+        mlirCache.set(hash, mlir)
     }
 
     /// Clear all cached entries
@@ -1017,22 +1039,38 @@ public final class MetalCompilationCache: @unchecked Sendable {
         cache.removeAll()
         fastCache.removeAll()
         mlirCache.removeAll()
-        hitCount = 0
-        missCount = 0
-        fastHitCount = 0
-        mlirHitCount = 0
+        _hitCount.store(0, ordering: .relaxed)
+        _missCount.store(0, ordering: .relaxed)
+        _fastHitCount.store(0, ordering: .relaxed)
+        _mlirHitCount.store(0, ordering: .relaxed)
     }
 
-    /// Cache statistics
-    public var hitCount: Int = 0
-    public var missCount: Int = 0
-    public var fastHitCount: Int = 0
-    public var mlirHitCount: Int = 0
+    // Statistics are atomics rather than lock-guarded fields: they are bumped
+    // outside the cache lock.
+    private let _hitCount = Atomic<Int>(0)
+    private let _missCount = Atomic<Int>(0)
+    private let _fastHitCount = Atomic<Int>(0)
+    private let _mlirHitCount = Atomic<Int>(0)
+
+    /// Slow-path executable-cache hits.
+    public var hitCount: Int { _hitCount.load(ordering: .relaxed) }
+    /// Slow-path executable-cache misses (each one compiled a new executable).
+    public var missCount: Int { _missCount.load(ordering: .relaxed) }
+    /// Fast-path hits (skipped the whole pipeline).
+    public var fastHitCount: Int { _fastHitCount.load(ordering: .relaxed) }
+    /// Hits on the MLIR text cache (skipped re-emission).
+    public var mlirHitCount: Int { _mlirHitCount.load(ordering: .relaxed) }
+
+    func recordHit() { _hitCount.wrappingAdd(1, ordering: .relaxed) }
+    func recordMiss() { _missCount.wrappingAdd(1, ordering: .relaxed) }
+    func recordFastHit() { _fastHitCount.wrappingAdd(1, ordering: .relaxed) }
+    func recordMlirHit() { _mlirHitCount.wrappingAdd(1, ordering: .relaxed) }
 
     /// Cache hit rate
     public var hitRate: Double {
-        let total = hitCount + missCount + fastHitCount
-        return total > 0 ? Double(hitCount + fastHitCount) / Double(total) : 0
+        let hits = hitCount + fastHitCount
+        let total = hits + missCount
+        return total > 0 ? Double(hits) / Double(total) : 0
     }
 }
 
@@ -1926,7 +1964,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
 
         // Sanity check: data input count must match
         if dataInputHandles.count == entry.metadata.dataInputCount {
-            cache.fastHitCount += 1
+            cache.recordFastHit()
 
             if debugEnabled {
                 magmaDiagnostic("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
@@ -2030,17 +2068,17 @@ private func MetalLazyTensorBarrier(on device: Device) {
     // 7. Check slow-path cache
     var executable: MetalHLOExecutable
     if let cached = cache.get(hash: structuralHash) {
-        cache.hitCount += 1
+        cache.recordHit()
         executable = cached
     } else {
-        cache.missCount += 1
+        cache.recordMiss()
 
         // 8. Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission.
         // The MLIR cache stores emitted text keyed by structural hash so that if the
         // executable cache is cleared, re-compilation skips the StableHLOEmitter entirely.
         let mlir: String
         if let cachedMlir = cache.getMlir(hash: structuralHash) {
-            cache.mlirHitCount += 1
+            cache.recordMlirHit()
             mlir = cachedMlir
             if debugEnabled {
                 magmaDiagnostic("Magma [Metal]: MLIR cache hit (hash=\(structuralHash.prefix(8))), skipping emission")
