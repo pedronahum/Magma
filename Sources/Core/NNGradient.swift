@@ -32,6 +32,11 @@ import _Differentiation
 /// }
 /// optimizer.step(grads)
 /// ```
+///
+/// Every parameter gets an entry: one the loss does not depend on gets a zero
+/// gradient of its own shape. A parameter listed more than once (e.g. tied
+/// weights, or concatenated `parameters()` lists that share a layer) gets the
+/// sum of the gradients of all its occurrences.
 public func parameterGradients(
     of parameters: [Parameter],
     loss: @differentiable(reverse) ([Tensor<Float>]) -> Tensor<Float>
@@ -39,6 +44,19 @@ public func parameterGradients(
     let values = parameters.map { $0.value }
     let (value, gradView) = valueWithGradient(at: values, of: loss)
     // The gradient of `[Tensor]` is an Array.DifferentiableView; `.base` is the
-    // underlying `[Tensor]` (Tensor is its own TangentVector).
-    return (value, Dictionary(uniqueKeysWithValues: zip(parameters, gradView.base)))
+    // underlying `[Tensor]` (Tensor is its own TangentVector). A value the loss
+    // does not depend on gets `Tensor.zero`, a shape-[] scalar, and when the
+    // loss depends on no value at all `.base` is empty. Replace both with
+    // explicit zeros shaped like the parameter.
+    let grads: [Tensor<Float>] = values.indices.map { i in
+        let v = values[i]
+        if i < gradView.base.count {
+            let g = gradView.base[i]
+            let isScalarZeroStandIn = g.shape.isEmpty && !v.shape.isEmpty
+            if !isScalarZeroStandIn { return g }
+        }
+        return Tensor<Float>.zeros(v.shape, on: v.device)
+    }
+    // Accumulate, rather than trap on, parameters that appear more than once.
+    return (value, Dictionary(zip(parameters, grads), uniquingKeysWith: +))
 }

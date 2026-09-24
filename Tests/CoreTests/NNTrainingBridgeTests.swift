@@ -51,4 +51,41 @@ struct NNTrainingBridgeTests {
         #expect(finalLoss < initialLoss * 0.1)    // real gradients drive the loss down
         #expect(finalLoss < 0.1)
     }
+
+    @Test("parameterGradients accumulates gradients of a parameter listed twice")
+    func tiedParameterAccumulates() {
+        let p = Parameter(Tensor<Float>([1, 2, 3], shape: [3]))
+        // loss = sum(v0 * v1) with v0 == v1 == p: d/dv0 = v1, d/dv1 = v0.
+        let (value, grads) = parameterGradients(of: [p, p]) { v in (v[0] * v[1]).sum() }
+        #expect(value.scalars() == [14])
+        #expect(grads.count == 1)
+        #expect(grads[p]?.scalars() == [2, 4, 6])
+    }
+
+    @Test("parameterGradients gives zeros for parameters the loss ignores")
+    func unusedParametersGetZeroGradients() {
+        let a = Parameter(Tensor<Float>([1, 2], shape: [2]))
+        let b = Parameter(Tensor<Float>([3, 4, 5, 6], shape: [2, 2]))
+
+        // Loss independent of every parameter: the tangent comes back empty.
+        let constant = Tensor<Float>([5], shape: [1])
+        let (_, noGrads) = parameterGradients(of: [a, b]) { _ in constant.sum() }
+        #expect(noGrads[a]?.shape == [2])
+        #expect(noGrads[a]?.scalars() == [0, 0])
+        #expect(noGrads[b]?.shape == [2, 2])
+        #expect(noGrads[b]?.scalars() == [0, 0, 0, 0])
+
+        // Loss depending on `a` only: `b` still gets a correctly shaped zero.
+        let (_, partial) = parameterGradients(of: [a, b]) { v in (v[0] * v[0]).sum() }
+        #expect(partial[a]?.scalars() == [2, 4])
+        #expect(partial[b]?.shape == [2, 2])
+        #expect(partial[b]?.scalars() == [0, 0, 0, 0])
+
+        // The result feeds an optimizer step without tripping its
+        // "no gradient supplied" precondition, and leaves `b` unchanged.
+        var opt = optim.SGD(parameters: [a, b], lr: 0.5)
+        opt.step(partial)
+        #expect(a.value.scalars() == [0, 0])
+        #expect(b.value.scalars() == [3, 4, 5, 6])
+    }
 }
