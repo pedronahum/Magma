@@ -6,43 +6,46 @@
 // appears multiple times in a graph.
 
 import Foundation
+import StableHLO
 
 /// Key for identifying identical expressions
 ///
 /// Two operations are considered identical if they have:
 /// 1. Same operation type
 /// 2. Same input tensor IDs (in order)
-/// 3. Same attributes (for operations that have them)
+/// 3. Same attributes (compared exactly, whatever their type)
+/// 4. Same result shape and dtype
+///
+/// Two constants are identical only if their shape, dtype and every value
+/// (bit for bit) match. Keys compare their contents, not just a hash, so a
+/// hash collision can never merge different expressions.
 struct ExpressionKey: Hashable {
-    let opKind: OpKind
+    let opKind: OpKind?
     let inputIds: [UInt64]
-    let attributesHash: Int
+    let attributes: String
+    let shape: [Int]?
+    let dtype: DType?
+    let constantBits: [UInt32]?
 
-    init(opKind: OpKind, inputs: [LazyTensorHandle], attributes: [String: Any]) {
+    init(opKind: OpKind, inputs: [LazyTensorHandle], attributes: [String: Any],
+         output: LazyTensorHandle? = nil) {
         self.opKind = opKind
         self.inputIds = inputs.map { $0.id }
+        // Every attribute type counts (e.g. a `convert`'s DType target, which a
+        // numeric-only hash used to ignore).
+        self.attributes = IRGraph.attributesDescription(attributes)
+        self.shape = output?.shape
+        self.dtype = output?.dtype
+        self.constantBits = nil
+    }
 
-        // Compute a hash for attributes
-        // This is a simplified version - in production, you'd want more robust hashing
-        var hasher = Hasher()
-        for (key, value) in attributes.sorted(by: { $0.key < $1.key }) {
-            hasher.combine(key)
-            if let intVal = value as? Int {
-                hasher.combine(intVal)
-            } else if let floatVal = value as? Float {
-                hasher.combine(floatVal)
-            } else if let intArray = value as? [Int] {
-                for i in intArray { hasher.combine(i) }
-            } else if let floatArray = value as? [Float] {
-                // Hash all Float values to ensure constants with different values
-                // are not incorrectly deduplicated
-                for f in floatArray { hasher.combine(f) }
-            } else if let stringVal = value as? String {
-                hasher.combine(stringVal)
-            }
-            // Note: Other types are ignored for hashing purposes
-        }
-        self.attributesHash = hasher.finalize()
+    init(constant values: [Float], shape: [Int], dtype: DType) {
+        self.opKind = nil
+        self.inputIds = []
+        self.attributes = ""
+        self.shape = shape
+        self.dtype = dtype
+        self.constantBits = values.map(\.bitPattern)
     }
 }
 
@@ -111,7 +114,8 @@ public final class CommonSubexpressionEliminationPass: OptimizationPass {
                 }
 
                 // Create expression key with resolved inputs
-                let key = ExpressionKey(opKind: opKind, inputs: resolvedInputs, attributes: attributes)
+                let key = ExpressionKey(
+                    opKind: opKind, inputs: resolvedInputs, attributes: attributes, output: node)
 
                 if let existing = expressionToTensor[key] {
                     // Found a duplicate - replace this node with the existing one
@@ -126,25 +130,10 @@ public final class CommonSubexpressionEliminationPass: OptimizationPass {
                 }
 
             case .constant(let values, let shape):
-                // Constants with same values can be deduplicated
-                // Sample more values and include count to ensure uniqueness
-                let sampleSize = min(values.count, 32)
-                let sampleStride = max(1, values.count / sampleSize)
-                var sampledValues: [Float] = []
-                var idx = 0
-                while idx < values.count && sampledValues.count < sampleSize {
-                    sampledValues.append(values[idx])
-                    idx += sampleStride
-                }
-                let key = ExpressionKey(
-                    opKind: .add, // Placeholder - constants don't have a real OpKind
-                    inputs: [],
-                    attributes: [
-                        "const_values": sampledValues,
-                        "const_shape": shape,
-                        "const_count": values.count
-                    ]
-                )
+                // Constants can be deduplicated only when every value matches:
+                // comparing a sample merged large constants that differed
+                // elsewhere.
+                let key = ExpressionKey(constant: values, shape: shape, dtype: node.dtype)
 
                 if let existing = expressionToTensor[key] {
                     replacements[node.id] = existing

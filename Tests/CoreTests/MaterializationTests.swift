@@ -314,3 +314,68 @@ struct LRUMapTests {
         #expect(map.totalCost == 40)
     }
 }
+
+// Optimization passes run on every barrier; a pass that changes a value,
+// shape or dtype silently corrupts results.
+@Suite("Optimization Correctness Tests", .serialized, .enabled(if: PluginAvailability.cpu))
+struct OptimizationCorrectnessTests {
+
+    @Test("CSE does not merge large constants that differ in unsampled positions")
+    func cseKeepsDistinctLargeConstants() {
+        var sparse = [Float](repeating: 0, count: 1000)
+        sparse[1] = 5
+        let a = Tensor<Float>(sparse, shape: [1000])
+        let b = Tensor<Float>([Float](repeating: 0, count: 1000), shape: [1000])
+        let values = (a + b).scalars()
+        #expect(values.count == 1000)
+        #expect(values[1] == 5)
+        #expect(values.reduce(0, +) == 5)
+    }
+
+    @Test("CSE does not merge constants of different dtypes")
+    func cseKeepsConstantDTypes() {
+        let x = Tensor<Float>([1.5, 2.5], shape: [2])
+        let y = Tensor<Double>([1.5, 2.5], shape: [2])
+        let sx = x.materialize()
+        let sy = y.materialize()
+        #expect(sx.handle.materializedBuffer?.elementType == .float32)
+        #expect(sy.handle.materializedBuffer?.elementType == .float64)
+    }
+
+    @Test("CSE does not merge conversions to different dtypes")
+    func cseKeepsConvertTargets() {
+        let x = Tensor<Float>([1.5, -2.25], shape: [2]).materialize()
+        let wide = x.to(.float64)
+        let narrow = x.to(.bfloat16)
+        wide.markForMaterialization()
+        narrow.markForMaterialization()
+        LazyTensorBarrier()
+        #expect(wide.handle.materializedBuffer?.elementType == .float64)
+        #expect(narrow.handle.materializedBuffer?.elementType == .bfloat16)
+        #expect(wide.scalars() == [1.5, -2.25])
+        #expect(narrow.scalars() == [1.5, -2.25])
+    }
+
+    @Test("x + 0 keeps the broadcast shape")
+    func addZeroKeepsBroadcastShape() {
+        let x = Tensor<Float>([5], shape: []).materialize()
+        let y = x + Tensor<Float>.zeros([3])
+        #expect(y.scalars() == [5, 5, 5])
+    }
+
+    @Test("x * 1 keeps the broadcast shape")
+    func multiplyOneKeepsBroadcastShape() {
+        let x = Tensor<Float>([2, 3], shape: [2]).materialize()
+        let y = x * Tensor<Float>.ones([2, 2])
+        #expect(y.scalars() == [2, 3, 2, 3])
+    }
+
+    @Test("float x * 0 keeps IEEE semantics")
+    func multiplyZeroKeepsNaN() {
+        let x = Tensor<Float>([.infinity, 1], shape: [2]).materialize()
+        let y = (x * Tensor<Float>.zeros([2])).scalars()
+        #expect(y.count == 2)
+        #expect(y[0].isNaN, "inf * 0 is NaN")
+        #expect(y[1] == 0)
+    }
+}

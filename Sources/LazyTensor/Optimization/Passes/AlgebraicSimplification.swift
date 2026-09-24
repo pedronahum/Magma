@@ -5,6 +5,7 @@
 // and simplifies them to their mathematical equivalents.
 
 import Foundation
+import StableHLO
 
 /// Algebraic Simplification Pass
 ///
@@ -15,7 +16,7 @@ import Foundation
 /// - x + 0 = x
 /// - x - 0 = x
 /// - x * 1 = x
-/// - x * 0 = 0
+/// - x * 0 = 0 (integer and boolean only)
 /// - x / 1 = x
 /// - x - x = 0
 /// - x / x = 1 (for non-zero x)
@@ -64,13 +65,13 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
                 let resolvedInputs = inputs.map { replacements[$0.id] ?? $0 }
 
                 // Try to simplify this operation
-                if let simplification = simplify(
+                if let simplification = exactStandIn(simplify(
                     opKind: opKind,
                     inputs: resolvedInputs,
                     output: node,
                     attributes: attributes,
                     producingOp: producingOp
-                ) {
+                ), for: node) {
                     switch simplification {
                     case .replace(let replacement):
                         replacements[node.id] = replacement
@@ -131,6 +132,19 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
         case replaceOp(OpKind, [LazyTensorHandle], [String: Any])
     }
 
+    /// Keep a `.replace` only when the replacement is an exact stand-in for
+    /// `node`: identities like x + 0 = x change the result's shape when the
+    /// constant broadcasts `x` (scalar x + zeros([3]) is [3], not a scalar).
+    private func exactStandIn(
+        _ simplification: SimplificationResult?, for node: LazyTensorHandle
+    ) -> SimplificationResult? {
+        if case .replace(let replacement)? = simplification,
+           replacement.shape != node.shape || replacement.dtype != node.dtype {
+            return nil
+        }
+        return simplification
+    }
+
     /// Try to simplify an operation
     private func simplify(
         opKind: OpKind,
@@ -170,12 +184,15 @@ public final class AlgebraicSimplificationPass: OptimizationPass {
             if isOneConstant(inputs[0]) {
                 return .replace(inputs[1])
             }
-            // x * 0 = 0, 0 * x = 0
-            if isZeroConstant(inputs[1]) {
-                return .replace(inputs[1])
-            }
-            if isZeroConstant(inputs[0]) {
-                return .replace(inputs[0])
+            // x * 0 = 0, 0 * x = 0 — integers and booleans only: for floats,
+            // inf * 0 and NaN * 0 are NaN.
+            if !output.dtype.isFloatingPoint {
+                if isZeroConstant(inputs[1]) {
+                    return .replace(inputs[1])
+                }
+                if isZeroConstant(inputs[0]) {
+                    return .replace(inputs[0])
+                }
             }
 
         // x / 1 = x

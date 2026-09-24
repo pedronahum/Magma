@@ -514,31 +514,38 @@ struct AlgebraicSimplificationTests {
         #expect(optimized.outputs.first?.id == xId, "x * 1 should be simplified to x")
     }
 
-    @Test("Simplifies x * 0 = 0")
-    func multiplyZero() {
+    /// Build `x * zeros` for a runtime input `x` and run the pass on it.
+    private func multiplyByZero(dtype: DType) -> (optimized: IRGraph, zeroId: UInt64, resultId: UInt64) {
         let pass = AlgebraicSimplificationPass()
-
         let graph = IRGraph()
 
         // x is a non-constant input (irNode left as nil)
-        let xId = TensorRegistry.shared.nextTensorId()
-        let xHandle = LazyTensorHandle(id: xId, shape: [2], dtype: .float32, device: .default)
-        // Leave irNode as nil - represents a runtime input
+        let xHandle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: [2], dtype: dtype, device: .default)
 
-        let zeroId = TensorRegistry.shared.nextTensorId()
-        let zeroHandle = LazyTensorHandle(id: zeroId, shape: [2], dtype: .float32, device: .default)
+        let zeroHandle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: [2], dtype: dtype, device: .default)
         zeroHandle.irNode = .constant(values: [0, 0], shape: [2])
 
-        let resultId = TensorRegistry.shared.nextTensorId()
-        let resultHandle = LazyTensorHandle(id: resultId, shape: [2], dtype: .float32, device: .default)
+        let resultHandle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(), shape: [2], dtype: dtype, device: .default)
         resultHandle.irNode = .operation(op: .multiply, inputs: [xHandle, zeroHandle], attributes: [:])
 
         graph.nodes = [xHandle, zeroHandle, resultHandle]
         graph.addOutput(resultHandle)
+        return (pass.run(on: graph), zeroHandle.id, resultHandle.id)
+    }
 
-        let optimized = pass.run(on: graph)
-
+    @Test("Simplifies integer x * 0 = 0")
+    func multiplyZero() {
+        let (optimized, zeroId, _) = multiplyByZero(dtype: .int32)
         #expect(optimized.outputs.first?.id == zeroId, "x * 0 should be simplified to 0")
+    }
+
+    @Test("Keeps floating-point x * 0 (inf * 0 and NaN * 0 are NaN)")
+    func multiplyZeroFloat() {
+        let (optimized, _, resultId) = multiplyByZero(dtype: .float32)
+        #expect(optimized.outputs.first?.id == resultId)
     }
 
     @Test("Simplifies x / 1 = x")
