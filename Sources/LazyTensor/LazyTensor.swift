@@ -1368,6 +1368,44 @@ public func LazyTensorMaterialize(_ handle: LazyTensorHandle, on device: Device 
     }
 }
 
+/// A handle's value as a read sees it: its device buffer, IR node and last
+/// materialization error, captured together under the barrier lock.
+package struct LazyTensorReadState {
+    package let buffer: PJRTBuffer?
+    package let node: IRNode?
+    package let error: MaterializationError?
+}
+
+/// Read `handle`'s state under the barrier lock, so a barrier running on
+/// another thread — which writes the handle's buffer and node, and whose
+/// optimization passes rewrite nodes in place — is never observed half done.
+package func lazyTensorReadState(_ handle: LazyTensorHandle) -> LazyTensorReadState {
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
+    return LazyTensorReadState(
+        buffer: handle.materializedBuffer,
+        node: handle.irNode,
+        error: handle.materializationError)
+}
+
+/// Materialize `handle` for a read and return its state, under one hold of
+/// the barrier lock. A handle that already has a value, or is a constant
+/// (which a read returns directly, without a backend), is left as it is.
+///
+/// - Throws: `MaterializationError` if `handle` cannot be materialized.
+package func lazyTensorMaterializeForRead(
+    _ handle: LazyTensorHandle, on device: Device
+) throws -> LazyTensorReadState {
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
+    var isConstant = false
+    if case .constant = handle.irNode { isConstant = true }
+    if !handle.isMaterialized && !isConstant {
+        try LazyTensorMaterialize(handle, on: device)
+    }
+    return lazyTensorReadState(handle)
+}
+
 // MARK: - Host → Device Upload
 
 /// The PJRT element type that stores values of `dtype`.
@@ -2107,9 +2145,16 @@ private func MetalLazyTensorBarrier(on device: Device) {
 /// includes op attributes), and arguments are collected from that same
 /// optimized graph.
 ///
+/// Runs under the barrier lock, like a barrier: the optimization passes
+/// rewrite the graph's handles in place, and those handles can be shared with
+/// tensors that other threads are reading or materializing.
+///
 /// - Throws: `MaterializationError` if the backend is unavailable or
 ///   compilation, input upload, or execution fails.
 public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws -> [PJRTBuffer] {
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
+
     graph.buildTopologicalOrder()
 
     // Run optimization passes
@@ -2159,6 +2204,10 @@ public func executeGraphReplicated(
         throw XLAError.executionFailed(
             "client has \(client.deviceCount) device(s), need \(numReplicas) for \(numReplicas) replicas")
     }
+
+    // The passes rewrite handles in place (see `executeGraph`).
+    _barrierLock.lock()
+    defer { _barrierLock.unlock() }
 
     graph.buildTopologicalOrder()
     let optimizedGraph: IRGraph

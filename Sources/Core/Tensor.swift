@@ -633,43 +633,25 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     ///
     /// - Throws: `MaterializationError`.
     public func fetchScalars() throws -> [Scalar] {
-        // If already materialized with a PJRT buffer, return cached values
-        if let buffer = handle.materializedBuffer {
+        // Compute this tensor if needed (batched with anything else marked on
+        // the device) and capture its value under the barrier lock, so a
+        // barrier on another thread writing the same handle is never seen
+        // half done. Already-computed and constant tensors are not recomputed.
+        let state = try lazyTensorMaterializeForRead(handle, on: device)
+
+        // PJRT buffer (CPU/GPU/TPU backends)
+        if let buffer = state.buffer {
             return try hostScalars(of: buffer)
         }
 
-        // If this is a constant, return values directly
-        if case .constant(let values, _) = handle.irNode {
+        // Constant: return the values directly
+        if case .constant(let values, _) = state.node {
             return convertFloatArrayToScalar(values)
         }
 
-        // If this is a Metal device buffer, transfer to host lazily (only when user reads)
+        // Metal device buffer: transfer to host lazily (only when the user reads)
         #if os(macOS) && canImport(MetalHLO)
-        if case .metalData(let metalBuffer) = handle.irNode {
-            do {
-                return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
-            } catch {
-                throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
-            }
-        }
-        #endif
-
-        // Compute this tensor (batched with anything else marked on the device)
-        try LazyTensorMaterialize(handle, on: device)
-
-        // Check for PJRT buffer (CPU/GPU/TPU backends)
-        if let buffer = handle.materializedBuffer {
-            return try hostScalars(of: buffer)
-        }
-
-        // Check for constant (fallback after barrier)
-        if case .constant(let values, _) = handle.irNode {
-            return convertFloatArrayToScalar(values)
-        }
-
-        // Check for Metal buffer (fallback after barrier)
-        #if os(macOS) && canImport(MetalHLO)
-        if case .metalData(let metalBuffer) = handle.irNode {
+        if case .metalData(let metalBuffer) = state.node {
             do {
                 return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
             } catch {
@@ -679,7 +661,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         #endif
 
         // The barrier ran without error but produced no value for this tensor.
-        throw handle.materializationError
+        throw state.error
             ?? MaterializationError(stage: .notMaterialized, device: device)
     }
 
@@ -878,12 +860,9 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     ///   the underlying `MaterializationError` (see `scalars()`).
     @discardableResult
     public func materialize() -> Tensor {
-        // Skip if already materialized
-        if handle.isMaterialized {
-            return self
-        }
-
-        // Compute this tensor (batched with anything else marked on the device)
+        // Compute this tensor (batched with anything else marked on the
+        // device). A no-op if it is already materialized; the check is made
+        // under the barrier lock, as another thread's barrier may be writing it.
         do {
             try LazyTensorMaterialize(handle, on: device)
         } catch {
@@ -914,8 +893,12 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             return self
         }
 
+        // Read the source's buffer and node together under the barrier lock
+        // (another thread's barrier may be materializing it).
+        let source = lazyTensorReadState(handle)
+
         // If materialized, copy data through host and create new buffer on target device
-        if let buffer = handle.materializedBuffer {
+        if let buffer = source.buffer {
             do {
                 // Create new tensor on target device
                 let newId = TensorRegistry.shared.nextTensorId()
@@ -954,12 +937,12 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         )
 
         // If source has a constant node, copy it directly
-        if case .constant(let values, let constShape) = handle.irNode {
+        if case .constant(let values, let constShape) = source.node {
             newHandle.irNode = .constant(values: values, shape: constShape)
         } else {
             // Reference the source tensor - XLA will handle the device transfer
             // during graph compilation when both devices are part of the same computation
-            newHandle.irNode = handle.irNode
+            newHandle.irNode = source.node
         }
 
         TensorRegistry.shared.registerPending(newHandle)

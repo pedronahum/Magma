@@ -463,6 +463,65 @@ struct ConcurrentMaterializationTests {
         }
         #expect(results.values == Array(repeating: true, count: threads))
     }
+
+    @Test("many threads reading one shared, not yet computed tensor all see its value")
+    func sharedTensorReads() {
+        let threads = 8
+        let rounds = 25
+        var ok = true
+        for r in 0..<rounds {
+            // A fresh lazy graph each round, so every round races the first
+            // reader's barrier against the other readers' checks of the handle.
+            let scale = Float(r + 1)
+            let x = Tensor<Float>([1, 2, 3, 4], shape: [4])
+            let shared = (x * Tensor<Float>([scale], shape: [1]).broadcast(to: [4]) + x).relu()
+            let expected: [Float] = [1, 2, 3, 4].map { $0 * scale + $0 }
+            let results = LockedArray(count: threads)
+            DispatchQueue.concurrentPerform(iterations: threads) { t in
+                switch t % 3 {
+                case 0:
+                    results.set(t, (try? shared.fetchScalars()) == expected)
+                case 1:
+                    results.set(t, shared.materialize().scalars() == expected)
+                default:
+                    // A read that depends on the shared tensor, plus a
+                    // transfer-to-self, both racing the shared tensor's barrier.
+                    let copy = shared.to(device: shared.device)
+                    results.set(t, (shared + copy).scalars() == expected.map { $0 * 2 })
+                }
+            }
+            ok = ok && results.values == Array(repeating: true, count: threads)
+        }
+        #expect(ok)
+    }
+
+    @Test("executeGraph runs alongside concurrent barriers on shared handles")
+    func executeGraphAlongsideBarriers() throws {
+        let threads = 6
+        let rounds = 15
+        var ok = true
+        for r in 0..<rounds {
+            // `x * 1 + 0` is rewritten in place by the optimization passes, both
+            // in executeGraph and in the barriers of the concurrent reads.
+            let scale = Float(r + 2)
+            let x = Tensor<Float>([1, -2, 3], shape: [3]) * Tensor<Float>([scale], shape: [1]).broadcast(to: [3])
+            let shared = x * Tensor<Float>.ones([3]) + Tensor<Float>.zeros([3])
+            let expected: [Float] = [1, -2, 3].map { $0 * scale }
+            let results = LockedArray(count: threads)
+            DispatchQueue.concurrentPerform(iterations: threads) { t in
+                if t % 2 == 0 {
+                    let graph = IRGraph()
+                    graph.addOutput((shared * Tensor<Float>([2], shape: [1]).broadcast(to: [3])).handle)
+                    let values = try? executeGraph(graph).first?.toFloatArray()
+                    results.set(t, values == expected.map { $0 * 2 })
+                } else {
+                    results.set(t, shared.scalars() == expected)
+                }
+            }
+            ok = ok && results.values == Array(repeating: true, count: threads)
+        }
+        #expect(ok)
+    }
 }
 
 /// A fixed-size array of Bools that threads can write to safely.
