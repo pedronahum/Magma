@@ -40,17 +40,14 @@ summarizes them.
 ## Modules and Imports
 
 ```swift
-import Magma            // Tensor, layers, losses, optimizers, data
-import _Differentiation // @differentiable, gradient(at:), valueWithGradient(at:)
-import LazyTensor       // LazyTensorBarrier, LazyTensorBarrierThrowing, MaterializationError
-import XLARuntime       // Device, Backend, PJRTClient
+import Magma
 ```
 
-`import Magma` is enough for most code. The other imports are needed only when
-you name one of the types they contain. For example, `Device` and `Backend` come
-from `XLARuntime`. You can still write `on: .default` without importing it.
-
----
+`import Magma` is all you need. It re-exports the layers it is built on —
+`LazyTensor` (`LazyTensorBarrier`, `LazyTensorBarrierThrowing`,
+`MaterializationError`), `XLARuntime` (`Device`, `Backend`, `PJRTClient`),
+`StableHLO` (`DType`, `DeviceMesh`) — and Swift's `_Differentiation` module
+(`@differentiable`, `gradient(at:)`, `valueWithGradient(at:)`).
 
 ## Tensor Creation
 
@@ -125,7 +122,6 @@ backend.
   marks, whether it succeeds or fails.
 
 ```swift
-import LazyTensor
 
 let y = x.matmul(w).relu()
 let z = y.sum()
@@ -154,7 +150,6 @@ returned `[]`. Use the throwing counterparts to handle the error:
 
 ```swift
 import Magma
-import LazyTensor
 
 do {
     let values = try logits.softmax(dim: -1).fetchScalars()
@@ -219,7 +214,6 @@ It does **not** control device-side RNG ops: `randnDevice`, `randDevice`,
 ## Device Placement
 
 ```swift
-import XLARuntime
 
 let gpu = Device(backend: .gpu, index: 0)
 
@@ -286,7 +280,6 @@ Available layers:
 
 ```swift
 import Magma
-import _Differentiation
 
 func makeModel() -> some Layer {
     sequential {
@@ -613,7 +606,6 @@ keyed by `Parameter`, and `step(_:)` applies it by identity.
 
 ```swift
 import Magma
-import _Differentiation
 
 let fc = nn.Linear(inputSize: 2, outputSize: 1)         // parameters(): [weight, bias]
 var opt = optim.Adam(parameters: fc.parameters(), lr: 0.1)
@@ -629,7 +621,7 @@ for _ in 0..<100 {
 
     // Cut the lazy graph: the optimizer updates `param.value` lazily.
     for p in fc.parameters() { p.value.markForMaterialization() }
-    LazyTensorBarrier()                                 // import LazyTensor
+    LazyTensorBarrier()
 }
 ```
 
@@ -852,7 +844,6 @@ cross-entropy built from differentiable primitives.
 
 ```swift
 import Magma
-import _Differentiation
 
 manualSeed(0)
 

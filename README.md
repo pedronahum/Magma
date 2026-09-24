@@ -42,7 +42,6 @@ per-layer update code). This is a real, runnable target:
 
 ```swift
 import Magma
-import _Differentiation   // for @differentiable (Magma does not re-export it)
 
 // A 1 → 16 → 1 ReLU MLP. `sequential { ... }` composes typed differentiable
 // layers; the concrete (nested) type stays hidden behind `some Layer`.
@@ -150,8 +149,6 @@ does nothing. To compute several tensors in one compiled program without reading
 them yet:
 
 ```swift
-import LazyTensor            // LazyTensorBarrier lives in the LazyTensor module
-
 let y = x.matmul(w).relu()   // lazy — nothing has executed yet
 let z = y.sum()
 y.markForMaterialization()
@@ -342,11 +339,9 @@ targets: [
 ]
 ```
 
-`import Magma` gives you tensors, layers and optimizers. A few lower-level names
-live in the modules it builds on, which are also exported as products:
-`LazyTensorBarrier`, `MaterializationError` (`LazyTensor`) and `Device`,
-`Backend`, `PJRTClient` (`XLARuntime`). Import `_Differentiation` to write
-`@differentiable` closures.
+`import Magma` is all you need: it re-exports the lower layers (`Device`,
+`Backend`, `DType`, `LazyTensorBarrier`, `MaterializationError`, ...) and the
+`_Differentiation` module (`@differentiable`, `gradient(at:)`).
 
 ### XLA/PJRT Runtime (Required for Execution)
 

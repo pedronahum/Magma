@@ -139,7 +139,6 @@ Magma automatically detects TPU availability:
 
 ```swift
 import Magma
-import XLARuntime
 
 // Check if a TPU plugin was found (this only checks that the file exists)
 if Backend.tpu.isAvailable {
@@ -155,7 +154,6 @@ print("Using backend: \(backend)")
 ### Creating a TPU Client
 
 ```swift
-import XLARuntime
 
 do {
     // Create a TPU client
@@ -182,7 +180,6 @@ You can place work on the TPU in either of two ways:
 
 ```swift
 import Magma
-import XLARuntime
 
 let tpu = Device(backend: .tpu, index: 0)
 
@@ -359,8 +356,6 @@ Like the rest of this guide, it has not been run on a TPU by the maintainers.
 
 ```swift
 import Magma
-import XLARuntime
-import _Differentiation
 
 guard Backend.tpu.isAvailable else {
     fatalError("No TPU plugin found. Set MAGMA_PJRT_PLUGIN_TPU or TPU_LIBRARY_PATH.")
