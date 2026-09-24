@@ -11,11 +11,13 @@
 // linear model cannot represent — the hidden layer + nonlinearity + autodiff are
 // doing real work.
 //
-// Run:  MAGMA_XLA_PATH=... swift run ValueLayersExample
+// Run:  MAGMA_XLA_PATH=/opt/xla/lib swift run ValueLayersExample
+//       (2000 Adam steps; ~20 s on a CPU plugin)
 
 import Foundation
 import Magma
 import LazyTensor
+import XLARuntime
 import _Differentiation
 
 // A 1 -> 16 -> 1 ReLU MLP. Returned as `some Layer`: the caller never spells the
@@ -36,6 +38,8 @@ func makeMLP() -> some Layer {
 @main
 struct ValueLayersExample {
     static func main() {
+        requireBackend(target: "ValueLayersExample")
+
         print("Magma — Value-Semantic Layers")
         print("=============================\n")
 
@@ -56,7 +60,7 @@ struct ValueLayersExample {
 
         print("Fitting y = x²  (1→16→1 ReLU MLP, Adam)\n")
         let initialLoss = modelValueWithGradient(of: model, input: x, target: y, lossFn: mse)
-            .value.scalars()[0]
+            .value.item()
         print(String(format: "  step    0   loss = %.4f", initialLoss))
 
         for step in 1...2000 {
@@ -67,7 +71,7 @@ struct ValueLayersExample {
 
             if step % 400 == 0 {
                 let loss = modelValueWithGradient(of: model, input: x, target: y, lossFn: mse)
-                    .value.scalars()[0]
+                    .value.item()
                 print(String(format: "  step %4d   loss = %.4f", step, loss))
             }
         }
@@ -80,4 +84,31 @@ struct ValueLayersExample {
         }
         print("\nThe MLP learned a nonlinear function via Swift-native autodiff.")
     }
+}
+
+// MARK: - Backend preflight
+
+/// Exits with an actionable message when no execution backend is installed.
+///
+/// Without a PJRT plugin every compile fails and reads return no values, so the
+/// example would otherwise crash reading the loss.
+func requireBackend(target: String) {
+    guard Backend.availableBackends.isEmpty else { return }
+    #if os(macOS)
+    let ext = "dylib"
+    #else
+    let ext = "so"
+    #endif
+    let path = ProcessInfo.processInfo.environment["MAGMA_XLA_PATH"]
+    let searched = path.map { "MAGMA_XLA_PATH=\($0)" }
+        ?? "MAGMA_XLA_PATH is not set; searched the default locations such as /opt/xla/lib"
+    let message = """
+        error: no execution backend found (\(searched)).
+        Set MAGMA_XLA_PATH to the directory that contains pjrt_c_api_cpu_plugin.\(ext)
+        (or pjrt_c_api_gpu_plugin.\(ext) / pjrt_c_api_tpu_plugin.\(ext)), for example:
+            MAGMA_XLA_PATH=/opt/xla/lib swift run \(target)
+
+        """
+    FileHandle.standardError.write(Data(message.utf8))
+    exit(1)
 }
