@@ -223,7 +223,9 @@ public final class ConstantFoldingPass: OptimizationPass {
             return inputs[0].values.map { $0 > 0 ? $0 : alpha * $0 }
         case .elu:
             let alpha = (attributes["alpha"] as? Float) ?? 1.0
-            return inputs[0].values.map { $0 > 0 ? $0 : alpha * (exp($0) - 1) }
+            // `selu` is `scale * elu(x, alpha)`; plain `elu` has no scale.
+            let scale = (attributes["scale"] as? Float) ?? 1.0
+            return inputs[0].values.map { scale * ($0 > 0 ? $0 : alpha * (exp($0) - 1)) }
         case .silu:
             return inputs[0].values.map { x in x / (1.0 + exp(-x)) }
 

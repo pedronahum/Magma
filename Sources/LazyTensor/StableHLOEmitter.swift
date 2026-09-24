@@ -595,7 +595,12 @@ public final class StableHLOEmitter {
             let expMinus1 = builder.subtract(expX, one)
             let negPart = builder.multiply(alphaTensor, expMinus1)
             let cond = builder.greater(x, zero)
-            return builder.select(cond, x, negPart)
+            let eluValue = builder.select(cond, x, negPart)
+            // `selu` is `scale * elu(x, alpha)`; plain `elu` has no scale.
+            if let scale = attributes["scale"] as? Float {
+                return builder.multiply(builder.constant(Double(scale), type: x.type), eluValue)
+            }
+            return eluValue
         case .silu:
             let x = inputs[0]
             let sigX = builder.sigmoid(x)
@@ -857,7 +862,12 @@ public final class StableHLOEmitter {
             let expMinus1 = builder.subtract(expX, one)
             let negPart = builder.multiply(alphaTensor, expMinus1)
             let cond = builder.greater(x, zero)
-            return builder.select(cond, x, negPart)
+            let eluValue = builder.select(cond, x, negPart)
+            // `selu` is `scale * elu(x, alpha)`; plain `elu` has no scale.
+            if let scale = attributes["scale"] as? Float {
+                return builder.multiply(builder.constant(Double(scale), type: x.type), eluValue)
+            }
+            return eluValue
 
         // SiLU: x * sigmoid(x)
         case .silu:
