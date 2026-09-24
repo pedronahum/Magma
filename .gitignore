@@ -72,3 +72,6 @@ coverage/
 
 # Local PJRT plugin symlink dir (points at JAX's CUDA plugin)
 .magma-xla/
+
+# GPT2Shakespeare benchmark data (created by prepare_data.py)
+Benchmarks/GPT2Shakespeare/data/
