@@ -762,6 +762,14 @@ extension nn {
         public mutating func setTraining(_ training: Bool) {
             self.training = training
         }
+
+        /// Applies inverted dropout with probability `p` when `training` is true,
+        /// and returns `input` unchanged otherwise (or when `p == 0`). Used by
+        /// layers that own a dropout rate and a train/eval flag.
+        static func apply(_ input: Tensor<Float>, p: Float, training: Bool) -> Tensor<Float> {
+            guard training && p > 0 else { return input }
+            return Dropout(p: p).forward(input)
+        }
     }
 }
 
@@ -4066,19 +4074,37 @@ extension nn {
         /// Whether to process bidirectionally
         public let bidirectional: Bool
 
-        /// Dropout probability
+        /// Dropout probability applied to the outputs of every layer except the
+        /// last (training mode only)
         public let dropout: Float
+
+        /// Whether in training mode (enables inter-layer dropout). Defaults to `true`.
+        public var training: Bool = true
 
         /// Whether input is batch-first
         public let batchFirst: Bool
 
-        /// LSTM cells
+        /// LSTM cells, ordered layer-major then direction (forward, backward)
         public var cells: [LSTMCell]
 
         /// Number of directions
         public var numDirections: Int { bidirectional ? 2 : 1 }
 
         /// Create a multi-layer LSTM
+        ///
+        /// - Parameters:
+        ///   - inputSize: Size of input features
+        ///   - hiddenSize: Size of hidden state
+        ///   - numLayers: Number of stacked layers (default: 1)
+        ///   - bias: Whether to use bias (default: true)
+        ///   - batchFirst: If true, input is [batch, seq, features] (default: true)
+        ///   - dropout: Dropout probability on the outputs of each layer except the
+        ///     last, in training mode only (default: 0)
+        ///   - bidirectional: If true, also runs each layer over the reversed
+        ///     sequence and concatenates both directions, so the output has
+        ///     `2 * hiddenSize` features and the final states have
+        ///     `numLayers * 2` entries (default: false)
+        ///   - device: Device to create parameters on
         public init(
             inputSize: Int,
             hiddenSize: Int,
@@ -4093,6 +4119,7 @@ extension nn {
             self.hiddenSize = hiddenSize
             self.numLayers = numLayers
             self.bidirectional = bidirectional
+            precondition(dropout >= 0 && dropout < 1, "LSTM: dropout must be in [0, 1), got \(dropout).")
             self.dropout = dropout
             self.batchFirst = batchFirst
 
@@ -4135,8 +4162,12 @@ extension nn {
             let seqLen = x.shape[1]
 
             // Initialize hidden and cell states
-            let h0 = hidden?.0 ?? Tensor<Float>.zeros([numLayers * numDirections, batch, hiddenSize], on: x.device)
-            let c0 = hidden?.1 ?? Tensor<Float>.zeros([numLayers * numDirections, batch, hiddenSize], on: x.device)
+            let stateShape = [numLayers * numDirections, batch, hiddenSize]
+            let h0 = hidden?.0 ?? Tensor<Float>.zeros(stateShape, on: x.device)
+            let c0 = hidden?.1 ?? Tensor<Float>.zeros(stateShape, on: x.device)
+            precondition(h0.shape == stateShape && c0.shape == stateShape,
+                "LSTM: initial (h, c) must both have shape \(stateShape) " +
+                "[numLayers * numDirections, batch, hiddenSize], got \(h0.shape) and \(c0.shape).")
 
             // Process through layers
             var layerInput = x
@@ -4144,25 +4175,43 @@ extension nn {
             var finalCells: [Tensor<Float>] = []
 
             for layer in 0..<numLayers {
-                let cellIdx = layer * numDirections
-
-                // Forward direction
-                var hForward = h0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
-                var cForward = c0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
-                var forwardOutputs: [Tensor<Float>] = []
-
-                for t in 0..<seqLen {
-                    // Slice along seq dimension (axis 1), then squeeze to [batch, features]
-                    let xt = layerInput.sliceAxis(axis: 1, start: t, size: 1).reshape([batch, layerInput.shape[2]])
-                    (hForward, cForward) = cells[cellIdx].forward(x: xt, hidden: hForward, cell: cForward)
-                    forwardOutputs.append(hForward)
+                let features = layerInput.shape[2]
+                // Per-timestep inputs [batch, features] (slice along seq axis, squeeze)
+                let steps = (0..<seqLen).map { t in
+                    layerInput.sliceAxis(axis: 1, start: t, size: 1).reshape([batch, features])
                 }
-                finalHiddens.append(hForward)
-                finalCells.append(cForward)
 
-                // Stack forward outputs: [seqLen] of [batch, hiddenSize] -> [batch, seqLen, hiddenSize]
-                // For bidirectional, would need backward pass and concat (not yet implemented for LSTM)
-                layerInput = Tensor<Float>.stack(forwardOutputs, axis: 1)
+                var directionOutputs: [Tensor<Float>] = []
+                for direction in 0..<numDirections {
+                    let cellIdx = layer * numDirections + direction
+                    var h = h0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
+                    var c = c0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
+                    var outputs = [Tensor<Float>]()
+                    outputs.reserveCapacity(seqLen)
+                    // The backward direction walks the sequence in reverse; its
+                    // outputs are re-reversed so index t lines up with time t.
+                    let order = direction == 0 ? Array(0..<seqLen) : Array((0..<seqLen).reversed())
+                    for t in order {
+                        (h, c) = cells[cellIdx].forward(x: steps[t], hidden: h, cell: c)
+                        outputs.append(h)
+                    }
+                    if direction == 1 { outputs.reverse() }
+                    finalHiddens.append(h)
+                    finalCells.append(c)
+                    // [seqLen] of [batch, hiddenSize] -> [batch, seqLen, hiddenSize]
+                    directionOutputs.append(Tensor<Float>.stack(outputs, axis: 1))
+                }
+
+                // Concatenate directions on the feature axis: [batch, seqLen, numDirections * hiddenSize]
+                var layerOutput = directionOutputs.count == 1
+                    ? directionOutputs[0]
+                    : Tensor<Float>.concat(directionOutputs, axis: -1)
+
+                // Inter-layer dropout (not after the last layer)
+                if layer < numLayers - 1 {
+                    layerOutput = Dropout.apply(layerOutput, p: dropout, training: training)
+                }
+                layerInput = layerOutput
             }
 
             let output = layerInput
@@ -4177,6 +4226,10 @@ extension nn {
 
         public func parameters() -> [Parameter] {
             cells.flatMap { $0.parameters() }
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
     }
 
@@ -4205,19 +4258,37 @@ extension nn {
         /// Whether to process bidirectionally
         public let bidirectional: Bool
 
-        /// Dropout probability
+        /// Dropout probability applied to the outputs of every layer except the
+        /// last (training mode only)
         public let dropout: Float
+
+        /// Whether in training mode (enables inter-layer dropout). Defaults to `true`.
+        public var training: Bool = true
 
         /// Whether input is batch-first
         public let batchFirst: Bool
 
-        /// GRU cells
+        /// GRU cells, ordered layer-major then direction (forward, backward)
         public var cells: [GRUCell]
 
         /// Number of directions
         public var numDirections: Int { bidirectional ? 2 : 1 }
 
         /// Create a multi-layer GRU
+        ///
+        /// - Parameters:
+        ///   - inputSize: Size of input features
+        ///   - hiddenSize: Size of hidden state
+        ///   - numLayers: Number of stacked layers (default: 1)
+        ///   - bias: Whether to use bias (default: true)
+        ///   - batchFirst: If true, input is [batch, seq, features] (default: true)
+        ///   - dropout: Dropout probability on the outputs of each layer except the
+        ///     last, in training mode only (default: 0)
+        ///   - bidirectional: If true, also runs each layer over the reversed
+        ///     sequence and concatenates both directions, so the output has
+        ///     `2 * hiddenSize` features and the final state has `numLayers * 2`
+        ///     entries (default: false)
+        ///   - device: Device to create parameters on
         public init(
             inputSize: Int,
             hiddenSize: Int,
@@ -4232,6 +4303,7 @@ extension nn {
             self.hiddenSize = hiddenSize
             self.numLayers = numLayers
             self.bidirectional = bidirectional
+            precondition(dropout >= 0 && dropout < 1, "GRU: dropout must be in [0, 1), got \(dropout).")
             self.dropout = dropout
             self.batchFirst = batchFirst
 
@@ -4274,30 +4346,52 @@ extension nn {
             let seqLen = x.shape[1]
 
             // Initialize hidden states
-            let h0 = hidden ?? Tensor<Float>.zeros([numLayers * numDirections, batch, hiddenSize], on: x.device)
+            let stateShape = [numLayers * numDirections, batch, hiddenSize]
+            let h0 = hidden ?? Tensor<Float>.zeros(stateShape, on: x.device)
+            precondition(h0.shape == stateShape,
+                "GRU: initial hidden state must have shape \(stateShape) " +
+                "[numLayers * numDirections, batch, hiddenSize], got \(h0.shape).")
 
             // Process through layers
             var layerInput = x
             var finalHiddens: [Tensor<Float>] = []
 
             for layer in 0..<numLayers {
-                let cellIdx = layer * numDirections
-
-                // Forward direction
-                var hForward = h0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
-                var forwardOutputs: [Tensor<Float>] = []
-
-                for t in 0..<seqLen {
-                    // Slice along seq dimension (axis 1), then squeeze to [batch, features]
-                    let xt = layerInput.sliceAxis(axis: 1, start: t, size: 1).reshape([batch, layerInput.shape[2]])
-                    hForward = cells[cellIdx].forward(x: xt, hidden: hForward)
-                    forwardOutputs.append(hForward)
+                let features = layerInput.shape[2]
+                // Per-timestep inputs [batch, features] (slice along seq axis, squeeze)
+                let steps = (0..<seqLen).map { t in
+                    layerInput.sliceAxis(axis: 1, start: t, size: 1).reshape([batch, features])
                 }
-                finalHiddens.append(hForward)
 
-                // Stack forward outputs: [seqLen] of [batch, hiddenSize] -> [batch, seqLen, hiddenSize]
-                // For bidirectional, would need backward pass and concat (not yet implemented for GRU)
-                layerInput = Tensor<Float>.stack(forwardOutputs, axis: 1)
+                var directionOutputs: [Tensor<Float>] = []
+                for direction in 0..<numDirections {
+                    let cellIdx = layer * numDirections + direction
+                    var h = h0.slice(start: cellIdx, size: 1).reshape([batch, hiddenSize])
+                    var outputs = [Tensor<Float>]()
+                    outputs.reserveCapacity(seqLen)
+                    // The backward direction walks the sequence in reverse; its
+                    // outputs are re-reversed so index t lines up with time t.
+                    let order = direction == 0 ? Array(0..<seqLen) : Array((0..<seqLen).reversed())
+                    for t in order {
+                        h = cells[cellIdx].forward(x: steps[t], hidden: h)
+                        outputs.append(h)
+                    }
+                    if direction == 1 { outputs.reverse() }
+                    finalHiddens.append(h)
+                    // [seqLen] of [batch, hiddenSize] -> [batch, seqLen, hiddenSize]
+                    directionOutputs.append(Tensor<Float>.stack(outputs, axis: 1))
+                }
+
+                // Concatenate directions on the feature axis: [batch, seqLen, numDirections * hiddenSize]
+                var layerOutput = directionOutputs.count == 1
+                    ? directionOutputs[0]
+                    : Tensor<Float>.concat(directionOutputs, axis: -1)
+
+                // Inter-layer dropout (not after the last layer)
+                if layer < numLayers - 1 {
+                    layerOutput = Dropout.apply(layerOutput, p: dropout, training: training)
+                }
+                layerInput = layerOutput
             }
 
             let output = layerInput
@@ -4361,6 +4455,10 @@ public struct Checkpoint: Codable {
             self.index = index
             self.shape = shape
             self.values = values
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
     }
 
