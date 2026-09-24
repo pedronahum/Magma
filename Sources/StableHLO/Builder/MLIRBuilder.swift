@@ -939,6 +939,15 @@ public final class MLIRBuilder: @unchecked Sendable {
     ///   - axis: The axis along which to scatter
     /// - Returns: Result tensor with scattered values
     public func scatter(_ input: Value, indices: Value, updates: Value, axis: Int) -> Value {
+        // StableHLO scatter requires integer indices - convert if needed (as gather does)
+        var indices = indices
+        if indices.type.dtype == .float32 || indices.type.dtype == .float16 || indices.type.dtype == .bfloat16 {
+            let intType = TensorType(shape: indices.type.shape, dtype: .int64)
+            let intIndices = nextValue(type: intType)
+            operations.append("    \(intIndices.name) = stablehlo.convert \(indices.displayName) : (\(indices.type.mlirType)) -> \(intType.mlirType)")
+            indices = intIndices
+        }
+
         let resultType = input.type  // Result has same shape as input
         let result = nextValue(type: resultType)
 
@@ -952,8 +961,8 @@ public final class MLIRBuilder: @unchecked Sendable {
 
         let op = """
             \(result.name) = "stablehlo.scatter"(\(input.displayName), \(indices.displayName), \(updates.displayName)) ({
-            ^bb0(%arg0: \(scalarType.mlirType), %arg1: \(scalarType.mlirType)):
-              stablehlo.return %arg1 : \(scalarType.mlirType)
+            ^bb0(%sc_old: \(scalarType.mlirType), %sc_new: \(scalarType.mlirType)):
+              stablehlo.return %sc_new : \(scalarType.mlirType)
             }) {
               scatter_dimension_numbers = #stablehlo.scatter<
                 update_window_dims = [\(updateWindowDims)],
