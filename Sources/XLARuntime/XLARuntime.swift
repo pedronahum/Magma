@@ -24,61 +24,105 @@ public enum Backend: String, Sendable {
     case tpu
     case metal  // Metal GPU via MetalHLO (macOS only)
 
-    /// Get the default plugin path for this backend
-    func pluginPath() -> String {
-        // Check environment variable first
-        if let envPath = getenv("MAGMA_XLA_PATH") {
-            let basePath = String(cString: envPath)
-            // If the path already contains the library directory, use it directly
-            return "\(basePath)/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
-        }
-
-        // TPU has special paths on Cloud TPU VMs
-        if self == .tpu {
-            return Self.tpuPluginPath() ?? "/usr/lib/libtpu.so"
-        }
-
-        #if os(macOS)
-        let systemPaths = ["/usr/local/lib", "/opt/xla/lib"]
-        #else
-        let systemPaths = ["/opt/xla/lib", "/usr/local/lib", "/opt/magma/lib"]
-        #endif
-
-        for path in systemPaths {
-            let fullPath = "\(path)/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
-            if access(fullPath, F_OK) == 0 {
-                return fullPath
-            }
-        }
-
-        return systemPaths[0] + "/pjrt_c_api_\(rawValue)_plugin.\(Self.libExtension)"
+    /// The outcome of searching for a backend's PJRT plugin.
+    struct PluginResolution: Equatable {
+        /// The plugin file to load, or nil when none was found.
+        let path: String?
+        /// Every candidate checked, in order (for error messages).
+        let searched: [String]
     }
 
-    /// Find the TPU plugin on Cloud TPU VMs
-    private static func tpuPluginPath() -> String? {
-        // Standard TPU library locations on Cloud TPU VMs
-        let tpuPaths = [
-            "/usr/lib/libtpu.so",                              // Standard location
-            "/usr/local/lib/libtpu.so",                        // Alternative
-            "/lib/libtpu.so",                                  // Fallback
-        ]
+    /// Name of the environment variable that pins this backend's plugin to an
+    /// exact file, e.g. `MAGMA_PJRT_PLUGIN_GPU`.
+    var pluginOverrideVariable: String {
+        "MAGMA_PJRT_PLUGIN_\(rawValue.uppercased())"
+    }
 
-        // Check TPU_LIBRARY_PATH environment variable first
-        if let envPath = getenv("TPU_LIBRARY_PATH") {
-            let path = String(cString: envPath)
-            if access(path, F_OK) == 0 {
-                return path
-            }
+    /// Plugin file names tried in each search directory, most specific first.
+    var pluginFileNames: [String] {
+        let ext = Self.libExtension
+        var names = ["pjrt_c_api_\(rawValue)_plugin.\(ext)",
+                     "libpjrt_c_api_\(rawValue)_plugin.\(ext)"]
+        switch self {
+        case .gpu: names.append("xla_cuda_plugin.\(ext)")   // name used by JAX's CUDA wheels
+        case .tpu: names.append("libtpu.\(ext)")
+        case .cpu, .metal: break
+        }
+        return names
+    }
+
+    /// Find this backend's PJRT plugin.
+    ///
+    /// Search order:
+    /// 1. `MAGMA_PJRT_PLUGIN_<BACKEND>` (`MAGMA_PJRT_PLUGIN_CPU`, `_GPU`, `_TPU`):
+    ///    the full path of the plugin file for that backend. When set, it is the
+    ///    only candidate; a missing file is reported rather than silently
+    ///    falling back to another plugin.
+    /// 2. `MAGMA_XLA_PATH`: a directory holding the plugin, under any of
+    ///    `pluginFileNames` (`pjrt_c_api_<backend>_plugin.<ext>`, the same with a
+    ///    `lib` prefix, and JAX's `xla_cuda_plugin.so` for GPU).
+    /// 3. TPU only: `TPU_LIBRARY_PATH`, then the standard Cloud TPU `libtpu.so`
+    ///    locations.
+    /// 4. The system directories (`/opt/xla/lib`, `/usr/local/lib`, ...).
+    ///
+    /// `environment` and `fileExists` are injectable for testing.
+    static func resolvePlugin(
+        for backend: Backend,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileExists: (String) -> Bool = { access($0, F_OK) == 0 }
+    ) -> PluginResolution {
+        func value(_ name: String) -> String? {
+            guard let raw = environment[name], !raw.isEmpty else { return nil }
+            return raw
         }
 
-        // Search standard locations
-        for path in tpuPaths {
-            if access(path, F_OK) == 0 {
-                return path
-            }
+        if let pinned = value(backend.pluginOverrideVariable) {
+            return PluginResolution(path: fileExists(pinned) ? pinned : nil, searched: [pinned])
         }
 
-        return nil
+        var candidates: [String] = []
+        if let base = value("MAGMA_XLA_PATH") {
+            candidates += backend.pluginFileNames.map { "\(base)/\($0)" }
+        }
+        if backend == .tpu {
+            if let tpuLibrary = value("TPU_LIBRARY_PATH") { candidates.append(tpuLibrary) }
+            candidates += ["/usr/lib/libtpu.so", "/usr/local/lib/libtpu.so", "/lib/libtpu.so"]
+        }
+        for directory in systemPluginDirectories {
+            candidates += backend.pluginFileNames.map { "\(directory)/\($0)" }
+        }
+
+        var searched: [String] = []
+        for candidate in candidates where !searched.contains(candidate) {
+            searched.append(candidate)
+            if fileExists(candidate) {
+                return PluginResolution(path: candidate, searched: searched)
+            }
+        }
+        return PluginResolution(path: nil, searched: searched)
+    }
+
+    private static var systemPluginDirectories: [String] {
+        #if os(macOS)
+        return ["/usr/local/lib", "/opt/xla/lib"]
+        #else
+        return ["/opt/xla/lib", "/usr/local/lib", "/opt/magma/lib"]
+        #endif
+    }
+
+    /// The plugin file this backend would load, or nil when none is installed.
+    ///
+    /// See `PJRTClient.create(backend:cpuDeviceCount:)` for the search order;
+    /// set `MAGMA_XLA_PATH` to the plugin's directory or
+    /// `MAGMA_PJRT_PLUGIN_<BACKEND>` to its full path to override it.
+    public var resolvedPluginPath: String? {
+        Self.resolvePlugin(for: self).path
+    }
+
+    /// The plugin path to report: the resolved one, else the first candidate.
+    func pluginPath() -> String {
+        let resolution = Self.resolvePlugin(for: self)
+        return resolution.path ?? resolution.searched.first ?? pluginFileNames[0]
     }
 
     private static var libExtension: String {
@@ -99,8 +143,7 @@ public enum Backend: String, Sendable {
             return false
             #endif
         default:
-            let path = pluginPath()
-            return access(path, F_OK) == 0
+            return resolvedPluginPath != nil
         }
     }
 
@@ -445,20 +488,28 @@ public final class PJRTClient: @unchecked Sendable {
             acceleratorLock.unlock()
         }
 
-        // Load the PJRT plugin
-        let pluginPath = backend.pluginPath()
+        // Locate and load the PJRT plugin
+        let resolution = Backend.resolvePlugin(for: backend)
+        guard let pluginPath = resolution.path else {
+            throw XLAError.clientCreationFailed(
+                "no PJRT plugin found for the \(backend) backend. Searched:\n" +
+                resolution.searched.map { "  \($0)" }.joined(separator: "\n") +
+                "\nSet MAGMA_XLA_PATH to the directory that contains the plugin, or " +
+                "\(backend.pluginOverrideVariable) to the plugin file's full path.")
+        }
+
+        PJRT_ClearLastErrorMessage()
         let errorCode = PJRT_LoadPlugin(pluginPath)
 
         if errorCode != SW_PJRT_Error_OK {
-            if let errorMsg = PJRT_GetLastError() {
-                throw XLAError.clientCreationFailed("Failed to load plugin '\(pluginPath)': \(String(cString: errorMsg))")
-            }
-            throw XLAError.clientCreationFailed("Failed to load plugin '\(pluginPath)': error code \(errorCode.rawValue)")
+            throw XLAError.clientCreationFailed(
+                pjrtFailureDescription("Loading plugin '\(pluginPath)'", errorCode))
         }
 
         // Create the client, optionally requesting several virtual CPU devices.
         var clientHandle: UnsafeMutableRawPointer?
         let createError: SW_PJRT_Error_Code
+        PJRT_ClearLastErrorMessage()
         if let cpuDeviceCount {
             createError = PJRT_CreateClientWithCpuDeviceCount(Int64(cpuDeviceCount), &clientHandle)
         } else {
