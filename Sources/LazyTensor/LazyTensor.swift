@@ -315,19 +315,17 @@ public final class ExecutionContext: @unchecked Sendable {
     /// Thread-local storage key
     private static let threadLocalKey = "Magma.ExecutionContext"
 
-    /// Get the current thread's execution context
+    /// Get the current thread's execution context.
+    ///
+    /// Stored in the thread dictionary on every platform, so each thread really
+    /// does get its own context (and its unsynchronized state is never shared).
     public static var current: ExecutionContext {
-        #if os(Linux)
-        // On Linux, use a simple global for now (proper TLS requires more setup)
-        return _globalContext
-        #else
         if let context = Thread.current.threadDictionary[threadLocalKey] as? ExecutionContext {
             return context
         }
         let context = ExecutionContext()
         Thread.current.threadDictionary[threadLocalKey] = context
         return context
-        #endif
     }
 
     /// Whether shape tracking is enabled (for debugging)
@@ -388,11 +386,6 @@ public final class ExecutionContext: @unchecked Sendable {
         totalNodesExecuted = 0
     }
 }
-
-#if os(Linux)
-/// Global context fallback for Linux (until proper TLS is implemented)
-nonisolated(unsafe) private var _globalContext = ExecutionContext()
-#endif
 
 // MARK: - Tensor Registry
 
@@ -614,19 +607,39 @@ public final class CompilationCache: @unchecked Sendable {
         cache.removeAll()
         mlirCache.removeAll()
         fastCache.removeAll()
-        hitCount = 0
-        missCount = 0
-        promotionHitCount = 0
-        mlirHitCount = 0
-        fastHitCount = 0
+        _hitCount.store(0, ordering: .relaxed)
+        _missCount.store(0, ordering: .relaxed)
+        _promotionHitCount.store(0, ordering: .relaxed)
+        _mlirHitCount.store(0, ordering: .relaxed)
+        _fastHitCount.store(0, ordering: .relaxed)
     }
 
-    /// Cache statistics
-    public var hitCount: Int = 0
-    public var missCount: Int = 0
-    public var promotionHitCount: Int = 0  // Hits due to constant promotion
-    public var mlirHitCount: Int = 0       // Hits on MLIR text cache (skipped re-emission)
-    public var fastHitCount: Int = 0       // Fast-path (trace) hits (skipped the whole pipeline)
+    // Statistics are atomics rather than lock-guarded fields: they are bumped
+    // from concurrent barriers outside the cache lock.
+    private let _hitCount = Atomic<Int>(0)
+    private let _missCount = Atomic<Int>(0)
+    private let _promotionHitCount = Atomic<Int>(0)
+    private let _mlirHitCount = Atomic<Int>(0)
+    private let _fastHitCount = Atomic<Int>(0)
+
+    /// Executable-cache hits.
+    public var hitCount: Int { _hitCount.load(ordering: .relaxed) }
+    /// Executable-cache misses (each one compiled a new executable).
+    public var missCount: Int { _missCount.load(ordering: .relaxed) }
+    /// Hits due to constant promotion.
+    public var promotionHitCount: Int { _promotionHitCount.load(ordering: .relaxed) }
+    /// Hits on the MLIR text cache (skipped re-emission).
+    public var mlirHitCount: Int { _mlirHitCount.load(ordering: .relaxed) }
+    /// Fast-path (trace) hits (skipped the whole pipeline).
+    public var fastHitCount: Int { _fastHitCount.load(ordering: .relaxed) }
+
+    func recordHit(promoted: Bool) {
+        _hitCount.wrappingAdd(1, ordering: .relaxed)
+        if promoted { _promotionHitCount.wrappingAdd(1, ordering: .relaxed) }
+    }
+    func recordMiss() { _missCount.wrappingAdd(1, ordering: .relaxed) }
+    func recordMlirHit() { _mlirHitCount.wrappingAdd(1, ordering: .relaxed) }
+    func recordFastHit() { _fastHitCount.wrappingAdd(1, ordering: .relaxed) }
 
     /// Cache hit rate
     public var hitRate: Double {
@@ -1055,7 +1068,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
                         output.materializedBuffer = outputBuffers[i]
                         output.irNode = .data(outputBuffers[i])
                     }
-                    cache.fastHitCount += 1
+                    cache.recordFastHit()
                     return  // Fast path succeeded
                 } catch {
                     // Any failure falls through to the slow path below, which
@@ -1106,18 +1119,15 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // 5. Check compilation cache using structural hash
     var executable: PJRTExecutable
     if let cached = cache.get(hash: structuralHash) {
-        cache.hitCount += 1
-        if promotionResult.wasPromoted {
-            cache.promotionHitCount += 1
-        }
+        cache.recordHit(promoted: promotionResult.wasPromoted)
         executable = cached
     } else {
-        cache.missCount += 1
+        cache.recordMiss()
 
         // 6. Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission
         let mlir: String
         if let cachedMlir = cache.getMlir(hash: structuralHash) {
-            cache.mlirHitCount += 1
+            cache.recordMlirHit()
             mlir = cachedMlir
         } else {
             let emitter = StableHLOEmitter(graph: optimizedGraph)
@@ -1614,10 +1624,10 @@ public func executeGraph(_ graph: IRGraph, on device: Device = .default) throws 
     var executable: PJRTExecutable
 
     if let cached = cache.get(hash: graphHash) {
-        cache.hitCount += 1
+        cache.recordHit(promoted: false)
         executable = cached
     } else {
-        cache.missCount += 1
+        cache.recordMiss()
         let client = try getGlobalClient(backend: device.backend)
         executable = try client.compile(mlir)
         cache.put(hash: graphHash, executable: executable)

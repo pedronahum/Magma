@@ -1,6 +1,7 @@
 // Magma - LazyTensor Tests
 // These tests verify lazy evaluation without needing XLA installed (using mocks)
 
+import Foundation
 import Testing
 @testable import LazyTensor
 @testable import StableHLO
@@ -480,13 +481,31 @@ struct GraphValidationTests {
 
 // MARK: - Execution Context Tests
 
+private final class ContextIdentityBox: @unchecked Sendable {
+    var id: ObjectIdentifier?
+}
+
 @Suite("Execution Context Tests")
 struct ExecutionContextTests {
 
-    @Test("Context is accessible")
-    func contextIsAccessible() {
-        let context = ExecutionContext.current
-        #expect(context != nil)
+    @Test("Context is stable within a thread")
+    func contextIsStableWithinThread() {
+        #expect(ExecutionContext.current === ExecutionContext.current)
+    }
+
+    @Test("Each thread gets its own context")
+    func contextIsPerThread() {
+        let mine = ObjectIdentifier(ExecutionContext.current)
+        let box = ContextIdentityBox()
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            box.id = ObjectIdentifier(ExecutionContext.current)
+            done.signal()
+        }
+        thread.start()
+        done.wait()
+        #expect(box.id != nil)
+        #expect(box.id != mine, "a second thread must not share this thread's context")
     }
 
     @Test("Default settings")
