@@ -1609,10 +1609,20 @@ extension Tensor {
         let handle = LazyTensorHandle(
             id: id,
             shape: shape,
+        // `power` is a binary op: the exponent is a constant of the same shape.
+        let exponentHandle = LazyTensorHandle(
+            id: TensorRegistry.shared.nextTensorId(),
+            shape: shape,
             dtype: dtype,
             device: device
         )
-        handle.irNode = .operation(op: .power, inputs: [self.handle], attributes: ["exponent": exponent])
+        exponentHandle.irNode = .constant(values: Array(repeating: exponent, count: elementCount), shape: shape)
+        TensorRegistry.shared.registerPending(exponentHandle)
+
+            dtype: dtype,
+            device: device
+        )
+        handle.irNode = .operation(op: .power, inputs: [self.handle, exponentHandle], attributes: [:])
         TensorRegistry.shared.registerPending(handle)
         return Tensor(handle: handle)
     }
