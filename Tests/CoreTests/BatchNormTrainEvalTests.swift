@@ -10,7 +10,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("BatchNorm Train/Eval Tests", .serialized)
+@Suite("BatchNorm Train/Eval Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BatchNormTrainEvalTests {
 
     private func approxEqual(_ a: [Float], _ b: [Float], tol: Float = 1e-4) -> Bool {

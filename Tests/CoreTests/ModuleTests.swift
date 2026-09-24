@@ -8,7 +8,7 @@ import Foundation
 
 // MARK: - Parameter Tests
 
-@Suite("Parameter Tests")
+@Suite("Parameter Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ParameterTests {
 
     @Test("Parameter creation")
@@ -42,7 +42,7 @@ struct ParameterTests {
 
 // MARK: - Linear Layer Tests
 
-@Suite("Linear Layer Tests")
+@Suite("Linear Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LinearLayerTests {
 
     @Test("Linear creation")
@@ -98,7 +98,7 @@ struct LinearLayerTests {
 
 // MARK: - Activation Layer Tests
 
-@Suite("Activation Layer Tests")
+@Suite("Activation Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ActivationLayerTests {
 
     @Test("ReLU layer")
@@ -152,7 +152,7 @@ struct ActivationLayerTests {
 
 // MARK: - Flatten Layer Tests
 
-@Suite("Flatten Layer Tests")
+@Suite("Flatten Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct FlattenLayerTests {
 
     @Test("Flatten default")
@@ -190,7 +190,7 @@ struct FlattenLayerTests {
 
 // MARK: - Dropout Layer Tests
 
-@Suite("Dropout Layer Tests")
+@Suite("Dropout Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DropoutLayerTests {
 
     @Test("Dropout creation")
@@ -220,7 +220,7 @@ struct DropoutLayerTests {
 
 // MARK: - Sequential Tests
 
-@Suite("Sequential Tests")
+@Suite("Sequential Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SequentialTests {
 
     @Test("Sequential empty")
@@ -302,7 +302,7 @@ struct SequentialTests {
 
 // MARK: - Loss Function Tests
 
-@Suite("Loss Function Tests")
+@Suite("Loss Function Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LossFunctionTests {
 
     @Test("MSE loss")
@@ -349,7 +349,7 @@ struct LossFunctionTests {
 
 // MARK: - Tensor Operations Tests
 
-@Suite("New Tensor Operations Tests")
+@Suite("New Tensor Operations Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NewTensorOperationsTests {
 
     @Test("GELU")
@@ -426,7 +426,7 @@ struct NewTensorOperationsTests {
 
 // MARK: - Conv2d Tests
 
-@Suite("Conv2d Layer Tests")
+@Suite("Conv2d Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct Conv2dLayerTests {
 
     @Test("Conv2d creation")
@@ -499,7 +499,7 @@ struct Conv2dLayerTests {
 
 // MARK: - Pooling Layer Tests
 
-@Suite("Pooling Layer Tests")
+@Suite("Pooling Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct PoolingLayerTests {
 
     @Test("MaxPool2d")
@@ -562,7 +562,7 @@ struct PoolingLayerTests {
 
 // MARK: - BatchNorm Tests
 
-@Suite("BatchNorm Layer Tests")
+@Suite("BatchNorm Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BatchNormLayerTests {
 
     @Test("BatchNorm2d creation")
@@ -613,7 +613,7 @@ struct BatchNormLayerTests {
 
 // MARK: - CNN End-to-End Test
 
-@Suite("CNN End-to-End Tests")
+@Suite("CNN End-to-End Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct CNNEndToEndTests {
 
     @Test("Simple CNN")
@@ -695,7 +695,7 @@ struct CNNEndToEndTests {
 
 // MARK: - MLP End-to-End Test
 
-@Suite("MLP End-to-End Tests")
+@Suite("MLP End-to-End Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MLPEndToEndTests {
 
     @Test("Simple MLP")
@@ -751,7 +751,7 @@ struct MLPEndToEndTests {
 
 // MARK: - Embedding Layer Tests
 
-@Suite("Embedding Layer Tests")
+@Suite("Embedding Layer Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct EmbeddingLayerTests {
 
     @Test("Embedding creation")
@@ -808,7 +808,7 @@ struct EmbeddingLayerTests {
 
 // MARK: - Checkpoint Tests
 
-@Suite("Checkpoint Tests")
+@Suite("Checkpoint Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct CheckpointTests {
 
     @Test("Checkpoint creation")

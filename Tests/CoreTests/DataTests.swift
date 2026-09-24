@@ -8,7 +8,7 @@ import _Differentiation
 
 // MARK: - TensorDataset Tests
 
-@Suite("TensorDataset Tests")
+@Suite("TensorDataset Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorDatasetTests {
 
     @Test("TensorDataset creation")
@@ -30,7 +30,7 @@ struct TensorDatasetTests {
 
 // MARK: - SimpleBatchLoader Tests
 
-@Suite("SimpleBatchLoader Tests")
+@Suite("SimpleBatchLoader Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SimpleBatchLoaderTests {
 
     @Test("BatchLoader creation")
@@ -318,7 +318,7 @@ struct SimpleBatchLoaderTests {
 
 // MARK: - Tensor Slice Tests
 
-@Suite("Tensor Slice Tests")
+@Suite("Tensor Slice Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorSliceTests {
 
     @Test("Slice basic")
@@ -368,7 +368,7 @@ struct TensorSliceTests {
 
 // MARK: - Training Loop Integration Tests
 
-@Suite("DataLoader Training Tests")
+@Suite("DataLoader Training Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DataLoaderTrainingTests {
 
     @Test("Training loop with loader")
@@ -441,7 +441,7 @@ struct DataLoaderTrainingTests {
 
 // MARK: - Gather Operation Tests
 
-@Suite("Gather Tests")
+@Suite("Gather Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GatherTests {
 
     // gather is 1-D index-select along `axis`. These verify actual values,
@@ -518,7 +518,7 @@ struct GatherTests {
 
 // MARK: - Scatter Operation Tests
 
-@Suite("Scatter Tests")
+@Suite("Scatter Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ScatterTests {
 
     @Test("Scatter basic 2D")
@@ -651,7 +651,7 @@ struct ScatterTests {
 
 // MARK: - Expand Operation Tests
 
-@Suite("Expand Tests")
+@Suite("Expand Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ExpandTests {
 
     @Test("Expand basic")
@@ -712,7 +712,7 @@ struct ExpandTests {
 
 // MARK: - Sum with Dims Tests
 
-@Suite("Sum with Dims Tests")
+@Suite("Sum with Dims Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SumWithDimsTests {
 
     @Test("Sum single dim")
@@ -766,7 +766,7 @@ struct SumWithDimsTests {
 
 // MARK: - Concat Tests
 
-@Suite("Concat Tests")
+@Suite("Concat Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ConcatTests {
 
     @Test("Concat axis 0")
@@ -820,7 +820,7 @@ struct ConcatTests {
 
 // MARK: - Stack Tests
 
-@Suite("Stack Tests")
+@Suite("Stack Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct StackTests {
 
     @Test("Stack axis 0")
@@ -888,7 +888,7 @@ struct StackTests {
 
 // MARK: - SliceAxis Tests
 
-@Suite("SliceAxis Tests")
+@Suite("SliceAxis Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SliceAxisTests {
 
     @Test("SliceAxis 0")
@@ -929,7 +929,7 @@ struct SliceAxisTests {
 
 // MARK: - Advanced Slicing Tests
 
-@Suite("Advanced Slicing Tests")
+@Suite("Advanced Slicing Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct AdvancedSlicingTests {
 
     // MARK: - Negative Index Tests
@@ -1100,7 +1100,7 @@ struct AdvancedSlicingTests {
 
 // MARK: - Comparison Operations Tests
 
-@Suite("Comparison Tests")
+@Suite("Comparison Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ComparisonTests {
 
     @Test("Less than")
@@ -1220,7 +1220,7 @@ struct ComparisonTests {
 
 // MARK: - Boolean Masking Tests
 
-@Suite("Boolean Masking Tests")
+@Suite("Boolean Masking Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BooleanMaskingTests {
 
     @Test("Masked select zeroes non-selected and flattens")
@@ -1283,7 +1283,7 @@ struct BooleanMaskingTests {
 
 // MARK: - MNIST Dataset Tests
 
-@Suite("MNIST Dataset Tests")
+@Suite("MNIST Dataset Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MNISTDatasetTests {
 
     /// Test that MNIST data files can be downloaded and parsed (requires network)

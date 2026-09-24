@@ -129,7 +129,7 @@ private func expectClose(_ actual: [Float], _ expected: [Float], tol: Float = 1e
     #expect(maxDiff <= tol, "max abs diff \(maxDiff)", sourceLocation: sourceLocation)
 }
 
-@Suite("Recurrent layer numerics (materialized)", .serialized)
+@Suite("Recurrent layer numerics (materialized)", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RecurrentNumericTests {
 
     // MARK: Cells

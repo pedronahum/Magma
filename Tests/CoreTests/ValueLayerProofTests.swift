@@ -21,7 +21,7 @@ private struct Dense: Differentiable, KeyPathIterable {
     }
 }
 
-@Suite("Value-Semantic Layer Proof", .serialized)
+@Suite("Value-Semantic Layer Proof", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ValueLayerProofTests {
 
     @Test("KeyPathIterable enumerates a layer's (and its tangent's) Tensor slots")

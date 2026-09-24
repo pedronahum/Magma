@@ -15,7 +15,7 @@ import _Differentiation
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Broadcast Gradient Tests", .serialized)
+@Suite("Broadcast Gradient Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BroadcastGradientTests {
 
     @Test("add: bias[N] broadcast over [B,N] reduces gradient to [N]")

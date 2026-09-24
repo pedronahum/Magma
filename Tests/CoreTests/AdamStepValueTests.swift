@@ -8,7 +8,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Adam Step Value Tests", .serialized)
+@Suite("Adam Step Value Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct AdamStepValueTests {
 
     @Test("single Adam step matches closed form")

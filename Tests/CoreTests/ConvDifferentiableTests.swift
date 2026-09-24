@@ -10,7 +10,7 @@ import Testing
 import _Differentiation
 @testable import Magma
 
-@Suite("Differentiable conv2d", .serialized)
+@Suite("Differentiable conv2d", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ConvDifferentiableTests {
 
     // Deterministic, varied, mixed-sign fill (no RNG -> no gradcheck flakiness).

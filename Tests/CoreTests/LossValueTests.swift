@@ -9,7 +9,7 @@ import Testing
 import _Differentiation
 @testable import Magma
 
-@Suite("Loss values")
+@Suite("Loss values", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LossValueTests {
 
     private func close(_ a: Float, _ b: Float, tol: Float = 1e-5) -> Bool {

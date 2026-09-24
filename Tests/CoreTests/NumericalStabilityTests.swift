@@ -8,7 +8,7 @@ import Testing
 
 // MARK: - Very Large Values Tests
 
-@Suite("Very Large Values Tests")
+@Suite("Very Large Values Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct VeryLargeValuesTests {
 
     @Test("Large values addition")
@@ -61,7 +61,7 @@ struct VeryLargeValuesTests {
 
 // MARK: - Very Small Values Tests
 
-@Suite("Very Small Values Tests")
+@Suite("Very Small Values Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct VerySmallValuesTests {
 
     @Test("Small values addition")
@@ -115,7 +115,7 @@ struct VerySmallValuesTests {
 
 // MARK: - Near-Zero Division Tests
 
-@Suite("Near-Zero Division Tests")
+@Suite("Near-Zero Division Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NearZeroDivisionTests {
 
     @Test("Division by small number")
@@ -168,7 +168,7 @@ struct NearZeroDivisionTests {
 
 // MARK: - NaN Propagation Tests
 
-@Suite("NaN Propagation Tests")
+@Suite("NaN Propagation Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NaNPropagationTests {
 
     @Test("NaN in addition")
@@ -237,7 +237,7 @@ struct NaNPropagationTests {
 
 // MARK: - Infinity Handling Tests
 
-@Suite("Infinity Handling Tests")
+@Suite("Infinity Handling Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct InfinityHandlingTests {
 
     @Test("Infinity in arithmetic")
@@ -303,7 +303,7 @@ struct InfinityHandlingTests {
 
 // MARK: - Softmax Numerical Stability Tests
 
-@Suite("Softmax Stability Tests")
+@Suite("Softmax Stability Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct SoftmaxStabilityTests {
 
     @Test("Softmax with large values")
@@ -375,7 +375,7 @@ struct SoftmaxStabilityTests {
 
 // MARK: - Exp and Log Stability Tests
 
-@Suite("Exp Log Stability Tests")
+@Suite("Exp Log Stability Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ExpLogStabilityTests {
 
     @Test("Exp overflow")
@@ -432,7 +432,7 @@ struct ExpLogStabilityTests {
 
 // MARK: - Gradient Stability Tests
 
-@Suite("Gradient Stability Tests")
+@Suite("Gradient Stability Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradientStabilityTests {
 
     @Test("Gradient with large values")
@@ -518,7 +518,7 @@ struct GradientStabilityTests {
 
 // MARK: - Broadcasting Edge Cases
 
-@Suite("Broadcasting Edge Case Tests")
+@Suite("Broadcasting Edge Case Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BroadcastingEdgeCaseTests {
 
     @Test("Broadcast with zero dimension")
@@ -549,7 +549,7 @@ struct BroadcastingEdgeCaseTests {
 
 // MARK: - Reduction Edge Cases
 
-@Suite("Reduction Edge Case Tests")
+@Suite("Reduction Edge Case Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ReductionEdgeCaseTests {
 
     @Test("Sum empty tensor")
@@ -590,7 +590,7 @@ struct ReductionEdgeCaseTests {
 
 // MARK: - Matrix Operation Edge Cases
 
-@Suite("Matrix Edge Case Tests")
+@Suite("Matrix Edge Case Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MatrixEdgeCaseTests {
 
     @Test("Matmul with zeros")
@@ -634,7 +634,7 @@ struct MatrixEdgeCaseTests {
 
 // MARK: - Type Conversion Edge Cases
 
-@Suite("Type Conversion Edge Case Tests")
+@Suite("Type Conversion Edge Case Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TypeConversionEdgeCaseTests {
 
     @Test("Float precision")

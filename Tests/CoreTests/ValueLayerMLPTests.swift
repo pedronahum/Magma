@@ -14,7 +14,7 @@ import _Differentiation
 // The concrete type the builder produces for a 3-layer chain.
 private typealias MLP = Sequential2<Sequential2<Linear, ReLU>, Linear>
 
-@Suite("Value-Semantic MLP + Adam", .serialized)
+@Suite("Value-Semantic MLP + Adam", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ValueLayerMLPTests {
 
     // A 1 -> 8 -> 1 ReLU MLP, positive init so ReLU is active for x >= 0.

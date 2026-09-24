@@ -7,7 +7,7 @@ import Testing
 
 // MARK: - Compose Tests
 
-@Suite("Compose Transform Tests")
+@Suite("Compose Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ComposeTransformTests {
 
     @Test("Compose empty list")
@@ -42,7 +42,7 @@ struct ComposeTransformTests {
 
 // MARK: - Normalize Tests
 
-@Suite("Normalize Transform Tests")
+@Suite("Normalize Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NormalizeTransformTests {
 
     @Test("Normalize single channel")
@@ -98,7 +98,7 @@ struct NormalizeTransformTests {
 
 // MARK: - RandomApply Tests
 
-@Suite("RandomApply Transform Tests")
+@Suite("RandomApply Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RandomApplyTransformTests {
 
     @Test("RandomApply always")
@@ -133,7 +133,7 @@ struct RandomApplyTransformTests {
 
 // MARK: - RandomChoice Tests
 
-@Suite("RandomChoice Transform Tests")
+@Suite("RandomChoice Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RandomChoiceTransformTests {
 
     @Test("RandomChoice single option")
@@ -164,7 +164,7 @@ struct RandomChoiceTransformTests {
 
 // MARK: - CenterCrop Tests
 
-@Suite("CenterCrop Transform Tests")
+@Suite("CenterCrop Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct CenterCropTransformTests {
 
     @Test("CenterCrop 4D")
@@ -206,7 +206,7 @@ struct CenterCropTransformTests {
 
 // MARK: - RandomCrop Tests
 
-@Suite("RandomCrop Transform Tests")
+@Suite("RandomCrop Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RandomCropTransformTests {
 
     @Test("RandomCrop 4D")
@@ -239,7 +239,7 @@ struct RandomCropTransformTests {
 
 // MARK: - Pad Tests
 
-@Suite("Pad Transform Tests")
+@Suite("Pad Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct PadTransformTests {
 
     @Test("Pad uniform")
@@ -272,7 +272,7 @@ struct PadTransformTests {
 
 // MARK: - Flip Tests
 
-@Suite("Flip Transform Tests")
+@Suite("Flip Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct FlipTransformTests {
 
     @Test("RandomHorizontalFlip always")
@@ -315,7 +315,7 @@ struct FlipTransformTests {
 
 // MARK: - Grayscale Tests
 
-@Suite("Grayscale Transform Tests")
+@Suite("Grayscale Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GrayscaleTransformTests {
 
     @Test("Grayscale RGB to gray")
@@ -357,7 +357,7 @@ struct GrayscaleTransformTests {
 
 // MARK: - Invert Tests
 
-@Suite("Invert Transform Tests")
+@Suite("Invert Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct InvertTransformTests {
 
     @Test("RandomInvert always")
@@ -386,7 +386,7 @@ struct InvertTransformTests {
 
 // MARK: - Lambda Tests
 
-@Suite("Lambda Transform Tests")
+@Suite("Lambda Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LambdaTransformTests {
 
     @Test("Lambda identity")
@@ -413,7 +413,7 @@ struct LambdaTransformTests {
 
 // MARK: - Identity Tests
 
-@Suite("Identity Transform Tests")
+@Suite("Identity Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct IdentityTransformTests {
 
     @Test("Identity")
@@ -428,7 +428,7 @@ struct IdentityTransformTests {
 
 // MARK: - Functional Tests
 
-@Suite("Functional Transform Tests")
+@Suite("Functional Transform Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct FunctionalTransformTests {
 
     @Test("Functional normalize")
@@ -474,7 +474,7 @@ struct FunctionalTransformTests {
 
 // MARK: - Integration Tests
 
-@Suite("Transform Integration Tests")
+@Suite("Transform Integration Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TransformIntegrationTests {
 
     @Test("ImageNet preprocessing")

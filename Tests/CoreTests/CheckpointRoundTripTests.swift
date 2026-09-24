@@ -42,7 +42,7 @@ private func values(_ params: [Parameter]) -> [[Float]] {
     params.map { $0.value.scalars() }
 }
 
-@Suite("Checkpoint round-trips (materialized)", .serialized)
+@Suite("Checkpoint round-trips (materialized)", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct CheckpointRoundTripTests {
 
     @Test("JSON save/load restores parameter and buffer values and eval output")

@@ -9,7 +9,7 @@ import Testing
 
 // MARK: - Type Conversion Tests
 
-@Suite("Type Conversion Tests")
+@Suite("Type Conversion Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TypeConversionTests {
 
     @Test("toReducedPrecision dtype")
@@ -85,7 +85,7 @@ struct TypeConversionTests {
 
 // MARK: - Mixed Precision Roundtrip Tests
 
-@Suite("Mixed Precision Roundtrip Tests")
+@Suite("Mixed Precision Roundtrip Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MixedPrecisionRoundtripTests {
 
     @Test("Simple roundtrip")
@@ -127,7 +127,7 @@ struct MixedPrecisionRoundtripTests {
 
 // MARK: - Mixed Precision Operation Tests
 
-@Suite("Mixed Precision Operation Tests")
+@Suite("Mixed Precision Operation Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MixedPrecisionOperationTests {
 
     @Test("BF16 addition")
@@ -186,7 +186,7 @@ struct MixedPrecisionOperationTests {
 
 // MARK: - Mixed Precision Utility Tests
 
-@Suite("Mixed Precision Utility Tests")
+@Suite("Mixed Precision Utility Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MixedPrecisionUtilityTests {
 
     @Test("Is recommended for TPU")
@@ -229,7 +229,7 @@ struct MixedPrecisionUtilityTests {
 
 // MARK: - DType Tests
 
-@Suite("DType Mixed Precision Tests")
+@Suite("DType Mixed Precision Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DTypeMixedPrecisionTests {
 
     @Test("BFloat16 properties")
@@ -264,7 +264,7 @@ struct DTypeMixedPrecisionTests {
 
 // MARK: - Numerical Precision Tests
 
-@Suite("Numerical Precision Tests")
+@Suite("Numerical Precision Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NumericalPrecisionTests {
 
     @Test("BFloat16 precision limits")
@@ -314,7 +314,7 @@ struct NumericalPrecisionTests {
 
 // MARK: - OpKind Tests
 
-@Suite("Convert OpKind Tests")
+@Suite("Convert OpKind Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ConvertOpKindTests {
 
     @Test("Convert OpKind exists")

@@ -7,7 +7,7 @@ import Testing
 @testable import LazyTensor
 @testable import StableHLO
 
-@Suite("Tensor Creation Tests")
+@Suite("Tensor Creation Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorCreationTests {
 
     @Test("Zeros")
@@ -34,7 +34,7 @@ struct TensorCreationTests {
     }
 }
 
-@Suite("Tensor Arithmetic Tests")
+@Suite("Tensor Arithmetic Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorArithmeticTests {
 
     @Test("Add")
@@ -83,7 +83,7 @@ struct TensorArithmeticTests {
     }
 }
 
-@Suite("Tensor Matrix Tests")
+@Suite("Tensor Matrix Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorMatrixTests {
 
     @Test("Matmul")
@@ -113,7 +113,7 @@ struct TensorMatrixTests {
     }
 }
 
-@Suite("Tensor Reduction Tests")
+@Suite("Tensor Reduction Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorReductionTests {
 
     @Test("Sum")
@@ -142,7 +142,7 @@ struct TensorReductionTests {
     }
 }
 
-@Suite("Tensor Activation Tests")
+@Suite("Tensor Activation Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorActivationTests {
 
     @Test("ReLU")
@@ -176,7 +176,7 @@ struct TensorActivationTests {
     }
 }
 
-@Suite("Tensor Functional Tests")
+@Suite("Tensor Functional Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorFunctionalTests {
 
     @Test("Functional ReLU")
@@ -196,7 +196,7 @@ struct TensorFunctionalTests {
     }
 }
 
-@Suite("Tensor Chained Operations Tests")
+@Suite("Tensor Chained Operations Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorChainedOperationsTests {
 
     @Test("Linear layer simulation")
@@ -224,7 +224,7 @@ struct TensorChainedOperationsTests {
 
 // MARK: - Scan and While Loop Tests
 
-@Suite("Scan Tests")
+@Suite("Scan Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ScanTests {
 
     @Test("Scan counter")
@@ -312,7 +312,7 @@ struct ScanTests {
 
 // MARK: - Tensor Helper Operation Tests (Shape Verification - No XLA Required)
 
-@Suite("Tensor Eye Tests")
+@Suite("Tensor Eye Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorEyeTests {
 
     @Test("Eye shape")
@@ -342,7 +342,7 @@ struct TensorEyeTests {
     }
 }
 
-@Suite("Tensor Linspace Tests")
+@Suite("Tensor Linspace Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorLinspaceTests {
 
     @Test("Linspace shape")
@@ -375,7 +375,7 @@ struct TensorLinspaceTests {
     }
 }
 
-@Suite("Tensor Triangular Tests")
+@Suite("Tensor Triangular Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorTriangularTests {
 
     @Test("Tril shape")
@@ -419,7 +419,7 @@ struct TensorTriangularTests {
     }
 }
 
-@Suite("Tensor Argmax Argmin Tests")
+@Suite("Tensor Argmax Argmin Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorArgmaxArgminTests {
 
     @Test("Argmax global shape")
@@ -476,7 +476,7 @@ struct TensorArgmaxArgminTests {
     }
 }
 
-@Suite("Tensor Squeeze Tests")
+@Suite("Tensor Squeeze Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorSqueezeTests {
 
     @Test("Squeeze dim")
@@ -524,7 +524,7 @@ struct TensorSqueezeTests {
     }
 }
 
-@Suite("Tensor Min Along Axes Tests")
+@Suite("Tensor Min Along Axes Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorMinAlongAxesTests {
 
     @Test("Min along axis shape")

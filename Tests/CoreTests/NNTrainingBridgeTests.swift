@@ -11,7 +11,7 @@ import Testing
 import _Differentiation
 @testable import Magma
 
-@Suite("nn.* autodiff training bridge", .serialized)
+@Suite("nn.* autodiff training bridge", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NNTrainingBridgeTests {
 
     @Test("optim.Adam trains an nn.Linear with real autodiff gradients")

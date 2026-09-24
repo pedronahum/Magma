@@ -63,12 +63,15 @@ Mount or copy a PJRT plugin into `/opt/xla/lib` to run the full test suite.
 |-------------|---------------------|----------------|
 | `StableHLOTests` | No | Pure-Swift MLIR/StableHLO generation, Shardy types |
 | `LazyTensorTests` | No | Graph building, optimization passes, emitter |
-| `XLARuntimeTests` | Partly (plugin suites are skipped without one) | PJRT client, buffers, compilation, multi-device |
-| `MagmaTests` (`Tests/CoreTests`) | Yes | Tensors, autodiff, layers, optimizers, data, distributed |
+| `XLARuntimeTests` | For most suites | PJRT client, buffers, compilation, multi-device |
+| `MagmaTests` (`Tests/CoreTests`) | For most suites | Tensors, autodiff, layers, optimizers, data, distributed |
+
+Suites that need a backend are skipped (not failed) when no plugin is found, so
+a plain `swift test` passes everywhere; only a run with a plugin exercises them.
 
 ```bash
-# No plugin needed (this is what CI runs)
-swift test --filter 'StableHLOTests|LazyTensorTests|XLARuntimeTests'
+# No plugin needed (this is what CI runs; backend suites are skipped)
+swift test
 
 # Full suite on the CPU plugin (~1000 tests, under a minute)
 MAGMA_XLA_PATH=/opt/xla/lib swift test --no-parallel \

@@ -20,7 +20,7 @@ private func refBatchedMatmul(_ a: [Float], _ b: [Float], batch: Int, m: Int, k:
     return out
 }
 
-@Suite("batchedMatmul values", .serialized)
+@Suite("batchedMatmul values", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BatchedMatmulValueTests {
 
     @Test("3D and 4D batched matmul match a host reference", arguments: [[2], [2, 3]])

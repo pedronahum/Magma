@@ -8,7 +8,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("TopKFilter Tests", .serialized)
+@Suite("TopKFilter Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TopKFilterTests {
 
     @Test("keeps exactly the top-k, zeroes the rest")

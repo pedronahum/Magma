@@ -9,7 +9,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("LogSoftmax Stability Tests", .serialized)
+@Suite("LogSoftmax Stability Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LogSoftmaxStabilityTests {
 
     @Test("stays finite for extreme logits")

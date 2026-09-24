@@ -10,7 +10,7 @@ import Testing
 import _Differentiation
 @testable import Magma
 
-@Suite("Opaque `some Layer` Training", .serialized)
+@Suite("Opaque `some Layer` Training", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct OpaqueLayerTrainingTests {
 
     // Returns an opaque `some Layer` — the model's concrete (nested Sequential2)

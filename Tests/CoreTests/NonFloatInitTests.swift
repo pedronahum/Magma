@@ -8,7 +8,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Non-Float Tensor Init Tests", .serialized)
+@Suite("Non-Float Tensor Init Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NonFloatInitTests {
 
     @Test("Double tensor round-trips values")

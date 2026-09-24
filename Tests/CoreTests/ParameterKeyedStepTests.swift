@@ -10,7 +10,7 @@
 import Testing
 @testable import Magma
 
-@Suite("Identity-keyed optimizer step", .serialized)
+@Suite("Identity-keyed optimizer step", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ParameterKeyedStepTests {
 
     @Test("gradients are matched by identity, not by dictionary/insertion order")

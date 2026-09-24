@@ -28,7 +28,7 @@ private struct MLP: Differentiable, KeyPathIterable {
     }
 }
 
-@Suite("Nested Value-Semantic Model Proof", .serialized)
+@Suite("Nested Value-Semantic Model Proof", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NestedLayerProofTests {
 
     private func makeMLP() -> MLP {

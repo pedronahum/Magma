@@ -31,7 +31,7 @@ jobs:
         run: swift build --build-tests
 
       - name: Test (no PJRT plugin required)
-        run: swift test --skip-build --filter 'StableHLOTests|LazyTensorTests|XLARuntimeTests'
+        run: swift test --skip-build
 
   # macOS needs a swift.org toolchain: Xcode's toolchain does not ship the
   # _Differentiation module. The Metal backend is opt-in (MAGMA_ENABLE_METAL=1)
@@ -58,4 +58,4 @@ jobs:
           swift build --build-tests
 
       - name: Test (no PJRT plugin required)
-        run: swift test --skip-build --filter 'StableHLOTests|LazyTensorTests|XLARuntimeTests'
+        run: swift test --skip-build

@@ -10,7 +10,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Global random seed", .serialized)
+@Suite("Global random seed", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct RandomSeedTests {
 
     @Test("randn: same seed gives identical values, different seeds differ")

@@ -98,7 +98,7 @@ private func refGroupNorm(_ x: [Float], n: Int, h: Int, w: Int, c: Int, groups: 
     return out
 }
 
-@Suite("nn layer numerics (materialized)", .serialized)
+@Suite("nn layer numerics (materialized)", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NNLayerNumericTests {
 
     // MARK: Conv1d

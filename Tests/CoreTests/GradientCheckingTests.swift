@@ -24,7 +24,7 @@ private func detGradTensor(_ shape: [Int]) -> Tensor<Float> {
 
 // MARK: - Basic Gradient Check Tests
 
-@Suite("Gradcheck Basic Tests")
+@Suite("Gradcheck Basic Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckBasicTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -99,7 +99,7 @@ struct GradcheckBasicTests {
 
 // MARK: - Activation Function Gradient Tests
 
-@Suite("Gradcheck Activation Tests")
+@Suite("Gradcheck Activation Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckActivationTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -174,7 +174,7 @@ struct GradcheckActivationTests {
 
 // MARK: - Matrix Operation Gradient Tests
 
-@Suite("Gradcheck Matrix Tests")
+@Suite("Gradcheck Matrix Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckMatrixTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -218,7 +218,7 @@ struct GradcheckMatrixTests {
 
 // MARK: - Multi-Input Gradient Tests
 
-@Suite("Gradcheck Multi-Input Tests")
+@Suite("Gradcheck Multi-Input Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckMultiInputTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -261,7 +261,7 @@ struct GradcheckMultiInputTests {
 
 // MARK: - Numerical Gradient Tests
 
-@Suite("Numerical Gradient Tests")
+@Suite("Numerical Gradient Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct NumericalGradientTests {
 
     @Test("Numerical gradient sum")
@@ -306,7 +306,7 @@ struct NumericalGradientTests {
 
 // MARK: - Jacobian Tests
 
-@Suite("Jacobian Tests")
+@Suite("Jacobian Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct JacobianTests {
 
     @Test("Jacobian identity")
@@ -352,7 +352,7 @@ struct JacobianTests {
 
 // MARK: - Convenience Function Tests
 
-@Suite("Gradcheck Convenience Tests")
+@Suite("Gradcheck Convenience Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckConvenienceTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -384,7 +384,7 @@ struct GradcheckConvenienceTests {
 
 // MARK: - Complex Function Gradient Tests
 
-@Suite("Gradcheck Complex Tests")
+@Suite("Gradcheck Complex Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckComplexTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -426,7 +426,7 @@ struct GradcheckComplexTests {
 
 // MARK: - Edge Case Tests
 
-@Suite("Gradcheck Edge Case Tests")
+@Suite("Gradcheck Edge Case Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct GradcheckEdgeCaseTests {
 
     // Use reasonable tolerances for float32 numerical precision
@@ -471,7 +471,7 @@ struct GradcheckEdgeCaseTests {
 
 // MARK: - Linear Index Conversion Tests
 
-@Suite("Index Conversion Tests")
+@Suite("Index Conversion Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct IndexConversionTests {
 
     // Use reasonable tolerances for float32 numerical precision

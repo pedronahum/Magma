@@ -309,7 +309,7 @@ struct DeviceTransferTests {
     }
 }
 
-@Suite("LRU Map Tests")
+@Suite("LRU Map Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct LRUMapTests {
 
     @Test("evicts the least recently used entry by count")

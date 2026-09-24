@@ -7,7 +7,7 @@ import Testing
 
 // MARK: - Timing Tests
 
-@Suite("Timing Tests")
+@Suite("Timing Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TimingTests {
 
     @Test("Timing creation")
@@ -51,7 +51,7 @@ struct TimingTests {
 
 // MARK: - Profiler Timing Tests
 
-@Suite("Profiler Timing Tests")
+@Suite("Profiler Timing Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ProfilerTimingTests {
 
     @Test("Timed block")
@@ -101,7 +101,7 @@ struct ProfilerTimingTests {
 
 // MARK: - Benchmark Tests
 
-@Suite("Benchmark Tests")
+@Suite("Benchmark Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BenchmarkTests {
 
     @Test("Basic benchmark")
@@ -187,7 +187,7 @@ struct BenchmarkTests {
 
 // MARK: - ExecutionProfile Tests
 
-@Suite("ExecutionProfile Tests")
+@Suite("ExecutionProfile Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ExecutionProfileTests {
 
     @Test("Execution profile description")
@@ -215,7 +215,7 @@ struct ExecutionProfileTests {
 
 // MARK: - FLOPS Estimator Tests
 
-@Suite("FLOPS Estimator Tests")
+@Suite("FLOPS Estimator Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct FLOPSEstimatorTests {
 
     @Test("Matmul FLOPS")
@@ -265,7 +265,7 @@ struct FLOPSEstimatorTests {
 
 // MARK: - Memory Stats Tests
 
-@Suite("Memory Stats Tests")
+@Suite("Memory Stats Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MemoryStatsTests {
 
     @Test("Memory stats description")
@@ -303,7 +303,7 @@ struct MemoryStatsTests {
 
 // MARK: - Profiler API Tests
 
-@Suite("Profiler API Tests")
+@Suite("Profiler API Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ProfilerAPITests {
 
     @Test("Profiler availability")
@@ -341,7 +341,7 @@ struct ProfilerAPITests {
 
 // MARK: - Tensor Extension Tests
 
-@Suite("Tensor Profiling Extension Tests")
+@Suite("Tensor Profiling Extension Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorProfilingExtensionTests {
 
     @Test("Timed scalars")
@@ -357,7 +357,7 @@ struct TensorProfilingExtensionTests {
 
 // MARK: - Benchmark Stats Edge Cases
 
-@Suite("Benchmark Stats Edge Cases Tests")
+@Suite("Benchmark Stats Edge Cases Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BenchmarkStatsEdgeCasesTests {
 
     @Test("Empty timings")

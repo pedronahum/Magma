@@ -14,7 +14,7 @@ import MLX
 
 // MARK: - Tensor Operation Tests
 
-@Suite("Tensor Transpose Tests")
+@Suite("Tensor Transpose Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorTransposeTests {
 
     @Test("Transpose with specific dimensions")
@@ -48,7 +48,7 @@ struct TensorTransposeTests {
 
 // MARK: - Batched MatMul Tests
 
-@Suite("Batched Matmul Tests")
+@Suite("Batched Matmul Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct BatchedMatmulTests {
 
     @Test("Batched matmul 3D")
@@ -90,7 +90,7 @@ struct BatchedMatmulTests {
 
 // MARK: - Masked Fill Tests
 
-@Suite("Masked Fill Tests")
+@Suite("Masked Fill Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MaskedFillTests {
 
     @Test("Masked fill operation")
@@ -105,7 +105,7 @@ struct MaskedFillTests {
 
 // MARK: - Scaled Dot-Product Attention Tests
 
-@Suite("Scaled Dot-Product Attention Tests")
+@Suite("Scaled Dot-Product Attention Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ScaledDotProductAttentionTests {
 
     @Test("Scaled dot-product attention 3D")
@@ -178,7 +178,7 @@ struct ScaledDotProductAttentionTests {
 
 // MARK: - MultiheadAttention Tests
 
-@Suite("Multihead Attention Tests")
+@Suite("Multihead Attention Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct MultiheadAttentionTests {
 
     @Test("Creation")
@@ -352,7 +352,7 @@ struct AttentionStepValueTests {
 
 // MARK: - Integration Tests
 
-@Suite("Attention Integration Tests")
+@Suite("Attention Integration Tests", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct AttentionIntegrationTests {
 
     @Test("Transformer encoder block pattern")

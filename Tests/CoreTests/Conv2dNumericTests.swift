@@ -8,7 +8,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Conv/Pool Numeric Tests", .serialized)
+@Suite("Conv/Pool Numeric Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct Conv2dNumericTests {
 
     @Test("3x3 input, 2x2 all-ones kernel, valid conv sums windows")

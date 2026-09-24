@@ -9,7 +9,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("DataLoader Batching Tests", .serialized)
+@Suite("DataLoader Batching Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DataLoaderBatchingTests {
 
     @Test("DataLoader yields correctly batched rows")

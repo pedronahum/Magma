@@ -11,7 +11,7 @@ import Testing
 import _Differentiation
 @testable import Magma
 
-@Suite("Value-Semantic Conv2d + Adam", .serialized)
+@Suite("Value-Semantic Conv2d + Adam", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct ConvLayerTests {
 
     @Test("reflection finds the conv layer's weight+bias slots (config is @noDerivative)")

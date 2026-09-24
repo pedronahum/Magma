@@ -8,7 +8,7 @@
 import Testing
 @testable import Magma
 
-@Suite("Tensor initializer validation")
+@Suite("Tensor initializer validation", .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct TensorInitValidationTests {
 
     @Test("A matching data count and shape build the tensor")

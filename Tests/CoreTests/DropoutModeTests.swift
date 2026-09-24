@@ -30,7 +30,7 @@ private func maxAbsDiff(_ a: Tensor<Float>, _ b: Tensor<Float>) -> Float {
     return zip(x, y).map { abs($0 - $1) }.max()!
 }
 
-@Suite("Dropout train/eval in composite layers", .serialized)
+@Suite("Dropout train/eval in composite layers", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct DropoutModeTests {
 
     @Test("scaledDotProductAttention applies dropout when dropout > 0")

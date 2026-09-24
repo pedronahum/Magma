@@ -9,7 +9,7 @@ import Testing
 @testable import Magma
 @testable import LazyTensor
 
-@Suite("Where/Select Tests", .serialized)
+@Suite("Where/Select Tests", .serialized, .enabled(if: PluginAvailability.cpu, "CPU PJRT plugin not available"))
 struct WhereSelectTests {
 
     @Test("where_ selects elementwise by a float mask")
