@@ -119,19 +119,6 @@ extension Dataset where Element == (input: Tensor<Float>, target: Tensor<Float>)
 
 // MARK: - DataLoader
 
-/// Iterates over a dataset in batches.
-///
-/// Provides batched iteration with optional shuffling.
-///
-/// Example:
-/// ```swift
-/// let loader = DataLoader(dataset: dataset, batchSize: 32, shuffle: true)
-/// for (inputs, targets) in loader {
-///     let output = model(inputs)
-///     let loss = criterion(output, targets)
-///     // ...
-/// }
-/// ```
 /// A small deterministic RNG (SplitMix64) so every data-parallel replica draws
 /// the *same* shuffle permutation for a given seed and epoch — the property
 /// `DistributedSampler` relies on to produce disjoint, covering shards.
@@ -226,6 +213,22 @@ public struct DistributedSampler: Sendable {
     }
 }
 
+/// Iterates over a dataset in batches.
+///
+/// Provides batched iteration with optional shuffling. Each call to
+/// `makeIterator()` (i.e. each `for` loop, one epoch) draws a fresh permutation
+/// from the global host random stream, so shuffling is reproducible under
+/// `manualSeed(_:)`.
+///
+/// Example:
+/// ```swift
+/// let loader = DataLoader(dataset: dataset, batchSize: 32, shuffle: true)
+/// for (inputs, targets) in loader {
+///     let output = model(inputs)
+///     let loss = criterion(output, targets)
+///     // ...
+/// }
+/// ```
 public struct DataLoader<D: Dataset>: Sequence where D.Element == (input: Tensor<Float>, target: Tensor<Float>) {
     /// The underlying dataset
     public let dataset: D
@@ -322,7 +325,7 @@ public struct DataLoaderIterator<D: Dataset>: IteratorProtocol where D.Element =
         } else {
             self.indices = Array(0..<loader.dataset.count)
             if loader.shuffle {
-                self.indices.shuffle()
+                HostRandom.withGenerator { self.indices.shuffle(using: &$0) }
             }
         }
     }
@@ -371,7 +374,9 @@ extension data {
 /// A simple batch loader that works with pre-batched tensors.
 ///
 /// This is a simpler alternative to DataLoader when data is already
-/// organized as batched tensors. Supports shuffling for randomized training.
+/// organized as batched tensors. Supports shuffling for randomized training;
+/// the permutation comes from the global host random stream, so it is
+/// reproducible under `manualSeed(_:)`.
 ///
 /// Example:
 /// ```swift
@@ -488,7 +493,7 @@ public struct SimpleBatchIterator: IteratorProtocol {
         self.loader = loader
         self.indices = Array(0..<loader.numSamples)
         if loader.shuffle {
-            self.indices.shuffle()
+            HostRandom.withGenerator { self.indices.shuffle(using: &$0) }
         }
     }
 
@@ -1796,7 +1801,7 @@ public class MemoryMappedTokenDataset {
             self.device = device
             self.indices = Array(0..<dataset.count)
             if shuffle {
-                self.indices.shuffle()
+                HostRandom.withGenerator { self.indices.shuffle(using: &$0) }
             }
         }
 
@@ -1914,8 +1919,10 @@ public enum LanguageModelBatch {
         inputBatch.reserveCapacity(batchSize * sequenceLength)
         targetBatch.reserveCapacity(batchSize * sequenceLength)
 
-        for _ in 0..<batchSize {
-            let start = Int.random(in: 0...maxStart)
+        let starts = HostRandom.withGenerator { rng in
+            (0..<batchSize).map { _ in Int.random(in: 0...maxStart, using: &rng) }
+        }
+        for start in starts {
             for j in 0..<sequenceLength {
                 inputBatch.append(Float(tokens[start + j]))
                 targetBatch.append(Float(tokens[start + j + 1]))

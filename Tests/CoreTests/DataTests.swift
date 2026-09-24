@@ -131,37 +131,57 @@ struct SimpleBatchLoaderTests {
         #expect(batchCount == 4)
     }
 
-    @Test("Shuffle produces different order")
-    func shuffleProducesDifferentOrder() {
-        // Create inputs with unique values per sample so we can verify shuffling
+    @Test("Shuffle is deterministic under a seed and changes with the seed")
+    func shuffleDeterministicUnderSeed() {
+        // Each sample's features are its index, so batch contents reveal order.
         var inputData = [Float]()
         for i in 0..<10 {
             inputData.append(contentsOf: [Float](repeating: Float(i), count: 4))
         }
         let inputs = Tensor<Float>(inputData, shape: [10, 4])
         let targets = Tensor<Float>.zeros([10, 2])
+        let loader = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 5, shuffle: true)
 
-        // Create two shuffled loaders
-        let loader1 = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 5, shuffle: true)
-        let loader2 = SimpleBatchLoader(inputs: inputs, targets: targets, batchSize: 5, shuffle: true)
-
-        // Collect batches from both
-        var batches1: [[Float]] = []
-        var batches2: [[Float]] = []
-
-        for batch in loader1 {
-            batches1.append(batch.input.scalars())
-        }
-        for batch in loader2 {
-            batches2.append(batch.input.scalars())
+        func sampleOrder(seed: UInt64) -> [Float] {
+            manualSeed(seed)
+            var order: [Float] = []
+            for batch in loader {
+                #expect(batch.input.shape == [5, 4])
+                let values = batch.input.scalars()
+                order.append(contentsOf: stride(from: 0, to: values.count, by: 4).map { values[$0] })
+            }
+            return order
         }
 
-        // Both should have same number of batches
-        #expect(batches1.count == 2)
-        #expect(batches2.count == 2)
+        let a = sampleOrder(seed: 123)
+        let b = sampleOrder(seed: 123)
+        let c = sampleOrder(seed: 456)
+        #expect(a.count == 10)
+        #expect(a == b)
+        #expect(a != c)
+        // A real permutation of the samples, not the identity order.
+        #expect(a.sorted() == (0..<10).map(Float.init))
+        #expect(a != (0..<10).map(Float.init))
+    }
 
-        // Shapes should be preserved
-        #expect(batches1[0].count == 20)  // 5 samples * 4 features
+    @Test("DataLoader shuffle is deterministic under a seed")
+    func dataLoaderShuffleDeterministicUnderSeed() {
+        let inputs = Tensor<Float>((0..<12).map(Float.init), shape: [12, 1])
+        let targets = Tensor<Float>.zeros([12, 1])
+        let loader = DataLoader(dataset: TensorDataset(inputs: inputs, targets: targets),
+                                batchSize: 4, shuffle: true)
+
+        func sampleOrder(seed: UInt64) -> [Float] {
+            manualSeed(seed)
+            return loader.flatMap { $0.input.scalars() }
+        }
+
+        let a = sampleOrder(seed: 9)
+        let b = sampleOrder(seed: 9)
+        let c = sampleOrder(seed: 10)
+        #expect(a == b)
+        #expect(a != c)
+        #expect(a.sorted() == (0..<12).map(Float.init))
     }
 
     @Test("Shuffle preserves all samples")

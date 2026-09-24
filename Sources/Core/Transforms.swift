@@ -5,6 +5,9 @@
 //
 // This module provides transforms that can be composed together for data
 // preprocessing and augmentation pipelines, following PyTorch's torchvision.transforms API.
+//
+// Random transforms draw from the global host random stream, so augmentation is
+// reproducible under `manualSeed(_:)`.
 
 import Foundation
 import LazyTensor
@@ -111,7 +114,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            if Float.random(in: 0..<1) < p {
+            if hostUniformSample() < p {
                 var result = input
                 for transform in transforms {
                     result = transform(result)
@@ -139,7 +142,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            let idx = Int.random(in: 0..<transforms.count)
+            let idx = HostRandom.withGenerator { Int.random(in: 0..<transforms.count, using: &$0) }
             return transforms[idx](input)
         }
     }
@@ -307,7 +310,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            if Float.random(in: 0..<1) < p {
+            if hostUniformSample() < p {
                 return horizontalFlip(input)
             }
             return input
@@ -331,7 +334,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            if Float.random(in: 0..<1) < p {
+            if hostUniformSample() < p {
                 return verticalFlip(input)
             }
             return input
@@ -451,8 +454,9 @@ extension transforms {
 
             let maxTop = inputHeight - targetHeight
             let maxLeft = inputWidth - targetWidth
-            let top = Int.random(in: 0...maxTop)
-            let left = Int.random(in: 0...maxLeft)
+            let (top, left) = HostRandom.withGenerator { rng in
+                (Int.random(in: 0...maxTop, using: &rng), Int.random(in: 0...maxLeft, using: &rng))
+            }
 
             return cropImage(tensor, top: top, left: left, height: targetHeight, width: targetWidth)
         }
@@ -558,7 +562,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            if Float.random(in: 0..<1) < p {
+            if hostUniformSample() < p {
                 let numChannels = input.shape[input.rank - 1]
                 let grayscale = Grayscale(numOutputChannels: numChannels)
                 return grayscale(input)
@@ -584,7 +588,7 @@ extension transforms {
         }
 
         public func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
-            if Float.random(in: 0..<1) < p {
+            if hostUniformSample() < p {
                 // Assumes input is in [0, 1] range
                 return Tensor<Float>.full(input.shape, 1.0, on: input.device) - input
             }

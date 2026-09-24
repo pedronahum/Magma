@@ -75,11 +75,9 @@ extension Tensor where Scalar == Float {
         upperBound: Float = 1,
         on device: Device = .default
     ) -> Tensor {
-        // Generate uniform in [0, 1), then scale and shift
-        let uniform = randDevice(shape, on: device)
-        let range = Tensor([upperBound - lowerBound], shape: [], on: device)
-        let low = Tensor([lowerBound], shape: [], on: device)
-        return uniform * range + low
+        // Host-generated from the global stream so initialization is
+        // reproducible under `manualSeed(_:)`.
+        return uniform(low: lowerBound, high: upperBound, shape: shape, on: device)
     }
 
     // MARK: - Truncated Normal
@@ -102,29 +100,20 @@ extension Tensor where Scalar == Float {
         stddev: Float = 1,
         on device: Device = .default
     ) -> Tensor {
-        // Generate normal samples and reject those outside [-2*stddev, 2*stddev]
-        // For efficiency, we use rejection sampling with CPU-generated values
+        // Generate normal samples and reject those more than 2 standard
+        // deviations from the mean. Rejection sampling runs on the host, drawing
+        // from the global stream (reproducible under `manualSeed(_:)`).
         let count = shape.isEmpty ? 1 : shape.reduce(1, *)
         var values: [Float] = []
         values.reserveCapacity(count)
 
-        let lowerBound = mean - 2 * stddev
-        let upperBound = mean + 2 * stddev
-
-        while values.count < count {
-            // Generate pairs using Box-Muller transform
-            let u1 = Float.random(in: Float.leastNormalMagnitude...1)
-            let u2 = Float.random(in: 0...1)
-            let mag = Foundation.sqrt(-2.0 * Foundation.log(u1))
-            let z0 = mag * Foundation.cos(2.0 * Float.pi * u2) * stddev + mean
-            let z1 = mag * Foundation.sin(2.0 * Float.pi * u2) * stddev + mean
-
-            // Accept only values within bounds
-            if z0 >= lowerBound && z0 <= upperBound {
-                values.append(z0)
-            }
-            if values.count < count && z1 >= lowerBound && z1 <= upperBound {
-                values.append(z1)
+        HostRandom.withGenerator { rng in
+            while values.count < count {
+                // Draw a batch of standard normals; about 95% fall within ±2.
+                let batch = hostNormalSamples(count: Swift.max(2, count - values.count), using: &rng)
+                for z in batch where values.count < count && Swift.abs(z) <= 2 {
+                    values.append(z * stddev + mean)
+                }
             }
         }
 

@@ -457,6 +457,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     /// - Note: When `useDeviceRNG` is false (default), random values are generated on the host CPU
     ///         and embedded as constants in the computation graph. This can cause compilation issues
     ///         for very large tensors. Use `.materialize()` or `useDeviceRNG: true` to avoid this.
+    ///         Host-generated values are reproducible under `manualSeed(_:)`; device RNG is not.
     public static func randn(
         _ shape: [Int],
         on device: Device = .default,
@@ -467,27 +468,10 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
             return randnDevice(shape, on: device)
         }
 
-        // Generate random values on CPU using Box-Muller transform for normal distribution
+        // Generate random values on the host (Box-Muller) from the global,
+        // seedable stream (see `manualSeed(_:)`).
         let count = shape.isEmpty ? 1 : shape.reduce(1, *)
-        var values: [Float] = []
-        values.reserveCapacity(count)
-
-        // Generate pairs using Box-Muller transform
-        for i in stride(from: 0, to: count, by: 2) {
-            // Generate two uniform random numbers in (0, 1)
-            let u1 = Float.random(in: Float.leastNormalMagnitude...1)
-            let u2 = Float.random(in: 0...1)
-
-            // Box-Muller transform (use Foundation math functions)
-            let mag = Foundation.sqrt(-2.0 * Foundation.log(u1))
-            let z0 = mag * Foundation.cos(2.0 * Float.pi * u2)
-            let z1 = mag * Foundation.sin(2.0 * Float.pi * u2)
-
-            values.append(z0)
-            if i + 1 < count {
-                values.append(z1)
-            }
-        }
+        let values = HostRandom.withGenerator { hostNormalSamples(count: count, using: &$0) }
 
         // Create tensor from the random values
         let id = TensorRegistry.shared.nextTensorId()
@@ -1958,8 +1942,10 @@ extension Tensor {
 extension Tensor where Scalar: BinaryFloatingPoint {
     /// Create a tensor with uniform random values in [low, high).
     ///
-    /// Uses XLA's device-side RNG to generate random values directly on the device.
-    /// The random values are NOT embedded as constants in the MLIR IR.
+    /// The values are generated on the host from the global random stream, so
+    /// they are reproducible under `manualSeed(_:)`, and are embedded in the
+    /// graph as a constant. For large tensors where that constant is a problem,
+    /// use the device-side `randDevice(_:on:)` instead (not seedable).
     ///
     /// - Parameters:
     ///   - low: Lower bound (inclusive) of the uniform distribution.
@@ -1973,12 +1959,12 @@ extension Tensor where Scalar: BinaryFloatingPoint {
         shape: [Int],
         on device: Device = .default
     ) -> Tensor {
-        // Generate random values on CPU to avoid backend RNG issues
+        precondition(low < high, "Tensor.uniform: low (\(low)) must be less than high (\(high))")
+        // Generate random values on the host from the global, seedable stream
+        // (see `manualSeed(_:)`), avoiding backend RNG issues.
         let count = shape.isEmpty ? 1 : shape.reduce(1, *)
-        var values: [Float] = []
-        values.reserveCapacity(count)
-        for _ in 0..<count {
-            values.append(Float.random(in: low...high))
+        let values: [Float] = HostRandom.withGenerator { rng in
+            (0..<count).map { _ in Float.random(in: low..<high, using: &rng) }
         }
 
         let id = TensorRegistry.shared.nextTensorId()
