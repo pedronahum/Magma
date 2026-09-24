@@ -2217,31 +2217,37 @@ extension nn {
         // MARK: - Activations
 
         /// ReLU activation: max(0, x)
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func relu<S: TensorScalar>(_ input: Tensor<S>) -> Tensor<S> {
             input.relu()
         }
 
         /// Sigmoid activation: 1 / (1 + exp(-x))
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func sigmoid<S: TensorScalar>(_ input: Tensor<S>) -> Tensor<S> {
             input.sigmoid()
         }
 
         /// Tanh activation
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func tanh<S: TensorScalar>(_ input: Tensor<S>) -> Tensor<S> {
             input.tanh()
         }
 
         /// GELU activation (Gaussian Error Linear Unit)
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func gelu<S: TensorScalar>(_ input: Tensor<S>) -> Tensor<S> {
             input.gelu()
         }
 
         /// Softmax along specified dimension
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func softmax<S: TensorScalar>(_ input: Tensor<S>, dim: Int = -1) -> Tensor<S> {
             input.softmax(dim: dim)
         }
 
         /// Log softmax along specified dimension
+        @differentiable(reverse where S: BinaryFloatingPoint)
         public static func logSoftmax<S: TensorScalar>(_ input: Tensor<S>, dim: Int = -1) -> Tensor<S> {
             input.logSoftmax(dim: dim)
         }
@@ -2256,6 +2262,9 @@ extension nn {
         ///   - prediction: Model predictions.
         ///   - target: Ground truth values.
         /// - Returns: Scalar MSE loss.
+        ///
+        /// Differentiable with respect to both arguments.
+        @differentiable(reverse)
         public static func mse(_ prediction: Tensor<Float>, _ target: Tensor<Float>) -> Tensor<Float> {
             let diff = prediction - target
             let squared = diff * diff
@@ -2280,12 +2289,15 @@ extension nn {
         ///     probabilities, shape [batch, numClasses].
         /// - Returns: Scalar cross-entropy loss.
         ///
+        /// Differentiable with respect to `logits`; `targets` is not differentiated.
+        ///
         /// Example:
         /// ```swift
         /// let logits = model(inputs)  // [32, 10]
         /// let targets = Tensor<Float>([3, 7, 1, ...], shape: [32])
         /// let loss = nn.functional.crossEntropy(logits, targets)
         /// ```
+        @differentiable(reverse, wrt: logits)
         public static func crossEntropy(_ logits: Tensor<Float>, _ targets: Tensor<Float>) -> Tensor<Float> {
             precondition(logits.rank == 2,
                 "crossEntropy: logits must be 2D [batch, numClasses], got shape \(logits.shape)")
@@ -2297,7 +2309,6 @@ extension nn {
 
             let numClasses = logits.shape[1]
 
-        @differentiable(reverse, wrt: logits)
             // Compute log softmax for numerical stability
             let logProbs = logits.logSoftmax(dim: -1)
 
@@ -2332,6 +2343,9 @@ extension nn {
         ///   - prediction: Predicted probabilities.
         ///   - target: Binary target values (0 or 1).
         /// - Returns: Scalar BCE loss.
+        ///
+        /// Differentiable with respect to `prediction`; `target` is not differentiated.
+        @differentiable(reverse, wrt: prediction)
         public static func binaryCrossEntropy(_ prediction: Tensor<Float>, _ target: Tensor<Float>) -> Tensor<Float> {
             // BCE = -[y * log(p) + (1-y) * log(1-p)]
             let eps = Tensor<Float>.full(prediction.shape, 1e-7, on: prediction.device)
@@ -2396,12 +2410,15 @@ extension nn {
         ///   - targets: Target class indices (integers as Float), shape [batch].
         /// - Returns: Scalar NLL loss.
         ///
+        /// Differentiable with respect to `logProbs`; `targets` is not differentiated.
+        ///
         /// Example:
         /// ```swift
         /// let logProbs = logits.logSoftmax(dim: -1)  // [32, 10]
         /// let targets = Tensor<Float>([3, 7, 1, ...], shape: [32])
         /// let loss = nn.functional.nllLoss(logProbs, targets)
         /// ```
+        @differentiable(reverse, wrt: logProbs)
         public static func nllLoss(_ logProbs: Tensor<Float>, _ targets: Tensor<Float>) -> Tensor<Float> {
             precondition(logProbs.rank == 2,
                 "nllLoss: logProbs must be 2D [batch, numClasses], got shape \(logProbs.shape)")
@@ -2418,7 +2435,6 @@ extension nn {
             // Select target log probs by multiplying with one-hot and summing
             let targetLogProbs = (logProbs * oneHot).sum(dims: [1], keepDims: false)
 
-        @differentiable(reverse, wrt: logProbs)
             // Return negative mean
             return (-targetLogProbs).mean()
         }
