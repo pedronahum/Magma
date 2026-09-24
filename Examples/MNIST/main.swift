@@ -1,74 +1,90 @@
 // Magma - MNIST Training Example
-// Demonstrates end-to-end training with real MNIST data and autodiff.
 //
-// This is a minimal example that runs just a few forward/backward passes
-// to verify the system works end-to-end.
+// A short smoke-test training loop on real MNIST data: a 784 -> 64 -> 10 MLP
+// trained with Swift-native reverse-mode autodiff and plain SGD for a few
+// hundred mini-batches (a fraction of one epoch), then evaluated on the MNIST
+// test split. It checks that data loading, autodiff and XLA execution work end
+// to end; it is not a tuned classifier (expect roughly 85-90% test accuracy
+// with the defaults and ~20 s on a CPU plugin; not state-of-the-art numbers).
+//
+// Run:
+//   MAGMA_XLA_PATH=/opt/xla/lib swift run MNISTExample [batches]
+//
+//   batches  number of 64-image training batches (default 200)
+//
+// Requirements:
+//   - A PJRT plugin (pjrt_c_api_cpu_plugin.so, or the gpu/tpu variant) in
+//     $MAGMA_XLA_PATH.
+//   - Network access on the first run: the dataset (~11 MB) is downloaded from
+//     https://storage.googleapis.com/cvdf-datasets/mnist/ and decompressed with
+//     gzip into ~/.magma/data/mnist. Later runs read that cache offline. If a
+//     download was interrupted, delete that directory and run again.
 
 import Foundation
 import Magma
 import LazyTensor
+import XLARuntime
 import _Differentiation
 
 @main
 struct MNISTTraining {
     static func main() {
-        print("Magma MNIST Training")
-        print("==========================")
-        print("")
+        requireBackend(target: "MNISTExample")
 
-        // Quick sanity check with basic tensor operations
-        print("0. Testing basic tensor operations...")
-        let a = Tensor<Float>([1, 2, 3, 4], shape: [2, 2], on: .default)
-        let b = Tensor<Float>([5, 6, 7, 8], shape: [2, 2], on: .default)
-        let c = a + b
-        let cValues = c.scalars()
-        print("   [2,2] + [2,2] = \(cValues)")
-        print("   Basic test passed!")
+        var numBatches = 200
+        if CommandLine.arguments.count > 1 {
+            guard let n = Int(CommandLine.arguments[1]), n > 0 else {
+                print("Usage: MNISTExample [batches]   (batches: positive integer, default 200)")
+                exit(1)
+            }
+            numBatches = n
+        }
+
+        print("Magma MNIST Training (smoke test)")
+        print("=================================")
         print("")
 
         do {
-            try trainMNIST()
+            try trainMNIST(numBatches: numBatches)
         } catch {
             print("Error: \(error)")
+            print("The first run downloads MNIST into ~/.magma/data/mnist and needs network access.")
+            exit(1)
         }
     }
 
-    static func trainMNIST() throws {
+    static func trainMNIST(numBatches: Int) throws {
         // MARK: - Configuration
 
-        let batchSize = 32
-        let numBatches = 10  // Quick test with 10 batches
-        let learningRate: Float = 0.1  // Higher learning rate to see changes faster
+        let batchSize = 64
+        let learningRate: Float = 0.1
 
         // MARK: - Load MNIST Data
 
         print("1. Loading MNIST dataset...")
         let trainData = try MNIST(split: .train, normalize: true, flatten: true)
+        let testData = try MNIST(split: .test, normalize: true, flatten: true, oneHot: false)
 
         print("   Training samples: \(trainData.count)")
+        print("   Test samples:     \(testData.count)")
         print("   Image shape: \(trainData.images.shape)")
-        print("   Label shape: \(trainData.labels.shape)")
+
+        let maxBatches = trainData.count / batchSize
+        let batches = min(numBatches, maxBatches)
 
         // MARK: - Model Definition
 
         print("")
         print("2. Defining MLP model...")
 
-        // Simple 2-layer MLP: 784 -> 64 -> 10
-        // Initialize with small random weights
-        let scale1 = Tensor<Float>.full([], 0.1, on: .default)
-        let scale2 = Tensor<Float>.full([], 0.1, on: .default)
+        // Simple 2-layer MLP: 784 -> 64 -> 10, small random initial weights.
+        let scale = Tensor<Float>.full([], 0.1, on: .default)
         var params = ModelParams(
-            w1: Tensor<Float>.randn([784, 64]) * scale1,
+            w1: Tensor<Float>.randn([784, 64]) * scale,
             b1: Tensor<Float>.zeros([64]),
-            w2: Tensor<Float>.randn([64, 10]) * scale2,
+            w2: Tensor<Float>.randn([64, 10]) * scale,
             b2: Tensor<Float>.zeros([10])
         )
-
-        // Verify weights are actually random
-        print("   Testing weight materialization...")
-        let w1Sample = params.w1.scalars()
-        print("   W1 sample values: \(Array(w1Sample.prefix(5)))")
 
         print("   Layer 1: 784 -> 64 (ReLU)")
         print("   Layer 2: 64 -> 10 (Softmax)")
@@ -78,54 +94,51 @@ struct MNISTTraining {
         // MARK: - Training Loop
 
         print("")
-        print("3. Training (\(numBatches) batches, lr=\(learningRate))...")
+        print("3. Training (\(batches) batches of \(batchSize), lr=\(learningRate))...")
 
-        for batch in 0..<numBatches {
-            let batchStart = batch * batchSize
-            let currentBatchSize = batchSize
+        let lr = Tensor<Float>.full([], learningRate, on: .default)
+        let reportEvery = max(1, batches / 10)
+        for batch in 0..<batches {
+            let batchImages = trainData.images.slice(start: batch * batchSize, size: batchSize)
+            let batchLabels = trainData.labels.slice(start: batch * batchSize, size: batchSize)
 
-            // Get batch
-            let batchImages = trainData.images.slice(start: batchStart, size: currentBatchSize)
-            let batchLabels = trainData.labels.slice(start: batchStart, size: currentBatchSize)
-
-            // Forward pass with gradient computation
             let (loss, grads) = valueWithGradient(at: params) { p -> Tensor<Float> in
-                // Forward pass
-                let h1 = (batchImages.matmul(p.w1) + p.b1.broadcast(to: [currentBatchSize, 64])).relu()
-                let logits = h1.matmul(p.w2) + p.b2.broadcast(to: [currentBatchSize, 10])
-                let probs = logits.softmax(dim: 1)
+                let probs = forward(p, batchImages).softmax(dim: 1)
 
                 // Cross-entropy loss
                 let logProbs = (probs + Tensor<Float>.full([], 1e-7, on: .default)).log()
-                let crossEntropy = -(batchLabels * logProbs).sum() / Tensor<Float>.full([], Float(currentBatchSize), on: .default)
-                return crossEntropy
+                return -(batchLabels * logProbs).sum() / Tensor<Float>.full([], Float(batchSize), on: .default)
             }
 
-            // Update weights (SGD)
-            let lr = Tensor<Float>.full([], learningRate, on: .default)
+            // SGD update
             params.w1 = params.w1 - grads.w1 * lr
             params.b1 = params.b1 - grads.b1 * lr
             params.w2 = params.w2 - grads.w2 * lr
             params.b2 = params.b2 - grads.b2 * lr
 
-            // Get loss value (triggers materialization)
-            let lossValues = loss.scalars()
-            let lossValue = lossValues.isEmpty ? Float.nan : lossValues[0]
-
-            print("   Batch \(batch): loss = \(String(format: "%.4f", lossValue))")
+            if batch % reportEvery == 0 || batch == batches - 1 {
+                // Reading the loss triggers compilation and execution.
+                print("   Batch \(String(format: "%4d", batch)): loss = \(String(format: "%.4f", loss.item()))")
+            }
         }
 
-        // MARK: - Quick Evaluation
+        // MARK: - Evaluation
 
         print("")
-        print("4. Evaluation (first batch)...")
-        let testBatch = trainData.images.slice(start: 0, size: batchSize)
-        let h1 = (testBatch.matmul(params.w1) + params.b1.broadcast(to: [batchSize, 64])).relu()
-        let logits = h1.matmul(params.w2) + params.b2.broadcast(to: [batchSize, 10])
-        let probs = logits.softmax(dim: 1)
-
-        let probValues = probs.scalars()
-        print("   Output probs (first 10): \(Array(probValues.prefix(10).map { String(format: "%.3f", $0) }))")
+        print("4. Evaluation on the test split (\(testData.count) images)...")
+        let logits = forward(params, testData.images).scalars()
+        let labels = testData.labels.scalars()
+        guard logits.count == testData.count * 10, labels.count == testData.count else {
+            throw MNISTExampleError.executionFailed
+        }
+        var correct = 0
+        for i in 0..<testData.count {
+            let row = logits[(i * 10)..<(i * 10 + 10)]
+            let predicted = row.indices.max { row[$0] < row[$1] }! - i * 10
+            if predicted == Int(labels[i]) { correct += 1 }
+        }
+        let accuracy = Double(correct) / Double(testData.count) * 100
+        print("   Test accuracy: \(String(format: "%.2f", accuracy))% (\(correct)/\(testData.count))")
 
         // MARK: - Print Metrics
 
@@ -133,20 +146,24 @@ struct MNISTTraining {
         print("5. Compilation metrics:")
         PrintMetrics()
 
-        // MARK: - Summary
+        print("")
+        print("Done.")
+    }
+}
 
-        print("")
-        print("==========================")
-        print("MNIST Training Complete!")
-        print("==========================")
-        print("")
-        print("Demonstrated capabilities:")
-        print("  - MNIST data loading and parsing")
-        print("  - Automatic differentiation (VJP-based)")
-        print("  - Forward-backward training loop")
-        print("  - Cross-entropy loss with softmax")
-        print("  - SGD weight updates")
-        print("  - XLA compilation and execution")
+/// MLP forward pass returning logits.
+@differentiable(reverse, wrt: p)
+func forward(_ p: ModelParams, _ images: Tensor<Float>) -> Tensor<Float> {
+    let n = images.shape[0]
+    let h1 = (images.matmul(p.w1) + p.b1.broadcast(to: [n, 64])).relu()
+    return h1.matmul(p.w2) + p.b2.broadcast(to: [n, 10])
+}
+
+enum MNISTExampleError: Error, CustomStringConvertible {
+    case executionFailed
+
+    var description: String {
+        "evaluation produced no values (did the PJRT plugin fail to compile or execute?)"
     }
 }
 
@@ -168,4 +185,31 @@ func valueWithGradient(
     let (value, pullback) = valueWithPullback(at: params, of: f)
     let gradient = pullback(Tensor<Float>.ones([], on: .default))
     return (value, gradient)
+}
+
+// MARK: - Backend preflight
+
+/// Exits with an actionable message when no execution backend is installed.
+///
+/// Without a PJRT plugin every compile fails and reads return no values, so the
+/// example would otherwise crash or print NaNs.
+func requireBackend(target: String) {
+    guard Backend.availableBackends.isEmpty else { return }
+    #if os(macOS)
+    let ext = "dylib"
+    #else
+    let ext = "so"
+    #endif
+    let path = ProcessInfo.processInfo.environment["MAGMA_XLA_PATH"]
+    let searched = path.map { "MAGMA_XLA_PATH=\($0)" }
+        ?? "MAGMA_XLA_PATH is not set; searched the default locations such as /opt/xla/lib"
+    let message = """
+        error: no execution backend found (\(searched)).
+        Set MAGMA_XLA_PATH to the directory that contains pjrt_c_api_cpu_plugin.\(ext)
+        (or pjrt_c_api_gpu_plugin.\(ext) / pjrt_c_api_tpu_plugin.\(ext)), for example:
+            MAGMA_XLA_PATH=/opt/xla/lib swift run \(target)
+
+        """
+    FileHandle.standardError.write(Data(message.utf8))
+    exit(1)
 }
