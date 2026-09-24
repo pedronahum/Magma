@@ -1,10 +1,19 @@
 # Magma TPU Deployment Guide
 
-This guide covers deploying and running Magma on Google Cloud TPU VMs.
+> ⚠️ **Untested.** The maintainers have **not** run Magma on a TPU for
+> `0.1.0-alpha.1`. The TPU code path loads `libtpu` as a PJRT plugin, the same way
+> the verified CPU and CUDA paths load their plugins, but no part of it has been
+> exercised on TPU hardware. Treat this guide as setup notes for an experiment.
+> Please [report](https://github.com/pedronahum/Magma/issues) what works and what
+> doesn't.
+
+This guide covers setting up Magma on Google Cloud TPU VMs.
 
 ## Overview
 
-Magma supports TPU acceleration through the PJRT (Portable JAX Runtime) interface. On TPU VMs, the TPU runtime library (`libtpu.so`) provides the PJRT plugin that enables XLA compilation and execution on TPU hardware.
+Magma runs XLA programs through the PJRT (Portable JAX Runtime) plugin
+interface. On TPU VMs the TPU runtime library (`libtpu.so`) is itself a PJRT
+plugin. Magma loads it with `dlopen` at runtime, so you need no build flags.
 
 ## Prerequisites
 
@@ -66,10 +75,12 @@ sudo apt-get install -y \
     unzip \
     zlib1g-dev
 
-# Download Swift (check swift.org for latest version)
-wget https://download.swift.org/swift-6.0-release/ubuntu2204/swift-6.0-RELEASE/swift-6.0-RELEASE-ubuntu22.04.tar.gz
-tar xzf swift-6.0-RELEASE-ubuntu22.04.tar.gz
-sudo mv swift-6.0-RELEASE-ubuntu22.04 /opt/swift
+# Download a Swift 6.0+ toolchain from swift.org (check swift.org for the latest
+# release; Magma is tested on 6.0.3 and 6.3.3). Pick the aarch64 build if your
+# TPU VM host is ARM.
+wget https://download.swift.org/swift-6.0.3-release/ubuntu2204/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE-ubuntu22.04.tar.gz
+tar xzf swift-6.0.3-RELEASE-ubuntu22.04.tar.gz
+sudo mv swift-6.0.3-RELEASE-ubuntu22.04 /opt/swift
 
 # Add to PATH
 echo 'export PATH=/opt/swift/usr/bin:$PATH' >> ~/.bashrc
@@ -83,12 +94,42 @@ swift --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/Magma.git
+git clone https://github.com/pedronahum/Magma.git
 cd Magma
 
-# Build with TPU support
+# Build (no flags: the TPU plugin is loaded at runtime)
 swift build -c release
 ```
+
+### 5. Point Magma at `libtpu`
+
+Magma searches for the TPU plugin in this order. The first file that exists
+wins.
+
+1. `MAGMA_PJRT_PLUGIN_TPU`: the full path of the plugin file. When this is set,
+   it is the only candidate.
+2. `$MAGMA_XLA_PATH/pjrt_c_api_tpu_plugin.so`, `$MAGMA_XLA_PATH/libpjrt_c_api_tpu_plugin.so`
+   and `$MAGMA_XLA_PATH/libtpu.so`.
+3. `TPU_LIBRARY_PATH`, which is a file path, and then the standard locations
+   `/usr/lib/libtpu.so`, `/usr/local/lib/libtpu.so` and `/lib/libtpu.so`.
+4. The system directories `/opt/xla/lib`, `/usr/local/lib` and `/opt/magma/lib`.
+
+Setting `MAGMA_XLA_PATH` (for example to find a CPU plugin) no longer hides
+`libtpu`: the TPU-specific locations in step 3 are still searched. If nothing is
+found, the error lists every path that was tried.
+
+```bash
+# Find libtpu on the VM (its location depends on the VM image and on whether it
+# came from a pip package) and point Magma at it:
+find / -name 'libtpu*.so' 2>/dev/null
+export MAGMA_PJRT_PLUGIN_TPU=/path/to/libtpu.so
+
+# Run on the TPU even for tensors created on the default (CPU) device
+export MAGMA_DEFAULT_BACKEND=tpu
+```
+
+To see which file Magma will load, check `Backend.tpu.resolvedPluginPath` from
+Swift.
 
 ## Using TPU in Magma
 
@@ -97,16 +138,16 @@ swift build -c release
 Magma automatically detects TPU availability:
 
 ```swift
-import Torch
+import Magma
 import XLARuntime
 
-// Check if TPU is available
+// Check if a TPU plugin was found (this only checks that the file exists)
 if Backend.tpu.isAvailable {
-    print("TPU is available!")
+    print("TPU plugin: \(Backend.tpu.resolvedPluginPath ?? "-")")
     TPUEnvironment.printInfo()
 }
 
-// Use the best available backend (prefers TPU > GPU > CPU)
+// The best available backend (TPU > Metal > GPU > CPU)
 let backend = Backend.bestAvailable
 print("Using backend: \(backend)")
 ```
@@ -132,20 +173,30 @@ do {
 
 ### Running Models on TPU
 
+You can place work on the TPU in either of two ways:
+
+- Set `MAGMA_DEFAULT_BACKEND=tpu`. Graphs then execute on the TPU even for
+  tensors created on the default device.
+- Create tensors and modules on `Device(backend: .tpu)` explicitly, using the
+  `on:` / `device:` parameters or `to(device:)`.
+
 ```swift
-import Torch
+import Magma
+import XLARuntime
 
-// Models automatically use the configured backend
-let model = nn.sequential {
-    nn.Linear(inputSize: 784, outputSize: 256)
+let tpu = Device(backend: .tpu, index: 0)
+
+var model = nn.sequential {
+    nn.Linear(inputSize: 784, outputSize: 256, device: tpu)
     nn.ReLU()
-    nn.Linear(inputSize: 256, outputSize: 10)
+    nn.Linear(inputSize: 256, outputSize: 10, device: tpu)
 }
+model.eval()
 
-// Create tensors (will be placed on TPU when TPU backend is active)
-let input = Tensor<Float>.randn([32, 784])
+let input = Tensor<Float>.randn([32, 784], on: tpu)
 let output = model(input)
 print("Output shape: \(output.shape)")
+print(try output.fetchScalars().prefix(10))   // throws MaterializationError if execution fails
 ```
 
 ## TPU Types and Specifications
@@ -174,21 +225,28 @@ Magma respects these TPU-related environment variables:
 
 | Variable | Description |
 |----------|-------------|
-| `TPU_LIBRARY_PATH` | Custom path to libtpu.so |
-| `TPU_NAME` | TPU instance name (set by Google Cloud) |
-| `TPU_CHIPS_PER_HOST_BOUNDS` | Chip topology (e.g., "2x2x1") |
-| `ACCELERATOR_TYPE` | TPU type (e.g., "v4-8") |
+| `MAGMA_PJRT_PLUGIN_TPU` | Full path of the TPU plugin (`libtpu.so`); overrides every other location |
+| `MAGMA_XLA_PATH` | Directory searched for `pjrt_c_api_tpu_plugin.so`, `libpjrt_c_api_tpu_plugin.so`, `libtpu.so` |
+| `TPU_LIBRARY_PATH` | Full path of `libtpu.so`, searched after `MAGMA_XLA_PATH` |
+| `MAGMA_DEFAULT_BACKEND` | Set to `tpu` to execute on the TPU regardless of the tensors' requested device |
+| `MAGMA_ALLOW_CONCURRENT_ACCEL_CLIENTS` | Magma refuses a second concurrent GPU/TPU client in one process; set to `1` to override |
+| `TPU_NAME` | TPU instance name (read by `TPUEnvironment`) |
+| `TPU_CHIPS_PER_HOST_BOUNDS` | Chip topology, e.g. "2x2x1" (read by `TPUEnvironment`) |
+| `TPU_HOST_BOUNDS` | Host topology (used by `TPUEnvironment.isMultiHost`) |
+| `ACCELERATOR_TYPE` | TPU type, e.g. "v4-8" (read by `TPUEnvironment`) |
 
 ## Performance Tips
 
+These are general TPU guidelines. They have not been benchmarked with Magma.
+
 ### 1. Use BFloat16
 
-TPUs are optimized for bfloat16 operations:
+TPU matrix units are built for bfloat16. Magma can convert explicitly:
 
 ```swift
-// When available, prefer bfloat16 for TPU
 let weights = Tensor<Float>.randn([1024, 1024])
-// TPU will automatically use bf16 for matrix operations
+let bf16 = weights.toReducedPrecision()      // or weights.to(.bfloat16)
+// MixedPrecision.autocast(inputs:computation:) runs a computation in bf16
 ```
 
 ### 2. Batch Size
@@ -220,15 +278,20 @@ _ = model(x)  // Single transfer
 
 ### TPU Not Found
 
-```
-Error: Failed to load plugin '/usr/lib/libtpu.so'
+If no plugin is found, reading a tensor fails with a `MaterializationError` at
+stage `backendUnavailable`. The underlying error lists every path Magma searched
+and names `MAGMA_XLA_PATH` and `MAGMA_PJRT_PLUGIN_TPU`.
+
+**Solution**: find `libtpu.so` on the VM and point Magma at it:
+```bash
+find / -name 'libtpu*.so' 2>/dev/null
+export MAGMA_PJRT_PLUGIN_TPU=/path/to/libtpu.so
 ```
 
-**Solution**: Ensure you're on a TPU VM:
-```bash
-ls -la /usr/lib/libtpu.so
-# Should exist on TPU VMs
-```
+If the file is found but fails to load, the error includes the `dlopen` or PJRT
+message. The most likely cause is a PJRT C-API version mismatch between libtpu
+and what Magma was built against. Magma is tested with PJRT C-API 0.108 (XLA
+`9b635916`).
 
 ### Out of Memory
 
@@ -289,70 +352,67 @@ gcloud compute tpus tpu-vm delete $TPU_NAME --zone=$ZONE
 
 ## Example: Training on TPU
 
-Complete example of training a model on TPU:
+This is a complete training loop with real gradients. It uses the value-semantic
+API: `modelValueWithGradient` differentiates the whole model and `Adam` updates
+it. Run it with `MAGMA_DEFAULT_BACKEND=tpu` so the graphs execute on the TPU.
+Like the rest of this guide, it has not been run on a TPU by the maintainers.
 
 ```swift
-import Torch
+import Magma
 import XLARuntime
+import _Differentiation
 
-// Check TPU availability
 guard Backend.tpu.isAvailable else {
-    fatalError("TPU not available. Run on a TPU VM.")
+    fatalError("No TPU plugin found. Set MAGMA_PJRT_PLUGIN_TPU or TPU_LIBRARY_PATH.")
 }
-
-// Print environment info
 TPUEnvironment.printInfo()
 
-// Create TPU client
-let client = try! PJRTClient.create(backend: .tpu)
-print("Running on: \(client.platformName)")
+manualSeed(0)
 
-// Define model
-let model = nn.sequential {
-    nn.Linear(inputSize: 784, outputSize: 512)
-    nn.ReLU()
-    nn.Linear(inputSize: 512, outputSize: 256)
-    nn.ReLU()
-    nn.Linear(inputSize: 256, outputSize: 10)
-}
+// Synthetic data: replace with a real loader (e.g. MNIST, DataLoader).
+let batchSize = 256, inputs = 784, classes = 10
+let x = Tensor<Float>.randn([batchSize, inputs])
+let labels = Tensor<Float>((0..<batchSize).map { Float($0 % classes) }, shape: [batchSize])
+let y = Tensor<Float>.oneHot(labels, numClasses: classes)
 
-// Create optimizer
-var optimizer = optim.Adam(parameters: model.parameters(), lr: 0.001)
-
-// Training loop
-let batchSize = 256  // Larger batches for TPU
-let numEpochs = 10
-
-for epoch in 0..<numEpochs {
-    // Generate synthetic data (replace with real data loader)
-    let input = Tensor<Float>.randn([batchSize, 784])
-    let target = Tensor<Float>.zeros([batchSize, 10])
-
-    // Forward pass
-    let output = model(input)
-
-    // Compute loss
-    let loss = (output - target).pow(2.0).mean()
-
-    // Backward pass (when autodiff is complete)
-    // let grads = gradient(of: loss, wrt: model.parameters())
-
-    // For now, use synthetic gradients
-    let grads = model.parameters().map { p in
-        Tensor<Float>.randn(p.shape) * Tensor<Float>.full([], 0.01, on: .default)
+func makeModel() -> some Layer {
+    sequential {
+        Linear(weight: Tensor<Float>.heUniform([inputs, 512]), bias: Tensor<Float>.zeros([512]))
+        ReLU()
+        Linear(weight: Tensor<Float>.heUniform([512, 256]), bias: Tensor<Float>.zeros([256]))
+        ReLU()
+        Linear(weight: Tensor<Float>.glorotUniform([256, classes]), bias: Tensor<Float>.zeros([classes]))
     }
-
-    // Update weights
-    optimizer.step(grads)
-
-    print("Epoch \(epoch + 1)/\(numEpochs)")
 }
 
+// Cross-entropy written with differentiable primitives.
+let n = Tensor<Float>.full([], Float(batchSize))
+let eps = Tensor<Float>.full([], 1e-7)
+let crossEntropy: @differentiable(reverse) (Tensor<Float>, Tensor<Float>) -> Tensor<Float> = { logits, target in
+    -(target * (logits.softmax(dim: 1) + eps).log()).sum() / n
+}
+
+var model = makeModel()
+var optimizer = Adam(learningRate: 0.001)
+
+for step in 1...100 {
+    let (loss, grad) = modelValueWithGradient(of: model, input: x, target: y, lossFn: crossEntropy)
+    optimizer.update(&model, gradient: grad)     // materializes the new weights each step
+    if step % 10 == 0 {
+        print("step \(step): loss \(try loss.fetchItem())")
+    }
+}
 print("Training complete!")
 ```
 
+For `nn.*` models, compute gradients with `parameterGradients(of:loss:)` and
+apply them with `optim.Adam(parameters:lr:).step(_:)`. See
+[API.md: Training `nn` Modules](API.md#training-nn-modules).
+
 ## Next Steps
 
-- See [ROADMAP.md](ROADMAP.md) for upcoming TPU-specific features
-- Check examples in `Examples/` for more TPU usage patterns
-- For GPU support, see [GPU_DEPLOYMENT.md](GPU_DEPLOYMENT.md) (coming soon)
+- See [ROADMAP.md](ROADMAP.md) for planned TPU and multi-device work.
+- See [MULTI_DEVICE_ASSESSMENT.md](MULTI_DEVICE_ASSESSMENT.md) for the status of
+  multi-device execution. It has been verified only on emulated CPU devices.
+- If you try Magma on a TPU, please open an issue with your TPU type, libtpu
+  version and results.

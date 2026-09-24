@@ -14,6 +14,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg" alt="License"></a>
 </p>
 
+> **Alpha status (`0.1.0-alpha.1`).** Magma is an early pre-release. The API will
+> change, only the CPU backend is routinely tested, and CUDA, Metal, TPU and
+> multi-device execution are experimental or untested. See the
+> [known limitations](CHANGELOG.md#known-limitations) before relying on it.
+
 ---
 
 ## The Story of Magma
@@ -37,6 +42,7 @@ per-layer update code). This is a real, runnable target:
 
 ```swift
 import Magma
+import _Differentiation   // for @differentiable (Magma does not re-export it)
 
 // A 1 → 16 → 1 ReLU MLP. `sequential { ... }` composes typed differentiable
 // layers; the concrete (nested) type stays hidden behind `some Layer`.
@@ -73,8 +79,9 @@ for _ in 0..<2000 {
 }
 ```
 
-Running it (`swift run ValueLayersExample`) drives the loss to ~0 and fits the
-curve at every point:
+Running it (`MAGMA_XLA_PATH=/opt/xla/lib swift run ValueLayersExample`, about
+20 s on a CPU plugin) drives the loss to ~0 and fits the curve at every point
+(output abridged):
 
 ```
 step    0   loss = 5.4067
@@ -97,7 +104,8 @@ no parameter list, no per-layer update code. (`modelGradient` is a thin generic
 helper that also lets the model stay opaque as `some Layer`; see
 [`Documentation/KNOWN_COMPILER_ISSUES.md`](Documentation/KNOWN_COMPILER_ISSUES.md)
 for why routing through it matters.) This surface is newer and still evolving, but
-it is exercised end to end by the test suite.
+it is exercised end to end by the test suite. Its `Linear` computes `x · W + b`
+with `weight` shaped `[in, out]`.
 
 A second, **reference-semantic** API mirrors PyTorch's `Module`/`Parameter` shape —
 `nn.Linear`, `nn.Conv2d`, … and `optim.SGD`/`optim.Adam` — for building and running
@@ -126,35 +134,71 @@ opt.step(grads)      // gradients matched to parameters by identity, not by posi
 > ⚠️ **Naming:** unqualified `Linear`, `ReLU`, `Sigmoid`, `Conv2d`, `Adam`, and
 > `sequential` resolve to the **value-semantic** types; the reference-semantic ones
 > live under `nn.`/`optim.` (`nn.Linear`, `optim.Adam`). They take different
-> initializers — don't paste an `nn.*` snippet and then write the names unqualified.
+> initializers and follow different conventions — value-semantic `Linear.weight`
+> is `[in, out]`, `nn.Linear.weight` is `[out, in]` (PyTorch layout); `Adam` is
+> driven by `update(&model, gradient:)`, `optim.Adam` by `step(_:)`. Don't paste
+> an `nn.*` snippet and then write the names unqualified.
 
 ### Execution model — lazy tracing, explicit barriers
 
 Magma traces tensor operations into a graph and runs nothing until a **barrier**.
-Reading values (`.scalars()`, `.item()`) triggers one implicitly; calling
-`LazyTensorBarrier()` compiles and executes the pending graph without reading
-anything back:
+Reading values (`.scalars()`, `.item()`) or calling `.materialize()` marks that
+tensor and runs a barrier for it. A barrier executes only the tensors that were
+**marked** with `markForMaterialization()` (plus what they depend on) — creating
+a tensor does not mark it, so a bare `LazyTensorBarrier()` with nothing marked
+does nothing. To compute several tensors in one compiled program without reading
+them yet:
 
 ```swift
+import LazyTensor            // LazyTensorBarrier lives in the LazyTensor module
+
 let y = x.matmul(w).relu()   // lazy — nothing has executed yet
-LazyTensorBarrier()          // compile + execute the traced graph
-print(y.scalars())           // read the results
+let z = y.sum()
+y.markForMaterialization()
+z.markForMaterialization()
+LazyTensorBarrier()          // compile + execute y and z together
+print(y.scalars())           // already computed: just a device-to-host copy
 ```
 
 The training loop above needs no explicit barrier: the generic `Adam` materializes
-the updated weights each step (which barriers internally), so the traced graph
-stays flat across iterations instead of growing unboundedly. In hand-written loops,
-call `LazyTensorBarrier()` once per iteration to get the same effect — see
+the updated weights each step, so the traced graph stays flat across iterations
+instead of growing unboundedly. In hand-written loops, mark the state you carry
+across iterations and call `LazyTensorBarrier()` once per iteration (or call
+`.materialize()` on it) to get the same effect — see
 [`Examples/BuildingSimulation`](Examples/BuildingSimulation/main.swift).
+
+**Errors.** If a tensor cannot be computed — no PJRT plugin, a program the
+backend rejects — `scalars()`, `item()` and `materialize()` stop the program with
+the underlying `MaterializationError` (they used to return `[]`). Use the
+throwing variants to handle it yourself:
+
+```swift
+do {
+    let probs = try logits.softmax(dim: -1).fetchScalars()   // or fetchItem()
+} catch let error as MaterializationError {
+    print("failed at stage \(error.stage): \(error)")        // e.g. .backendUnavailable
+}
+```
+
+`LazyTensorBarrierThrowing(on:)` is the throwing barrier. On a compile failure,
+set `MAGMA_DEBUG=1` (or `MAGMA_DEBUG_DIR=<dir>`) to dump the failing MLIR.
+Reading tensors from several threads is safe; barriers are serialized
+process-wide.
+
+**Reproducibility.** `manualSeed(42)` makes every host-side random draw
+deterministic (`randn`/`uniform`, weight initializers, dropout masks, data
+shuffles, random transforms); `withManualSeed(42) { ... }` gives one task its own
+seeded stream. Device-side RNG ops (`randnDevice`, `useDeviceRNG: true`) are not
+covered.
 
 ## Key Features
 
 - **Swift-native autodiff**: models are plain `Differentiable` values — gradients come from the compiler, not a bolted-on tape or tracer.
 - **Value-semantic layers**: `sequential { Linear; ReLU; ... }` composes typed differentiable layers, trained by one generic reflection-based optimizer — no parameter lists, no per-layer update code.
 - **PyTorch-style layer library**: a familiar `nn.*` / `optim.*` set (`nn.Linear`, `nn.Conv2d`, `optim.Adam`, …) for building, running, and training networks (reference-semantic, `Parameter`-based); trained via the `parameterGradients` autodiff bridge with identity-keyed optimizer steps.
-- **XLA backend**: x10-style lazy tracing compiled to StableHLO and executed via PJRT (CPU/GPU/TPU), with automatic operation fusion and hardware portability.
-- **Metal backend**: native macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO).
-- **Graph optimization**: DCE, CSE, constant folding, algebraic simplification, and operation fusion (`Sources/LazyTensor/Optimization`).
+- **XLA backend**: x10-style lazy tracing compiled to StableHLO and executed via PJRT (CPU; CUDA GPU experimental; TPU untested). Kernel fusion is left to XLA's compiler.
+- **Metal backend** (experimental, opt-in): macOS GPU acceleration via [MetalHLO](https://github.com/pedronahum/MetalHLO).
+- **Graph optimization**: DCE, CSE, constant folding, and algebraic simplification before compilation, plus bounded (LRU) compilation caches (`Sources/LazyTensor/Optimization`).
 - **Pure-Swift StableHLO**: MLIR/StableHLO text generation with no C dependencies.
 - **Distributed training**: data-parallel (DDP) and Shardy/SPMD tensor sharding across multiple devices — see [Distributed & Multi-Device](#distributed--multi-device).
 
@@ -168,7 +212,7 @@ gains a multi-device capability (shown on the second line of each box):
 │ Magma       PyTorch-style API: nn, optim, Swift-native autodiff         │
 │             Distributed: crossReplicaMean, Tensor.sharded, DDP step     │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ LazyTensor  x10 tracing, optimize/cache (DCE, CSE, fusion)              │
+│ LazyTensor  x10 tracing, optimize/cache (DCE, CSE, folding, simplify)   │
 │             Graph sharding, collectives, DDP + SPMD runners             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ StableHLO   Pure-Swift MLIR generation + Shardy (sdy.mesh/sdy.sharding) │
@@ -180,21 +224,23 @@ gains a multi-device capability (shown on the second line of each box):
 
 ## Project Status
 
-🚧 **Active Development** - See [ROADMAP.md](Documentation/ROADMAP.md) for current progress.
+🚧 **Alpha** (`0.1.0-alpha.1`) — see the [CHANGELOG](CHANGELOG.md) for what is in
+this release and its known limitations, and [ROADMAP.md](Documentation/ROADMAP.md)
+for what comes next.
 
-### Supported Backends (v0.1.0)
+### Supported Backends (0.1.0-alpha.1)
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| **CPU** | ✅ Supported | Full functionality via PJRT CPU plugin |
-| **TPU** | ✅ Supported | On Google Cloud TPU VMs with `libtpu.so` |
-| **Metal** | ✅ Supported | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO) |
-| **GPU (CUDA)** | ✅ Experimental | Single-device execution verified via the CUDA PJRT plugin |
+| **CPU** | ✅ Supported | PJRT CPU plugin; the full test suite runs on it |
+| **GPU (CUDA)** | ⚠️ Experimental | Single-device execution verified on an NVIDIA GB10 |
+| **Metal** | ⚠️ Experimental, opt-in | macOS GPU via [MetalHLO](https://github.com/pedronahum/MetalHLO); build with `MAGMA_ENABLE_METAL=1` |
+| **TPU** | ❓ Untested | Code path for `libtpu` exists but has not been run by the maintainers — see [TPU_DEPLOYMENT.md](Documentation/TPU_DEPLOYMENT.md) |
 
-> **Note:** Single-device CUDA GPU execution is working — the CUDA PJRT plugin
+> **Note:** Single-device CUDA GPU execution works — the CUDA PJRT plugin
 > loads, compiles StableHLO, and executes (buffer transfers, elementwise ops, and
-> cuBLAS GEMM verified on an NVIDIA GB10). It requires the CUDA PJRT plugin
-> (`pjrt_c_api_gpu_plugin.so`, e.g. JAX's `xla_cuda_plugin.so`) on `MAGMA_XLA_PATH`.
+> cuBLAS GEMM verified on an NVIDIA GB10). It requires a CUDA PJRT plugin
+> (`pjrt_c_api_gpu_plugin.so`, or JAX's `xla_cuda_plugin.so`) in `MAGMA_XLA_PATH`.
 > Multi-device **distributed** training (DDP + Shardy/SPMD) is implemented; see the
 > section below for what is and isn't tested per backend.
 
@@ -227,10 +273,11 @@ to standard PJRT multi-device execution:
   let outs = try executeGraphSharded(y.makeGraph(mesh: mesh), numDevices: 2, client: client)
   ```
 
-Core pieces: `DeviceMesh` / `TensorSharding`, `all_reduce`/`allReduceMean`,
-`DistributedSampler` (+ `.multiHost`), and two production runners —
-`executeGraphReplicated` (DDP) and `executeGraphSharded` (SPMD). Full design and
-status: [MULTI_DEVICE_ASSESSMENT.md](Documentation/MULTI_DEVICE_ASSESSMENT.md).
+Core pieces: `DeviceMesh` / `TensorSharding`, `crossReplicaSum` / `crossReplicaMean`
+(lowered to `all_reduce`), `DistributedSampler` (+ `.multiHost`), and two runners —
+`executeGraphReplicated` (DDP) and `executeGraphSharded` (SPMD); both currently
+handle `Float32` only. Full design and status:
+[MULTI_DEVICE_ASSESSMENT.md](Documentation/MULTI_DEVICE_ASSESSMENT.md).
 
 ### Testing status (important)
 
@@ -250,7 +297,7 @@ board, where the same runners should exercise the real collectives.
 
 ### Metal Backend Benchmarking
 
-🔬 **Performance benchmarking is underway** comparing Magma's Metal backend against [MLX](https://github.com/ml-explore/mlx). The benchmark suite covers core operations (matmul, softmax, GELU, LayerNorm) and transformer patterns (FFN, attention). Results and optimizations will be published as development progresses.
+🔬 **Performance benchmarking is underway** comparing Magma's Metal backend against [MLX](https://github.com/ml-explore/mlx). The experimental benchmark packages (macOS on Apple Silicon only) live in [`Benchmarks/`](Benchmarks/README.md); no results are published yet.
 
 ## Heritage
 
@@ -269,21 +316,67 @@ See [LEGACY_MAPPING.md](Documentation/LEGACY_MAPPING.md) for detailed mapping.
 
 ## Requirements
 
-### Swift 6.0+
+### Swift 6.0+ (swift.org toolchain)
 
-Magma requires Swift 6.0 or later with autodiff support. Get it from [swift.org](https://swift.org/download/).
+Magma requires Swift 6.0 or later **from [swift.org](https://swift.org/download/)**
+(the full test suite is verified on 6.0.3 and 6.3.3). Xcode's bundled toolchain
+does not ship the `_Differentiation` module, so it cannot build Magma; on macOS
+install a swift.org toolchain (e.g. with `swiftly`).
+
+| Platform | Status |
+|----------|--------|
+| Linux x86_64 / aarch64 | Supported (verified on aarch64, NVIDIA GB10; CI on Swift 6.0 and 6.3) |
+| macOS 15+ | Builds; CI job is experimental |
+
+### Installation (SwiftPM)
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/pedronahum/Magma.git", exact: "0.1.0-alpha.1"),
+],
+targets: [
+    .target(name: "MyApp", dependencies: [
+        .product(name: "Magma", package: "Magma"),
+    ]),
+]
+```
+
+`import Magma` gives you tensors, layers and optimizers. A few lower-level names
+live in the modules it builds on, which are also exported as products:
+`LazyTensorBarrier`, `MaterializationError` (`LazyTensor`) and `Device`,
+`Backend`, `PJRTClient` (`XLARuntime`). Import `_Differentiation` to write
+`@differentiable` closures.
 
 ### XLA/PJRT Runtime (Required for Execution)
 
-> ⚠️ **Important**: Magma requires the XLA PJRT runtime to execute computations. Without it, you can build and develop but not run models.
+> ⚠️ **Important**: Magma builds without any XLA libraries — no build flags are
+> needed — but it needs a PJRT plugin at **runtime** to execute computations. The
+> plugin is loaded with `dlopen` when a backend is first used. Without one you can
+> build and run the plugin-free tests, but reading a computed tensor stops with a
+> `backendUnavailable` error that lists every path searched.
 
-Magma uses [OpenXLA's PJRT](https://openxla.org/xla) (Portable JAX Runtime) for hardware acceleration. You need the PJRT plugin library for your target platform:
+Magma uses [OpenXLA's PJRT](https://openxla.org/xla) plugin interface. You need
+the plugin library for your target platform (`.dylib` instead of `.so` on macOS):
 
-| Platform | Library | Source |
-|----------|---------|--------|
-| CPU | `libpjrt_c_api_cpu_plugin.so` | Build from [OpenXLA/XLA](https://github.com/openxla/xla) |
-| CUDA GPU | `libpjrt_c_api_gpu_plugin.so` | Build from OpenXLA/XLA |
-| TPU | `libtpu.so` | Available on GCP TPU VMs |
+| Platform | File names searched | Source |
+|----------|---------------------|--------|
+| CPU | `pjrt_c_api_cpu_plugin.so` or `libpjrt_c_api_cpu_plugin.so` | Build from [OpenXLA/XLA](https://github.com/openxla/xla) |
+| CUDA GPU | `pjrt_c_api_gpu_plugin.so`, `libpjrt_c_api_gpu_plugin.so`, or `xla_cuda_plugin.so` | Build from OpenXLA/XLA, or JAX's CUDA plugin wheel |
+| TPU | `pjrt_c_api_tpu_plugin.so`, `libpjrt_c_api_tpu_plugin.so`, or `libtpu.so` | Available on Google Cloud TPU VMs (untested) |
+
+**Plugin search order** (per backend; the first existing file wins):
+
+1. `MAGMA_PJRT_PLUGIN_CPU` / `MAGMA_PJRT_PLUGIN_GPU` / `MAGMA_PJRT_PLUGIN_TPU` — the
+   full path of that backend's plugin. When set, it is the only candidate.
+2. `$MAGMA_XLA_PATH/<name>` for each file name in the table above.
+3. TPU only: `$TPU_LIBRARY_PATH` (a file path), then `/usr/lib/libtpu.so`,
+   `/usr/local/lib/libtpu.so`, `/lib/libtpu.so`.
+4. System directories: `/opt/xla/lib`, `/usr/local/lib`, `/opt/magma/lib` on Linux
+   (`/usr/local/lib`, `/opt/xla/lib` on macOS).
+
+`Backend.cpu.resolvedPluginPath` (etc.) reports which file would be loaded. One
+process can load only one PJRT plugin.
 
 **Option 1: Build XLA from source**
 
@@ -291,7 +384,7 @@ Magma uses [OpenXLA's PJRT](https://openxla.org/xla) (Portable JAX Runtime) for 
 > - **CPU** — plugin built from XLA commit `9b635916ecc6df6efee62d8e4b0c7ef87ef84d69` (jaxlib 0.10.1, PJRT C-API 0.108); this is the recommended pin and runs the full test suite.
 > - **GPU (CUDA)** — verified with JAX's bundled CUDA plugin (`xla_cuda_plugin.so`, CUDA 13 build) on an NVIDIA GB10. Matching the CPU pin's PJRT C-API version is recommended to avoid ABI skew.
 >
-> The framework was originally validated against XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (jaxlib 0.9.0); newer pins compatible with the PJRT C-API above also work.
+> The framework was originally validated against XLA commit `bb760b047bdbfeff962f0366ad5cc782c98657e0` (jaxlib 0.9.0); newer pins compatible with the PJRT C-API above may also work.
 
 ```bash
 # Clone XLA and check out the recommended pin (matches the Tested Versions above)
@@ -317,24 +410,22 @@ Check the [releases page](https://github.com/openxla/xla/releases) or use JAX's 
 
 ### Environment Variables
 
-Set these before building/running with XLA:
+All of these are read at **runtime**; none is needed to build.
 
 ```bash
-# RUNTIME: directory containing the PJRT plugin libraries. Read when a backend is
-# first used, to locate and load the plugin (e.g. pjrt_c_api_cpu_plugin.so). This
-# is the one you need to *run* models.
+# Directory containing the PJRT plugin(s). This is the one you need to *run* models.
 export MAGMA_XLA_PATH=/opt/xla/lib
 
-# BUILD TIME: link the XLA/PJRT runtime into the build. Read by Package.swift (not
-# at runtime); set it before `swift build` if XLA is not being linked.
-export MAGMA_ENABLE_XLA=1
+# Pin one backend's plugin to an exact file (overrides the search above).
+export MAGMA_PJRT_PLUGIN_GPU=/path/to/xla_cuda_plugin.so   # also _CPU, _TPU
 ```
 
-Optional overrides:
+Optional:
 
 ```bash
-# Force a specific backend regardless of the requested one (cpu/gpu/tpu/metal),
-# when that plugin is available.
+# Execute on this backend (cpu/gpu/tpu/metal) regardless of the requested device,
+# when its plugin is available. (If the requested backend's plugin is missing,
+# Magma already falls back to the best available one.)
 export MAGMA_DEFAULT_BACKEND=gpu
 
 # Override the safety guard that refuses a second concurrent accelerator
@@ -342,57 +433,84 @@ export MAGMA_DEFAULT_BACKEND=gpu
 # on a unified-memory machine a second client can exhaust memory and freeze the
 # box; the guard prevents that. Set to 1 only if you know the machine has room.
 export MAGMA_ALLOW_CONCURRENT_ACCEL_CLIENTS=1
+
+# On a compile failure, write the failing MLIR to the system temp dir
+# (MAGMA_DEBUG=1) or to a directory of your choice.
+export MAGMA_DEBUG=1
+export MAGMA_DEBUG_DIR=/tmp/magma-mlir
+
+# Where MNIST is cached (as $MAGMA_DATA_DIR/mnist; default ~/.magma/data/mnist).
+export MAGMA_DATA_DIR=$HOME/datasets
+
+# Tests only: which backend's suites run (cpu, the default, or gpu).
+export MAGMA_TEST_BACKEND=gpu
+```
+
+Build-time switches (macOS only) for the opt-in Metal backend:
+
+```bash
+# Add the MetalHLO dependency (fetched from GitHub's main branch) and the
+# MetalExample target.
+export MAGMA_ENABLE_METAL=1
+# Optional: build against a local MetalHLO checkout instead.
+export MAGMA_METALHLO_PATH=/path/to/MetalHLO
 ```
 
 ## Quick Start
 
-### Development Mode (No XLA)
-
-You can build and test the pure Swift components without XLA:
-
 ```bash
-# Clone
+# Clone and build — no flags, no XLA needed at build time
 git clone https://github.com/pedronahum/Magma.git
 cd Magma
-
-# Build (stub mode - no execution)
 swift build
 
-# Run pure Swift tests (StableHLO, shape inference, etc.)
-swift test --filter StableHLOTests
-swift test --filter LazyTensorTests
+# Run the tests. Without a plugin, suites that execute on a backend are
+# reported as skipped and the rest (StableHLO, graph passes, ...) run.
+swift test
 ```
 
-### Full Mode (With XLA)
-
-To run actual computations, you need XLA installed:
+### With a PJRT plugin
 
 ```bash
-# Set environment
-export MAGMA_XLA_PATH=/opt/xla/lib
-export MAGMA_ENABLE_XLA=1
+export MAGMA_XLA_PATH=/opt/xla/lib     # contains pjrt_c_api_cpu_plugin.so
 
-# Build with XLA
-swift build
+# Full suite on the CPU plugin (~1150 tests). Keep --no-parallel when a plugin is
+# present: suites share process-wide state, and on a unified-memory box (e.g.
+# NVIDIA GB10) each CUDA client reserves ~75-80% of memory, so a parallel run can
+# OOM-freeze the machine.
+swift test --no-parallel
 
-# Run all tests. Prefer a CPU PJRT plugin ($MAGMA_XLA_PATH/pjrt_c_api_cpu_plugin.so):
-# it runs the whole suite in seconds with no accelerator memory reserved. Keep
-# --no-parallel — the GPU smoke suites each spin up a PJRT client, and on a
-# unified-memory box (e.g. NVIDIA GB10) each CUDA client reserves ~75-80% of
-# memory, so a parallel run can OOM-freeze the machine. Note: one process can
-# only load one plugin, so run the GPU-only suites in a separate invocation.
-swift test --no-parallel --filter MagmaTests   # CoreTests, runs on CPU
+# GPU suites: a separate invocation, because one process can load only one plugin.
+MAGMA_TEST_BACKEND=gpu swift test --no-parallel --filter 'GPU|OutputDType|PluginMismatch'
 
 # Run the value-semantic training example (the Quick Example above)
 swift run ValueLayersExample
-
-# Run the MNIST example (a from-scratch loop: manual parameter struct + SGD)
-swift run MNISTExample
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing guide.
+
+### Examples
+
+Examples are executable targets in this package (not exported as products); run
+them from a clone with `swift run <Target>`. All but `MetalExample` need a PJRT
+plugin in `MAGMA_XLA_PATH` and exit with an error message if none is found.
+
+| Target | What it shows | Platform | Network |
+|--------|---------------|----------|---------|
+| `ValueLayersExample` | Value-semantic MLP (`sequential`, `modelGradient`, generic `Adam`) fitting y = x² — the Quick Example | Linux, macOS | No |
+| `MNISTExample [batches]` | Smoke test on real MNIST: a 784→64→10 MLP with Swift autodiff and plain SGD over a few hundred batches, then test accuracy | Linux, macOS | First run downloads ~11 MB (needs `gzip`); cached in `~/.magma/data/mnist` |
+| `BuildingSimulation [mode] [trials] [timesteps]` | Differentiable building-thermal simulation: native Swift vs. Magma unrolled, per-step barrier and `scan` variants (`native` mode needs no plugin) | Linux, macOS | No |
+| `Benchmarks [--iterations N] [--warmup N] [--mixed-precision]` | Timing of matmul (other suites opt-in in source) | Linux, macOS | No |
+| `MetalExample [--diagnostics \| --sweep]` | Tensor ops and matmul on the Metal backend | macOS on Apple Silicon, only with `MAGMA_ENABLE_METAL=1` | Package resolution fetches MetalHLO |
+
+The separate Metal benchmark packages are described in
+[`Benchmarks/README.md`](Benchmarks/README.md).
 
 ### TPU Deployment
 
-See [TPU_DEPLOYMENT.md](Documentation/TPU_DEPLOYMENT.md) for running on Google Cloud TPUs.
+TPU execution has not been verified for this alpha. See
+[TPU_DEPLOYMENT.md](Documentation/TPU_DEPLOYMENT.md) for setup notes if you want
+to try it.
 
 ## Documentation
 
@@ -400,8 +518,11 @@ See [TPU_DEPLOYMENT.md](Documentation/TPU_DEPLOYMENT.md) for running on Google C
 - [Roadmap & Phases](Documentation/ROADMAP.md)
 - [API Reference](Documentation/API.md)
 - [Distributed & Multi-Device](Documentation/MULTI_DEVICE_ASSESSMENT.md)
-- [Contributing](CONTRIBUTING.md)
+- [TPU Deployment (untested)](Documentation/TPU_DEPLOYMENT.md)
+- [Known Compiler Issues](Documentation/KNOWN_COMPILER_ISSUES.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security Policy](SECURITY.md)
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE)
+Apache 2.0 - See [LICENSE](LICENSE) and [NOTICE](NOTICE)

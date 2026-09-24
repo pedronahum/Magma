@@ -26,7 +26,7 @@ will publish an advisory and credit you, unless you prefer to stay anonymous.
 
 Magma loads PJRT plugins (shared libraries) from the paths described in the
 README and executes them in-process. Only point `MAGMA_XLA_PATH` /
-`MAGMA_PJRT_PLUGIN` at plugins you trust: a plugin runs with the full
+`MAGMA_PJRT_PLUGIN_{CPU,GPU,TPU}` at plugins you trust: a plugin runs with the full
 privileges of your program, and that is not a vulnerability in Magma.
 Checkpoint and dataset files, by contrast, are treated as untrusted input:
 a crafted file that crashes or corrupts memory when loaded is in scope.
