@@ -130,6 +130,15 @@ struct CrossModuleDifferentiabilityTests {
         #expect(Swift.abs(grad[0]) < 1e-6 && Swift.abs(grad[1] - 1) < 1e-6)
     }
 
+    @Test("elu and selu gradients stay finite for large inputs")
+    func eluSeluLargeInputs() {
+        let x = Tensor<Float>([-100, 100], shape: [2])
+        let elu = gradient(at: x) { $0.elu().sum() }.scalars()
+        #expect(Swift.abs(elu[0]) < 1e-6 && elu[1] == 1)
+        let selu = gradient(at: x) { $0.selu().sum() }.scalars()
+        #expect(Swift.abs(selu[0]) < 1e-6 && Swift.abs(selu[1] - 1.0507009) < 1e-6)
+    }
+
     @Test func softsign() { expectElementwiseGradientMatches { $0.softsign() } }
 
     @Test func gelu() { expectElementwiseGradientMatches { $0.gelu() } }

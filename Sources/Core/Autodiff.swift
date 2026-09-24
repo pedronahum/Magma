@@ -462,7 +462,9 @@ extension Tensor where Scalar: TensorScalar & BinaryFloatingPoint {
     private func eluGradient(alpha: Scalar) -> Tensor {
         let positive = self.greaterThan(Scalar(0))
         let one = Tensor.ones([], on: device)
-        let negativeBranch = self.exp() * Tensor.full([], alpha, on: device)
+        // Clamp before exp so a large positive input cannot give inf, which the
+        // mask below would turn into 0 * inf = NaN.
+        let negativeBranch = self.clamp(min: -.infinity, max: 0).exp() * Tensor.full([], alpha, on: device)
         return positive + (one - positive) * negativeBranch
     }
 
