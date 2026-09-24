@@ -1248,6 +1248,14 @@ func computePJRTTraceKey(
 /// stops with that error. Use `LazyTensorBarrierThrowing(on:)` to handle the
 /// error yourself.
 ///
+/// **Threads.** Barriers are process-wide, not per thread: the set of pending
+/// tensors is shared, so a barrier executes every tensor marked on `device` by
+/// *any* thread, and a tensor one thread marked may be computed by (and its
+/// mark consumed by) another thread's barrier or read. Barriers run one at a
+/// time. Reads are unaffected: `scalars()`, `fetchScalars()`, `item()` and
+/// `materialize()` always return their own tensor's correct value, or its own
+/// error — if a shared barrier did not produce it, the tensor is retried alone.
+///
 /// Example:
 /// ```swift
 /// let y = x.matmul(w).relu()  // Lazy - no computation yet
@@ -1272,6 +1280,11 @@ public func LazyTensorBarrier(on device: Device = .default) {
 /// are executed). On failure every pending tensor stays unmaterialized, has the
 /// error recorded in `LazyTensorHandle.materializationError`, and is no longer
 /// pending: mark it again (or read it) to retry.
+///
+/// Like `LazyTensorBarrier(on:)`, this is process-wide: it executes the tensors
+/// marked on `device` by any thread, so the error it throws may come from a
+/// tensor another thread marked, and a tensor this thread marked may already
+/// have been computed by another thread's barrier or read.
 ///
 /// - Throws: `MaterializationError` describing the failed stage — e.g.
 ///   `.backendUnavailable` when the PJRT plugin cannot be loaded, or
