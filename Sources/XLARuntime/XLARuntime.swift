@@ -578,7 +578,12 @@ public final class PJRTClient: @unchecked Sendable {
         devices.indices.contains(index) ? devices[index] : nil
     }
 
-    /// Create a buffer from host data
+    /// Create a buffer from host data.
+    ///
+    /// `data` is copied as raw bytes, so its byte count must equal
+    /// `shape.product * elementType.sizeInBytes` (for example `[Float]` with
+    /// `.float32`, `[Int32]` with `.int32`); otherwise this throws
+    /// `XLAError.bufferCreationFailed` rather than reading past `data`.
     public func createBuffer<T>(
         _ data: [T],
         shape: [Int],
@@ -594,9 +599,22 @@ public final class PJRTClient: @unchecked Sendable {
             throw XLAError.bufferCreationFailed("Invalid handles")
         }
 
+        guard shape.allSatisfy({ $0 >= 0 }) else {
+            throw XLAError.bufferCreationFailed("negative dimension in shape \(shape)")
+        }
+        let elementCount = shape.reduce(1, *)
+        let expectedBytes = elementCount * elementType.sizeInBytes
+        let providedBytes = data.count * MemoryLayout<T>.stride
+        guard providedBytes == expectedBytes else {
+            throw XLAError.bufferCreationFailed(
+                "shape \(shape) of \(elementType) needs \(expectedBytes) bytes, but " +
+                "\(data.count) \(T.self) value(s) provide \(providedBytes)")
+        }
+
         let dims = shape.map { Int64($0) }
         var bufferHandle: UnsafeMutableRawPointer?
 
+        PJRT_ClearLastErrorMessage()
         let errorCode = data.withUnsafeBytes { dataPtr in
             dims.withUnsafeBufferPointer { dimsPtr in
                 PJRT_CreateBuffer(
@@ -821,23 +839,34 @@ public final class PJRTBuffer: @unchecked Sendable {
         }
     }
 
-    /// Copy buffer contents to host (synchronous)
+    /// Copy the buffer's raw contents to host memory as `T` (synchronous).
+    ///
+    /// No conversion happens: `T` must have the element type's width (e.g.
+    /// `Float` or `Int32` for 4-byte types, `Double` for `.float64`), otherwise
+    /// this throws `XLAError.bufferTransferFailed`. Use `toFloatArray()` to get
+    /// values converted to `Float` from any real element type.
     public func toHost<T>(_ type: T.Type) throws -> [T] {
         guard let bufferHandle = handle else {
             throw XLAError.bufferTransferFailed("Buffer handle not available")
         }
+        guard MemoryLayout<T>.stride == elementType.sizeInBytes else {
+            throw XLAError.bufferTransferFailed(
+                "cannot read a \(elementType) buffer (\(elementType.sizeInBytes)-byte elements) " +
+                "as \(T.self) (\(MemoryLayout<T>.stride) bytes)")
+        }
 
         // Allocate raw memory and copy data from device
         let rawBuffer = UnsafeMutableRawPointer.allocate(
-            byteCount: sizeInBytes,
+            byteCount: max(sizeInBytes, 1),
             alignment: MemoryLayout<T>.alignment
         )
         defer { rawBuffer.deallocate() }
 
+        PJRT_ClearLastErrorMessage()
         let errorCode = PJRT_BufferToHost(bufferHandle, rawBuffer, sizeInBytes)
 
         if errorCode != SW_PJRT_Error_OK {
-            throw XLAError.bufferTransferFailed("Transfer failed with code \(errorCode.rawValue)")
+            throw XLAError.bufferTransferFailed(pjrtFailureDescription("PJRT_Buffer_ToHostBuffer", errorCode))
         }
 
         // Convert to typed array
@@ -845,9 +874,42 @@ public final class PJRTBuffer: @unchecked Sendable {
         return Array(UnsafeBufferPointer(start: typedPointer, count: elementCount))
     }
 
-    /// Copy buffer to Float array
+    /// Copy the buffer to host and convert each element to `Float`.
+    ///
+    /// Float32 buffers are copied as-is; integer, bool (0/1), float16,
+    /// bfloat16 and float64 buffers are converted numerically. Complex buffers
+    /// throw `XLAError.bufferTransferFailed`.
     public func toFloatArray() throws -> [Float] {
-        try toHost(Float.self)
+        switch elementType {
+        case .float32: return try toHost(Float.self)
+        case .float64: return try toHost(Double.self).map { Float($0) }
+        case .int8: return try toHost(Int8.self).map { Float($0) }
+        case .int16: return try toHost(Int16.self).map { Float($0) }
+        case .int32: return try toHost(Int32.self).map { Float($0) }
+        case .int64: return try toHost(Int64.self).map { Float($0) }
+        case .uint8: return try toHost(UInt8.self).map { Float($0) }
+        case .uint16: return try toHost(UInt16.self).map { Float($0) }
+        case .uint32: return try toHost(UInt32.self).map { Float($0) }
+        case .uint64: return try toHost(UInt64.self).map { Float($0) }
+        case .bool: return try toHost(UInt8.self).map { $0 != 0 ? 1 : 0 }
+        case .bfloat16: return try toHost(UInt16.self).map { Float(bitPattern: UInt32($0) << 16) }
+        case .float16: return try toHost(UInt16.self).map(Self.halfToFloat)
+        case .complex64, .complex128:
+            throw XLAError.bufferTransferFailed("cannot convert a \(elementType) buffer to Float")
+        }
+    }
+
+    /// IEEE 754 binary16 bits to Float (portable; `Float16` is not available
+    /// on every platform Magma builds for).
+    private static func halfToFloat(_ bits: UInt16) -> Float {
+        let sign: Float = (bits & 0x8000) != 0 ? -1 : 1
+        let exponent = Int((bits >> 10) & 0x1F)
+        let mantissa = Float(bits & 0x3FF)
+        switch exponent {
+        case 0: return sign * mantissa * 0x1p-24                     // zero / subnormal
+        case 0x1F: return mantissa == 0 ? sign * .infinity : .nan
+        default: return sign * (1 + mantissa / 1024) * Float(sign: .plus, exponent: exponent - 15, significand: 1)
+        }
     }
 }
 
