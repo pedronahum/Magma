@@ -403,3 +403,19 @@ struct OptimizationCorrectnessTests {
         #expect(y[1] == 0)
     }
 }
+
+// The trace (fast-path) cache key must distinguish constants bit-exactly:
+// Float hashing equates -0.0 and +0.0, so a value-based key would reuse the
+// first graph's pinned constants for the second.
+@Suite("Trace Cache Key Tests", .serialized, .enabled(if: PluginAvailability.cpu))
+struct TraceCacheKeyTests {
+
+    @Test("constants differing only in the sign of zero are not conflated")
+    func signedZeroConstantsAreKeyed() {
+        let x = Tensor<Float>([1, 1, 1], shape: [3]).materialize()
+        let positive = (x / Tensor<Float>([0, 0, 0], shape: [3])).scalars()
+        let negative = (x / Tensor<Float>([-0.0, -0.0, -0.0], shape: [3])).scalars()
+        #expect(positive == [.infinity, .infinity, .infinity])
+        #expect(negative == [-.infinity, -.infinity, -.infinity])
+    }
+}

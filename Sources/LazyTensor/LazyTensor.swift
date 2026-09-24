@@ -1187,7 +1187,10 @@ func computePJRTTraceKey(
         }
         switch node {
         case .constant(let values, let shape):
-            hasher.combine(0); hasher.combine(shape); hasher.combine(handle.dtype); hasher.combine(values)
+            hasher.combine(0); hasher.combine(shape); hasher.combine(handle.dtype)
+            // Bit patterns, not values: Float hashing equates -0.0 and +0.0.
+            hasher.combine(values.count)
+            for value in values { hasher.combine(value.bitPattern) }
         case .data:
             hasher.combine(1); hasher.combine(handle.shape); hasher.combine(handle.dtype)
             dataInputs.append(handle)
@@ -1723,7 +1726,9 @@ private func computeFastPathHash(outputs: [LazyTensorHandle]) -> UInt64 {
         case .constant(let values, let constShape):
             hasher.combine("const")
             hasher.combine(constShape)
-            hasher.combine(values)
+            // Bit patterns, not values: Float hashing equates -0.0 and +0.0.
+            hasher.combine(values.count)
+            for value in values { hasher.combine(value.bitPattern) }
         case .operation(_, let inputs, _):
             for input in inputs { foldConstants(input) }
         case .whileLoopTraced(_, let initialValues, _, _, _):
