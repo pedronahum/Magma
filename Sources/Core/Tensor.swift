@@ -592,22 +592,42 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
 
     // MARK: - Materialization
 
-    /// Get tensor values as a Swift array (triggers computation)
+    /// Get tensor values as a Swift array (triggers computation).
+    ///
+    /// Constant tensors are returned directly; anything else is marked for
+    /// materialization and executed by a barrier on the tensor's device.
+    ///
+    /// - Important: If the tensor cannot be materialized (e.g. no PJRT plugin is
+    ///   installed, or the backend rejects the program), this stops the program
+    ///   with the underlying `MaterializationError`. Use `fetchScalars()` to
+    ///   handle the error instead.
     public func scalars() -> [Scalar] {
+        do {
+            return try fetchScalars()
+        } catch {
+            fatalError("Could not read tensor of shape \(shape) (\(dtype)): \(error)")
+        }
+    }
+
+    /// Get tensor values as a Swift array, throwing if they cannot be computed.
+    ///
+    /// The throwing counterpart of `scalars()`: same behavior, but a failure to
+    /// compile, execute, or copy the tensor to the host is thrown instead of
+    /// stopping the program. Constant tensors never need a backend.
+    ///
+    /// ```swift
+    /// do {
+    ///     let values = try logits.softmax(dim: -1).fetchScalars()
+    /// } catch let error as MaterializationError {
+    ///     print("inference failed at \(error.stage): \(error)")
+    /// }
+    /// ```
+    ///
+    /// - Throws: `MaterializationError`.
+    public func fetchScalars() throws -> [Scalar] {
         // If already materialized with a PJRT buffer, return cached values
         if let buffer = handle.materializedBuffer {
-            do {
-                if Scalar.self == Float.self {
-                    let floats = try buffer.toFloatArray()
-                    return floats as! [Scalar]
-                } else {
-                    let values = try buffer.toHost(Scalar.self)
-                    return values
-                }
-            } catch {
-                print("Magma: Failed to extract tensor values: \(error)")
-                return []
-            }
+            return try hostScalars(of: buffer)
         }
 
         // If this is a constant, return values directly
@@ -618,34 +638,17 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         // If this is a Metal device buffer, transfer to host lazily (only when user reads)
         #if os(macOS) && canImport(MetalHLO)
         if case .metalData(let metalBuffer) = handle.irNode {
-            do {
-                let floats = try metalBuffer.toFloatArray()
-                return convertFloatArrayToScalar(floats)
-            } catch {
-                print("Magma: Failed to transfer Metal buffer to host: \(error)")
-                return []
-            }
+            return try hostScalars(ofMetal: metalBuffer)
         }
         #endif
 
         // Mark this tensor for materialization and trigger computation
         TensorRegistry.shared.markForMaterialization(handle)
-        LazyTensorBarrier(on: device)
+        try LazyTensorBarrierThrowing(on: device)
 
         // Check for PJRT buffer (CPU/GPU/TPU backends)
         if let buffer = handle.materializedBuffer {
-            do {
-                if Scalar.self == Float.self {
-                    let floats = try buffer.toFloatArray()
-                    return floats as! [Scalar]
-                } else {
-                    let values = try buffer.toHost(Scalar.self)
-                    return values
-                }
-            } catch {
-                print("Magma: Failed to extract tensor values: \(error)")
-                return []
-            }
+            return try hostScalars(of: buffer)
         }
 
         // Check for constant (fallback after barrier)
@@ -656,18 +659,105 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
         // Check for Metal buffer (fallback after barrier)
         #if os(macOS) && canImport(MetalHLO)
         if case .metalData(let metalBuffer) = handle.irNode {
-            do {
-                let floats = try metalBuffer.toFloatArray()
-                return convertFloatArrayToScalar(floats)
-            } catch {
-                print("Magma: Failed to transfer Metal buffer to host: \(error)")
-                return []
-            }
+            return try hostScalars(ofMetal: metalBuffer)
         }
         #endif
 
-        // No data available
-        return []
+        // The barrier ran without error but produced no value for this tensor.
+        throw handle.materializationError
+            ?? MaterializationError(stage: .notMaterialized, device: device)
+    }
+
+    /// Copy a device buffer to the host as `[Scalar]`, converting from the
+    /// buffer's element type (which can differ from `Scalar`, e.g. a
+    /// `Tensor<Float>` converted to bfloat16).
+    private func hostScalars(of buffer: PJRTBuffer) throws -> [Scalar] {
+        do {
+            if buffer.elementType == Self.hostElementType {
+                return try buffer.toHost(Scalar.self)
+            }
+            return convertDoubleArrayToScalar(try hostDoubles(of: buffer))
+        } catch let error as MaterializationError {
+            throw error
+        } catch {
+            throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
+        }
+    }
+
+    #if os(macOS) && canImport(MetalHLO)
+    private func hostScalars(ofMetal metalBuffer: MetalHLOBuffer) throws -> [Scalar] {
+        do {
+            return convertFloatArrayToScalar(try metalBuffer.toFloatArray())
+        } catch {
+            throw MaterializationError(stage: .outputTransfer, device: device, underlying: error)
+        }
+    }
+    #endif
+
+    /// The PJRT element type whose host layout is exactly `Scalar`, if any.
+    private static var hostElementType: ElementType? {
+        if Scalar.self == Float.self { return .float32 }
+        if Scalar.self == Double.self { return .float64 }
+        if Scalar.self == Int32.self { return .int32 }
+        if Scalar.self == Int64.self || Scalar.self == Int.self { return .int64 }
+        if Scalar.self == Bool.self { return .bool }
+        return nil
+    }
+
+    /// Read any real-valued device buffer as doubles (exact for every type up to
+    /// 32-bit integers and f64; 64-bit integers beyond 2^53 are rounded).
+    private func hostDoubles(of buffer: PJRTBuffer) throws -> [Double] {
+        switch buffer.elementType {
+        case .float32: return try buffer.toHost(Float.self).map(Double.init)
+        case .float64: return try buffer.toHost(Double.self)
+        case .int8: return try buffer.toHost(Int8.self).map(Double.init)
+        case .int16: return try buffer.toHost(Int16.self).map(Double.init)
+        case .int32: return try buffer.toHost(Int32.self).map(Double.init)
+        case .int64: return try buffer.toHost(Int64.self).map(Double.init)
+        case .uint8: return try buffer.toHost(UInt8.self).map(Double.init)
+        case .uint16: return try buffer.toHost(UInt16.self).map(Double.init)
+        case .uint32: return try buffer.toHost(UInt32.self).map(Double.init)
+        case .uint64: return try buffer.toHost(UInt64.self).map(Double.init)
+        case .bool: return try buffer.toHost(UInt8.self).map { $0 != 0 ? 1 : 0 }
+        case .bfloat16:
+            return try buffer.toHost(UInt16.self).map {
+                Double(Float(bitPattern: UInt32($0) << 16))
+            }
+        case .float16:
+            return try buffer.toHost(UInt16.self).map { Self.doubleFromHalfBits($0) }
+        case .complex64, .complex128:
+            throw MaterializationError(
+                stage: .outputTransfer, device: device,
+                underlying: XLAError.bufferTransferFailed(
+                    "cannot read a \(buffer.elementType) buffer as \(Scalar.self)"))
+        }
+    }
+
+    /// Decode an IEEE 754 binary16 bit pattern (portable: `Float16` is not
+    /// available on every platform Magma builds for).
+    private static func doubleFromHalfBits(_ bits: UInt16) -> Double {
+        let sign: Double = (bits & 0x8000) != 0 ? -1 : 1
+        let exponent = Int((bits >> 10) & 0x1F)
+        let fraction = Double(bits & 0x03FF)
+        switch exponent {
+        case 0: return sign * fraction * 0x1p-24                      // zero / subnormal
+        case 0x1F: return fraction == 0 ? sign * .infinity : .nan    // inf / NaN
+        default: return sign * (1 + fraction / 1024) * Double(sign: .plus, exponent: exponent - 15, significand: 1)
+        }
+    }
+
+    /// Helper to convert Double array to the tensor's Scalar type
+    private func convertDoubleArrayToScalar(_ values: [Double]) -> [Scalar] {
+        if Scalar.self == Double.self {
+            return values as! [Scalar]
+        } else if Scalar.self == Int32.self {
+            return values.map { Int32($0) as! Scalar }
+        } else if Scalar.self == Int64.self {
+            return values.map { Int64($0) as! Scalar }
+        } else if Scalar.self == Int.self {
+            return values.map { Int($0) as! Scalar }
+        }
+        return convertFloatArrayToScalar(values.map { Float($0) })
     }
 
     /// Helper to convert Float array to the tensor's Scalar type
@@ -696,22 +786,43 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     }
 
     /// Get single scalar value (for 0-d tensors)
+    ///
+    /// - Important: Stops the program if the tensor cannot be materialized (see
+    ///   `scalars()`); use `fetchItem()` to handle the error instead.
     public func item() -> Scalar {
         precondition(shape.isEmpty || elementCount == 1, "item() requires scalar tensor")
-        let values = scalars()
-        precondition(!values.isEmpty, "No value available - tensor may not be materialized")
-        return values.first!
+        do {
+            return try fetchItem()
+        } catch {
+            fatalError("Could not read tensor of shape \(shape) (\(dtype)): \(error)")
+        }
+    }
+
+    /// Get the single value of a one-element tensor, throwing if it cannot be
+    /// computed. The throwing counterpart of `item()`.
+    ///
+    /// - Throws: `MaterializationError`.
+    public func fetchItem() throws -> Scalar {
+        precondition(shape.isEmpty || elementCount == 1, "fetchItem() requires scalar tensor")
+        guard let value = try fetchScalars().first else {
+            throw MaterializationError(stage: .notMaterialized, device: device)
+        }
+        return value
     }
 
     /// Mark this tensor for materialization without executing
     ///
-    /// Use this when you want to force a tensor to be included in the next barrier's computation.
-    /// Normally, only tensors whose values are explicitly read (via `scalars()` or `item()`)
-    /// are marked for materialization. This method allows you to explicitly mark intermediate
-    /// tensors so they get compiled and executed at the next `LazyTensorBarrier()`.
+    /// A barrier (`LazyTensorBarrier(on:)`) executes only the tensors that are
+    /// marked on its device, plus whatever they depend on; creating a tensor does
+    /// not mark it. Reading values (`scalars()`, `item()`) and `materialize()`
+    /// mark the tensor and run the barrier themselves. Use this method to add a
+    /// tensor to the *next* barrier on `device` without executing anything now,
+    /// e.g. to compute several tensors in one compiled program, or to cut a
+    /// growing graph once per loop iteration.
     ///
-    /// This is useful for implementing per-iteration barriers in loops where you need to
-    /// materialize loop-carried state between iterations.
+    /// Marking is per device and is consumed by the next barrier on that device,
+    /// whether it succeeds or fails. Marking an already materialized tensor is a
+    /// no-op.
     ///
     /// Example:
     /// ```swift
@@ -758,16 +869,22 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
     /// in the MLIR, potentially causing compilation failures for large tensors.
     ///
     /// - Note: This method is a no-op if the tensor is already materialized.
+    /// - Important: Stops the program if the tensor cannot be materialized, with
+    ///   the underlying `MaterializationError` (see `scalars()`).
     @discardableResult
     public func materialize() -> Tensor {
         // Skip if already materialized
-        if handle.materializedBuffer != nil {
+        if handle.isMaterialized {
             return self
         }
 
         // Mark for materialization and execute barrier
         TensorRegistry.shared.markForMaterialization(handle)
-        LazyTensorBarrier(on: device)
+        do {
+            try LazyTensorBarrierThrowing(on: device)
+        } catch {
+            fatalError("Could not materialize tensor of shape \(shape) (\(dtype)): \(error)")
+        }
 
         return self
     }
@@ -823,7 +940,7 @@ public struct Tensor<Scalar: TensorScalar>: Sendable {
                 return Tensor(handle: newHandle)
             } catch {
                 // Fall back to lazy approach on error
-                print("Magma: Warning - device transfer failed, using lazy copy: \(error)")
+                magmaDiagnostic("Magma: Warning - device transfer failed, using lazy copy: \(error)")
             }
         }
 

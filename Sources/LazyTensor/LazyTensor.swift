@@ -12,6 +12,123 @@ import Synchronization
 import StableHLO
 import XLARuntime
 
+// MARK: - Diagnostics
+
+/// Write a library diagnostic to standard error.
+///
+/// Library messages must never go to stdout: they would interleave with the
+/// output of the user's program (e.g. a CLI whose stdout is piped).
+package func magmaDiagnostic(_ message: String) {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
+/// Whether verbose debug output is enabled (`MAGMA_DEBUG=1`).
+package var magmaDebugEnabled: Bool {
+    ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1"
+}
+
+/// Write MLIR that failed to compile to a debug file, when enabled.
+///
+/// Dumps are opt-in: set `MAGMA_DEBUG_DIR=<directory>` to choose where they go,
+/// or `MAGMA_DEBUG=1` to write them to the system temporary directory. Returns
+/// the path written, or `nil` when dumping is disabled or the write failed.
+func dumpFailingMLIR(_ mlir: String, name: String) -> String? {
+    let environment = ProcessInfo.processInfo.environment
+    let directory: String
+    if let dir = environment["MAGMA_DEBUG_DIR"], !dir.isEmpty {
+        directory = dir
+    } else if environment["MAGMA_DEBUG"] == "1" {
+        directory = NSTemporaryDirectory()
+    } else {
+        return nil
+    }
+    let url = URL(fileURLWithPath: directory, isDirectory: true)
+        .appendingPathComponent("magma_failed_\(name).mlir")
+    do {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(mlir.utf8).write(to: url)
+        return url.path
+    } catch {
+        magmaDiagnostic("Magma: could not write MLIR debug dump to \(url.path): \(error)")
+        return nil
+    }
+}
+
+// MARK: - Materialization Errors
+
+/// Why lazy tensors could not be materialized (computed into device buffers
+/// and, for reads, copied to the host).
+///
+/// Thrown by `LazyTensorBarrierThrowing(on:)` and the throwing tensor reads
+/// (`Tensor.fetchScalars()` / `Tensor.fetchItem()`). The non-throwing APIs
+/// report the same error: `LazyTensorBarrier(on:)` writes it to standard error
+/// and records it on each affected handle (`materializationError`), and
+/// `Tensor.scalars()` / `Tensor.item()` stop the program with it.
+public struct MaterializationError: Error, CustomStringConvertible, Sendable {
+
+    /// The step of materialization that failed.
+    public enum Stage: String, Sendable {
+        /// No PJRT client could be created for the device's backend — most often
+        /// because the plugin is not installed (see `MAGMA_XLA_PATH`).
+        case backendUnavailable = "backend unavailable"
+        /// The traced graph failed validation (shape/type error in the program).
+        case validation
+        /// The backend rejected the emitted StableHLO program.
+        case compilation
+        /// Uploading graph inputs (promoted constants) to the device failed.
+        case inputTransfer = "input transfer"
+        /// Running the compiled program failed.
+        case execution
+        /// Copying a result from the device to the host failed.
+        case outputTransfer = "output transfer"
+        /// The tensor has no value after its barrier ran (e.g. its device's
+        /// backend does not report per-output errors).
+        case notMaterialized = "not materialized"
+    }
+
+    /// The step that failed.
+    public let stage: Stage
+
+    /// The device the barrier ran on.
+    public let device: Device
+
+    /// The underlying runtime error, when there is one.
+    public let underlying: (any Error)?
+
+    /// Path of the failing MLIR program written for debugging, if any (see
+    /// `MAGMA_DEBUG_DIR` / `MAGMA_DEBUG`).
+    public let mlirDumpPath: String?
+
+    public init(stage: Stage, device: Device, underlying: (any Error)? = nil, mlirDumpPath: String? = nil) {
+        self.stage = stage
+        self.device = device
+        self.underlying = underlying
+        self.mlirDumpPath = mlirDumpPath
+    }
+
+    public var description: String {
+        var text = "Magma: materialization failed on \(device) (\(stage.rawValue))"
+        if let underlying {
+            text += ": \(underlying)"
+        }
+        switch stage {
+        case .backendUnavailable:
+            text += ". Install the PJRT plugin for this backend and point MAGMA_XLA_PATH at "
+                + "its directory, or select another backend with MAGMA_DEFAULT_BACKEND."
+        case .compilation:
+            if let mlirDumpPath {
+                text += ". Failing MLIR written to \(mlirDumpPath)"
+            } else {
+                text += ". Set MAGMA_DEBUG=1 (or MAGMA_DEBUG_DIR=<dir>) to dump the failing MLIR."
+            }
+        default:
+            break
+        }
+        return text
+    }
+}
+
 // MARK: - Lazy Tensor Handle
 
 /// Handle to a lazy tensor value in the computation graph
@@ -80,6 +197,12 @@ public final class LazyTensorHandle: @unchecked Sendable {
     /// that may be garbage collected if no longer needed.
     /// Inspired by TensorFlow Swift's lazy tensor design.
     public var isLive: Bool = false
+
+    /// The error from the most recent barrier that tried to materialize this
+    /// tensor and failed, or `nil` if the last attempt succeeded (or none was
+    /// made). A failed barrier leaves the tensor unmaterialized; the next read
+    /// (or barrier that includes it) retries and clears this on success.
+    public internal(set) var materializationError: MaterializationError?
 
     /// Optional Shardy sharding for this tensor. When set (and the graph declares
     /// a `mesh`), the emitter attaches it: as a `{sdy.sharding=…}` attribute on a
@@ -895,23 +1018,6 @@ public func getMetalHLOClient() throws -> MetalHLOClient {
 
 #endif
 
-/// Trigger compilation and execution of all pending operations
-///
-/// When called, all lazy tensors on the specified device are:
-/// 1. Collected into a graph
-/// 2. Validated for shape/type errors
-/// 3. Analyzed for constant promotion (cache optimization)
-/// 4. Converted to StableHLO MLIR
-/// 5. Compiled (or fetched from cache)
-/// 6. Executed
-/// 7. Results stored back in tensor handles
-///
-/// Example:
-/// ```swift
-/// let y = x.matmul(w).relu()  // Lazy - no computation yet
-/// LazyTensorBarrier()          // Compile and execute everything
-/// print(y.scalars())           // Now we can read the results
-/// ```
 /// Compute the PJRT fast-path (trace) key for a set of output handles.
 ///
 /// A single post-order DFS hashes the *raw* graph's full structure — op kinds,
@@ -997,7 +1103,63 @@ func computePJRTTraceKey(
     return (key: UInt64(hasher.finalize().magnitude), dataInputs: dataInputs)
 }
 
+/// Compile and execute the tensors marked for materialization on a device.
+///
+/// **What runs.** A barrier executes exactly the tensors that are *pending* on
+/// `device`: those marked with `Tensor.markForMaterialization()` (or
+/// `TensorRegistry.shared.markForMaterialization(_:)`) since the last barrier,
+/// together with everything they depend on. Merely creating a tensor does not
+/// make it pending, so a bare `LazyTensorBarrier()` with nothing marked does
+/// nothing. Reading values (`scalars()`, `item()`) and `materialize()` mark the
+/// tensor and run a barrier themselves, so you only need an explicit barrier to
+/// batch several tensors into one compiled program, or to cut a growing graph
+/// (e.g. once per training step).
+///
+/// When called, the pending tensors are:
+/// 1. Collected into a graph
+/// 2. Validated for shape/type errors
+/// 3. Optimized and analyzed for constant promotion (cache optimization)
+/// 4. Converted to StableHLO MLIR
+/// 5. Compiled (or fetched from cache)
+/// 6. Executed
+/// 7. Stored back in their handles as device buffers
+///
+/// **Errors.** This function does not throw. If materialization fails, the
+/// error is written to standard error, recorded on every affected handle
+/// (`LazyTensorHandle.materializationError`), and the tensors stay
+/// unmaterialized; a later read of one of them retries and, if it fails again,
+/// stops with that error. Use `LazyTensorBarrierThrowing(on:)` to handle the
+/// error yourself.
+///
+/// Example:
+/// ```swift
+/// let y = x.matmul(w).relu()  // Lazy - no computation yet
+/// let z = y.sum()
+/// y.markForMaterialization()
+/// z.markForMaterialization()
+/// LazyTensorBarrier()         // Compiles and executes y and z in one program
+/// print(y.scalars())          // Already materialized: just a device-to-host copy
+/// ```
 public func LazyTensorBarrier(on device: Device = .default) {
+    do {
+        try LazyTensorBarrierThrowing(on: device)
+    } catch {
+        magmaDiagnostic("\(error)")
+    }
+}
+
+/// Compile and execute the tensors marked for materialization on a device,
+/// throwing if that fails.
+///
+/// Runs the same work as `LazyTensorBarrier(on:)` (see there for which tensors
+/// are executed). On failure every pending tensor stays unmaterialized, has the
+/// error recorded in `LazyTensorHandle.materializationError`, and is no longer
+/// pending: mark it again (or read it) to retry.
+///
+/// - Throws: `MaterializationError` describing the failed stage — e.g.
+///   `.backendUnavailable` when the PJRT plugin cannot be loaded, or
+///   `.compilation` with the backend's diagnostic.
+public func LazyTensorBarrierThrowing(on device: Device = .default) throws {
     // Route to Metal-specific barrier if using Metal backend
     #if os(macOS) && canImport(MetalHLO)
     if device.backend == .metal {
@@ -1021,8 +1183,147 @@ public func LazyTensorBarrier(on device: Device = .default) {
     // Mark outputs as live (for future memory optimization)
     for output in outputs {
         output.isLive = true
+        output.materializationError = nil
     }
 
+    do {
+        try runPJRTBarrier(outputs: outputs, device: device)
+    } catch {
+        let failure = error as? MaterializationError
+            ?? MaterializationError(stage: .execution, device: device, underlying: error)
+        for output in outputs {
+            output.materializationError = failure
+        }
+        throw failure
+    }
+}
+
+/// The result of compiling (or reusing) and executing one optimized graph.
+struct PJRTGraphRun {
+    /// Output buffers, one per graph output, in order.
+    let outputs: [PJRTBuffer]
+    /// The executable that produced them.
+    let executable: PJRTExecutable
+    /// The optimized graph's structural hash (its executable-cache key).
+    let structuralHash: String
+    /// IDs of the `.data` nodes fed to the executable, in argument order.
+    let dataInputOrder: [UInt64]
+    /// Device buffers uploaded for the promoted constants, in argument order.
+    let promotedConstantBuffers: [PJRTBuffer]
+}
+
+/// Compile (or fetch from the executable cache) and execute an optimized graph.
+///
+/// Shared by the barrier and `executeGraph`, so both key the executable cache
+/// the same way (the structural hash, which includes op attributes) and feed
+/// arguments from the same graph the executable was compiled from.
+func compileAndRunOptimizedGraph(
+    _ optimizedGraph: IRGraph,
+    on device: Device,
+    namePrefix: String
+) throws -> PJRTGraphRun {
+    // Resolve the client first, so a missing plugin is reported as such instead
+    // of as a compilation failure of a perfectly good program.
+    let client: PJRTClient
+    do {
+        client = try getGlobalClient(backend: device.backend)
+    } catch {
+        throw MaterializationError(stage: .backendUnavailable, device: device, underlying: error)
+    }
+
+    let cache = CompilationCache.shared
+
+    // Analyze for constant promotion
+    let promotionResult = optimizedGraph.analyzeForConstantPromotion()
+    let structuralHash = promotionResult.structuralHash
+
+    // Check compilation cache using structural hash
+    let executable: PJRTExecutable
+    if let cached = cache.get(hash: structuralHash) {
+        cache.recordHit(promoted: promotionResult.wasPromoted)
+        executable = cached
+    } else {
+        cache.recordMiss()
+
+        // Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission
+        let name = "\(namePrefix)_\(structuralHash.prefix(8))"
+        let mlir: String
+        if let cachedMlir = cache.getMlir(hash: structuralHash) {
+            cache.recordMlirHit()
+            mlir = cachedMlir
+        } else {
+            let emitter = StableHLOEmitter(graph: optimizedGraph)
+            mlir = emitter.emit(name: name, promotedConstants: promotionResult.promotedConstants)
+            cache.putMlir(hash: structuralHash, mlir: mlir)
+        }
+
+        // Compile
+        do {
+            executable = try client.compile(mlir)
+        } catch {
+            throw MaterializationError(
+                stage: .compilation, device: device, underlying: error,
+                mlirDumpPath: dumpFailingMLIR(mlir, name: name))
+        }
+        cache.put(hash: structuralHash, executable: executable)
+    }
+
+    // Collect input buffers from the optimized graph (the one compiled above).
+    // First: data nodes (pre-materialized tensors), in the emitter's order.
+    var inputBuffers: [PJRTBuffer] = []
+    var dataInputOrder: [UInt64] = []
+    for node in optimizedGraph.nodes {
+        if case .data(let buffer) = node.irNode {
+            inputBuffers.append(buffer)
+            dataInputOrder.append(node.id)
+        }
+    }
+
+    // Second: promoted constants (need to create buffers for their values).
+    var promotedConstantBuffers: [PJRTBuffer] = []
+    do {
+        for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
+            let buffer = try client.createBuffer(
+                promoted.values,
+                shape: promoted.shape,
+                elementType: .float32,
+                device: nil
+            )
+            inputBuffers.append(buffer)
+            promotedConstantBuffers.append(buffer)
+        }
+    } catch {
+        throw MaterializationError(stage: .inputTransfer, device: device, underlying: error)
+    }
+
+    // Execute
+    let outputBuffers: [PJRTBuffer]
+    do {
+        outputBuffers = try executable.execute(inputBuffers)
+    } catch {
+        throw MaterializationError(stage: .execution, device: device, underlying: error)
+    }
+    guard outputBuffers.count == optimizedGraph.outputs.count else {
+        throw MaterializationError(
+            stage: .execution, device: device,
+            underlying: XLAError.executionFailed(
+                "executable returned \(outputBuffers.count) outputs for "
+                + "\(optimizedGraph.outputs.count) requested tensors"))
+    }
+
+    return PJRTGraphRun(
+        outputs: outputBuffers,
+        executable: executable,
+        structuralHash: structuralHash,
+        dataInputOrder: dataInputOrder,
+        promotedConstantBuffers: promotedConstantBuffers
+    )
+}
+
+/// The PJRT (CPU/GPU/TPU) barrier body: fast trace-cache path, else the full
+/// build → validate → optimize → compile → execute pipeline. Throws
+/// `MaterializationError`; the caller records it on the outputs.
+private func runPJRTBarrier(outputs: [LazyTensorHandle], device: Device) throws {
     let cache = CompilationCache.shared
     let traceCacheDisabled = ProcessInfo.processInfo.environment["MAGMA_NO_TRACE_CACHE"] == "1"
     let verifyTraceCache = ProcessInfo.processInfo.environment["MAGMA_VERIFY_TRACE_CACHE"] == "1"
@@ -1043,7 +1344,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
                 ? vg : PassManager.shared.run(on: vg)
             let vHash = vOpt.analyzeForConstantPromotion().structuralHash
             if vHash != entry.structuralHash {
-                print("Magma: TRACE-CACHE VERIFY FAILED (fastKey=\(fastKey)): "
+                magmaDiagnostic("Magma: TRACE-CACHE VERIFY FAILED (fastKey=\(fastKey)): "
                     + "structuralHash \(vHash) != cached \(entry.structuralHash)")
             }
         }
@@ -1064,16 +1365,20 @@ public func LazyTensorBarrier(on device: Device = .default) {
                 inputBuffers.append(contentsOf: entry.promotedConstantBuffers)
                 do {
                     let outputBuffers = try entry.executable.execute(inputBuffers)
-                    for (i, output) in outputs.enumerated() where i < outputBuffers.count {
-                        output.materializedBuffer = outputBuffers[i]
-                        output.irNode = .data(outputBuffers[i])
+                    if outputBuffers.count == outputs.count {
+                        for (i, output) in outputs.enumerated() {
+                            output.materializedBuffer = outputBuffers[i]
+                            output.irNode = .data(outputBuffers[i])
+                        }
+                        cache.recordFastHit()
+                        return  // Fast path succeeded
                     }
-                    cache.recordFastHit()
-                    return  // Fast path succeeded
                 } catch {
                     // Any failure falls through to the slow path below, which
-                    // rebuilds everything from scratch.
-                    print("Magma: trace-cache fast path failed, using slow path: \(error)")
+                    // rebuilds everything from scratch (and reports errors).
+                    if magmaDebugEnabled {
+                        magmaDiagnostic("Magma: trace-cache fast path failed, using slow path: \(error)")
+                    }
                 }
             }
         }
@@ -1091,8 +1396,7 @@ public func LazyTensorBarrier(on device: Device = .default) {
     do {
         try graph.validate()
     } catch {
-        print("Magma: Graph validation failed: \(error)")
-        return
+        throw MaterializationError(stage: .validation, device: device, underlying: error)
     }
 
     // 3.5. Run optimization passes
@@ -1101,140 +1405,43 @@ public func LazyTensorBarrier(on device: Device = .default) {
         let passManager = PassManager.shared
         optimizedGraph = passManager.run(on: graph)
 
-        if ProcessInfo.processInfo.environment["MAGMA_DEBUG"] == "1" {
+        if magmaDebugEnabled {
             let originalCount = graph.nodes.count
             let optimizedCount = optimizedGraph.nodes.count
             if originalCount != optimizedCount {
-                print("Magma: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
+                magmaDiagnostic("Magma: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
             }
         }
     } else {
         optimizedGraph = graph
     }
 
-    // 4. Analyze for constant promotion (use optimized graph)
-    let promotionResult = optimizedGraph.analyzeForConstantPromotion()
-    let structuralHash = promotionResult.structuralHash
+    // 4-9. Promote constants, compile (or reuse), upload inputs, execute.
+    let run = try compileAndRunOptimizedGraph(optimizedGraph, on: device, namePrefix: "lazy_graph")
 
-    // 5. Check compilation cache using structural hash
-    var executable: PJRTExecutable
-    if let cached = cache.get(hash: structuralHash) {
-        cache.recordHit(promoted: promotionResult.wasPromoted)
-        executable = cached
-    } else {
-        cache.recordMiss()
-
-        // 6. Emit StableHLO MLIR — use cached MLIR text if available to skip re-emission
-        let mlir: String
-        if let cachedMlir = cache.getMlir(hash: structuralHash) {
-            cache.recordMlirHit()
-            mlir = cachedMlir
-        } else {
-            let emitter = StableHLOEmitter(graph: optimizedGraph)
-            mlir = emitter.emit(
-                name: "lazy_graph_\(structuralHash.prefix(8))",
-                promotedConstants: promotionResult.promotedConstants
-            )
-            cache.putMlir(hash: structuralHash, mlir: mlir)
-        }
-
-        // 7. Compile
-        do {
-            let client = try getGlobalClient(backend: device.backend)
-            executable = try client.compile(mlir)
-            cache.put(hash: structuralHash, executable: executable)
-        } catch {
-            // Always write failing MLIR to debug file for first unique failure
-            let debugPath = "/tmp/magma_debug_\(structuralHash.prefix(8)).mlir"
-            // Check if we haven't already written this hash
-            if !FileManager.default.fileExists(atPath: debugPath) {
-                print("Magma: MLIR that failed to compile (hash=\(structuralHash.prefix(8))):")
-                print(mlir.prefix(3000))
-                print("... (truncated)")
-                if let data = mlir.data(using: .utf8) {
-                    let url = URL(fileURLWithPath: debugPath)
-                    try? data.write(to: url)
-                    print("Magma: Full MLIR written to \(debugPath)")
-                }
-            }
-            print("Magma: Compilation failed: \(error)")
-            return
-        }
+    // Store a fast-path (trace) entry so a repeated barrier can skip the whole
+    // pipeline. Only when the key is eligible (no while-loop) and the raw/optimized
+    // data-input orders match: the fast path collects data inputs by walking the
+    // RAW graph from outputs, so a future hit must feed buffers in the same slots
+    // the executable was compiled against. (Reordering/DCE of data leaves ⇒
+    // mismatch ⇒ no caching.)
+    if let (fastKey, rawDataInputs) = traceKeyResult,
+       rawDataInputs.map({ $0.id }) == run.dataInputOrder {
+        cache.putFast(hash: fastKey, entry: PJRTTraceCacheEntry(
+            executable: run.executable,
+            dataInputCount: run.dataInputOrder.count,
+            promotedConstantBuffers: run.promotedConstantBuffers,
+            structuralHash: run.structuralHash
+        ))
     }
 
-    // 8. Collect input buffers (use optimized graph)
-    // First: data nodes (pre-materialized large tensors)
-    var inputBuffers: [PJRTBuffer] = []
-    var optimizedDataOrder: [UInt64] = []
-    for node in optimizedGraph.nodes {
-        if case .data(let buffer) = node.irNode {
-            inputBuffers.append(buffer)
-            optimizedDataOrder.append(node.id)
-        }
-    }
-
-    // The fast path collects data inputs by walking the RAW graph from outputs
-    // (the `dataInputs` returned by computePJRTTraceKey). Only cache a trace entry
-    // when that raw order matches the optimized graph's data order the executable
-    // was compiled against — otherwise a future fast hit would feed buffers in the
-    // wrong slots. (Reordering/DCE of data leaves ⇒ mismatch ⇒ no caching.)
-    let traceOrderMatches: Bool
-    if let rawDataInputs = traceKeyResult?.dataInputs {
-        traceOrderMatches = rawDataInputs.map { $0.id } == optimizedDataOrder
-    } else {
-        traceOrderMatches = false
-    }
-
-    // Second: promoted constants (need to create buffers for their values).
-    // Capture them so the trace entry can reuse them on future fast hits.
-    var promotedConstantBuffers: [PJRTBuffer] = []
-    if promotionResult.wasPromoted {
-        do {
-            let client = try getGlobalClient(backend: device.backend)
-            for promoted in promotionResult.promotedConstants.sorted(by: { $0.inputIndex < $1.inputIndex }) {
-                let buffer = try client.createBuffer(
-                    promoted.values,
-                    shape: promoted.shape,
-                    elementType: .float32,
-                    device: nil
-                )
-                inputBuffers.append(buffer)
-                promotedConstantBuffers.append(buffer)
-            }
-        } catch {
-            print("Magma: Failed to create buffers for promoted constants: \(error)")
-            return
-        }
-    }
-
-    // 9. Execute
-    do {
-        let outputBuffers = try executable.execute(inputBuffers)
-
-        // 9.5 Store a fast-path (trace) entry so a repeated barrier can skip the
-        // whole pipeline. Only when the key is eligible (no while-loop) and the
-        // raw/optimized data-input orders match (fast-path input assembly is sound).
-        if let fastKey = traceKeyResult?.key, traceOrderMatches {
-            cache.putFast(hash: fastKey, entry: PJRTTraceCacheEntry(
-                executable: executable,
-                dataInputCount: optimizedDataOrder.count,
-                promotedConstantBuffers: promotedConstantBuffers,
-                structuralHash: structuralHash
-            ))
-        }
-
-        // 10. Update tensor handles with results
-        for (i, output) in outputs.enumerated() {
-            if i < outputBuffers.count {
-                let buffer = outputBuffers[i]
-                output.materializedBuffer = buffer
-                // Set irNode to .data so the tensor can be used as input in future computations
-                // This replaces the computation graph with a direct reference to the materialized buffer
-                output.irNode = .data(buffer)
-            }
-        }
-    } catch {
-        print("Magma: Execution failed: \(error)")
+    // 10. Update tensor handles with results
+    for (i, output) in outputs.enumerated() {
+        let buffer = run.outputs[i]
+        output.materializedBuffer = buffer
+        // Set irNode to .data so the tensor can be used as input in future computations
+        // This replaces the computation graph with a direct reference to the materialized buffer
+        output.irNode = .data(buffer)
     }
 }
 
@@ -1373,7 +1580,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
             cache.fastHitCount += 1
 
             if debugEnabled {
-                print("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
+                magmaDiagnostic("Magma [Metal]: Fast-path cache hit (hash=\(fastHash))")
             }
 
             // Assemble input buffers: data inputs first, then cached constant values
@@ -1391,7 +1598,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
                         let metalBuffer = client.createBuffer(hostData, shape: handle.shape)
                         inputBuffers.append(metalBuffer)
                     } catch {
-                        print("Magma [Metal]: Fast-path PJRT conversion failed: \(error)")
+                        magmaDiagnostic("Magma [Metal]: Fast-path PJRT conversion failed: \(error)")
                         fastPathFailed = true
                         break
                     }
@@ -1408,7 +1615,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
                         inputBuffers.append(buffer)
                     }
                 } catch {
-                    print("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
+                    magmaDiagnostic("Magma [Metal]: Fast-path constant buffer creation failed: \(error)")
                     fastPathFailed = true
                 }
             }
@@ -1425,7 +1632,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
                     }
                     return  // Fast path succeeded
                 } catch {
-                    print("Magma [Metal]: Fast-path execution failed: \(error)")
+                    magmaDiagnostic("Magma [Metal]: Fast-path execution failed: \(error)")
                     return
                 }
             }
@@ -1446,7 +1653,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
     do {
         try graph.validate()
     } catch {
-        print("Magma [Metal]: Graph validation failed: \(error)")
+        magmaDiagnostic("Magma [Metal]: Graph validation failed: \(error)")
         return
     }
 
@@ -1460,7 +1667,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
             let originalCount = graph.nodes.count
             let optimizedCount = optimizedGraph.nodes.count
             if originalCount != optimizedCount {
-                print("Magma [Metal]: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
+                magmaDiagnostic("Magma [Metal]: Optimization reduced \(originalCount) -> \(optimizedCount) nodes")
             }
         }
     } else {
@@ -1487,7 +1694,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
             cache.mlirHitCount += 1
             mlir = cachedMlir
             if debugEnabled {
-                print("Magma [Metal]: MLIR cache hit (hash=\(structuralHash.prefix(8))), skipping emission")
+                magmaDiagnostic("Magma [Metal]: MLIR cache hit (hash=\(structuralHash.prefix(8))), skipping emission")
             }
         } else {
             let emitter = StableHLOEmitter(graph: optimizedGraph)
@@ -1499,8 +1706,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
         }
 
         if debugEnabled {
-            print("Magma [Metal]: Generated MLIR:")
-            print(mlir)
+            magmaDiagnostic("Magma [Metal]: Generated MLIR:\n\(mlir)")
         }
 
         // 9. Compile
@@ -1509,20 +1715,14 @@ private func MetalLazyTensorBarrier(on device: Device) {
             executable = try client.compile(mlir)
 
             if debugEnabled {
-                print("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
+                magmaDiagnostic("Magma [Metal]: Compiled executable - inputs: \(executable.inputCount), outputs: \(executable.outputCount)")
             }
 
             cache.put(hash: structuralHash, executable: executable)
         } catch {
-            let debugPath = "/tmp/magma_metal_debug_\(structuralHash.prefix(8)).mlir"
-            if !FileManager.default.fileExists(atPath: debugPath) {
-                print("Magma [Metal]: MLIR that failed to compile (hash=\(structuralHash.prefix(8))):")
-                print(mlir.prefix(3000))
-                if let data = mlir.data(using: .utf8) {
-                    try? data.write(to: URL(fileURLWithPath: debugPath))
-                }
-            }
-            print("Magma [Metal]: Compilation failed: \(error)")
+            let dumpPath = dumpFailingMLIR(mlir, name: "metal_graph_\(structuralHash.prefix(8))")
+            magmaDiagnostic("Magma [Metal]: Compilation failed: \(error)"
+                + (dumpPath.map { " (failing MLIR written to \($0))" } ?? ""))
             return
         }
     }
@@ -1559,7 +1759,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
                 let metalBuffer = client.createBuffer(hostData, shape: node.shape)
                 inputBuffers.append(metalBuffer)
             } catch {
-                print("Magma [Metal]: Failed to convert PJRT buffer to Metal: \(error)")
+                magmaDiagnostic("Magma [Metal]: Failed to convert PJRT buffer to Metal: \(error)")
                 return
             }
         }
@@ -1573,7 +1773,7 @@ private func MetalLazyTensorBarrier(on device: Device) {
                 inputBuffers.append(buffer)
             }
         } catch {
-            print("Magma [Metal]: Failed to create constant buffers: \(error)")
+            magmaDiagnostic("Magma [Metal]: Failed to create constant buffers: \(error)")
             return
         }
     }
@@ -1588,12 +1788,12 @@ private func MetalLazyTensorBarrier(on device: Device) {
 
                 if debugEnabled {
                     let hostData = try outputBuffers[i].toFloatArray()
-                    print("Magma [Metal]: Output \(i) - shape: \(output.shape), first few: \(Array(hostData.prefix(5)))")
+                    magmaDiagnostic("Magma [Metal]: Output \(i) - shape: \(output.shape), first few: \(Array(hostData.prefix(5)))")
                 }
             }
         }
     } catch {
-        print("Magma [Metal]: Execution failed: \(error)")
+        magmaDiagnostic("Magma [Metal]: Execution failed: \(error)")
     }
 }
 
