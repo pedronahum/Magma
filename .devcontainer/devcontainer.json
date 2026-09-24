@@ -1,5 +1,5 @@
 {
-    "name": "SwiftTensor Development",
+    "name": "Magma Development",
     "build": {
         "dockerfile": "Dockerfile"
     },

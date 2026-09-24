@@ -1,7 +1,8 @@
-# SwiftTensor Development Container
-# Based on Swift official image with XLA dependencies
+# Magma Development Container
+# Based on the official swift.org image (includes _Differentiation and
+# swift-testing, which Magma needs).
 
-FROM swift:5.9-jammy
+FROM swift:6.3-jammy
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -34,9 +35,10 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up XLA directory (users will mount or download XLA here)
-ENV SWIFTTENSOR_XLA_PATH=/opt/xla
-RUN mkdir -p /opt/xla && chown $USERNAME:$USERNAME /opt/xla
+# PJRT plugin directory. Mount or copy a plugin here (e.g.
+# pjrt_c_api_cpu_plugin.so, see the README) to run models and the full tests.
+ENV MAGMA_XLA_PATH=/opt/xla/lib
+RUN mkdir -p /opt/xla/lib && chown -R $USERNAME:$USERNAME /opt/xla
 
 # Set working directory
 WORKDIR /workspace
