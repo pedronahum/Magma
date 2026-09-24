@@ -3646,8 +3646,6 @@ extension nn {
 
         /// Forward pass with named parameters
         public func forward(x: Tensor<Float>, hidden: Tensor<Float>, cell: Tensor<Float>) -> (Tensor<Float>, Tensor<Float>) {
-            let batch = x.shape[0]
-
             // Compute all gates at once: [batch, 4*hiddenSize]
             let xProj = x.matmul(weightIH.value.transpose())
             let hProj = hidden.matmul(weightHH.value.transpose())
@@ -3658,16 +3656,15 @@ extension nn {
                 gates = gates + biasHH.value.broadcast(to: gates.shape)
             }
 
-            // Split into individual gates
-            // gates shape: [batch, 4*hiddenSize]
-            // We need to split along the last dimension
-            let gatesFlat = gates.reshape([batch * 4, hiddenSize])
-
-            // Extract each gate using slicing
-            let i = gatesFlat.slice(start: 0, size: batch).reshape([batch, hiddenSize]).sigmoid()
-            let f = gatesFlat.slice(start: batch, size: batch).reshape([batch, hiddenSize]).sigmoid()
-            let g = gatesFlat.slice(start: 2 * batch, size: batch).reshape([batch, hiddenSize]).tanh()
-            let o = gatesFlat.slice(start: 3 * batch, size: batch).reshape([batch, hiddenSize]).sigmoid()
+            // Split into individual gates along the feature axis: gates is
+            // [batch, 4*hiddenSize] laid out as [i | f | g | o] per row.
+            func gate(_ k: Int) -> Tensor<Float> {
+                gates.sliceAxis(axis: 1, start: k * hiddenSize, size: hiddenSize)
+            }
+            let i = gate(0).sigmoid()
+            let f = gate(1).sigmoid()
+            let g = gate(2).tanh()
+            let o = gate(3).sigmoid()
 
             // Update cell and hidden states
             let newCell = f * cell + i * g
@@ -3793,18 +3790,18 @@ extension nn {
                 hGates = hGates + biasHH.value.broadcast(to: hGates.shape)
             }
 
-            // Split input projections into gates
-            let xFlat = xGates.reshape([batch * 3, hiddenSize])
-            let hFlat = hGates.reshape([batch * 3, hiddenSize])
+            // Split projections into gates along the feature axis: each is
+            // [batch, 3*hiddenSize] laid out as [r | z | n] per row.
+            func gate(_ t: Tensor<Float>, _ k: Int) -> Tensor<Float> {
+                t.sliceAxis(axis: 1, start: k * hiddenSize, size: hiddenSize)
+            }
+            let xr = gate(xGates, 0)
+            let xz = gate(xGates, 1)
+            let xn = gate(xGates, 2)
 
-            // Reset and update gates
-            let xr = xFlat.slice(start: 0, size: batch).reshape([batch, hiddenSize])
-            let xz = xFlat.slice(start: batch, size: batch).reshape([batch, hiddenSize])
-            let xn = xFlat.slice(start: 2 * batch, size: batch).reshape([batch, hiddenSize])
-
-            let hr = hFlat.slice(start: 0, size: batch).reshape([batch, hiddenSize])
-            let hz = hFlat.slice(start: batch, size: batch).reshape([batch, hiddenSize])
-            let hn = hFlat.slice(start: 2 * batch, size: batch).reshape([batch, hiddenSize])
+            let hr = gate(hGates, 0)
+            let hz = gate(hGates, 1)
+            let hn = gate(hGates, 2)
 
             let r = (xr + hr).sigmoid()  // Reset gate
             let z = (xz + hz).sigmoid()  // Update gate
