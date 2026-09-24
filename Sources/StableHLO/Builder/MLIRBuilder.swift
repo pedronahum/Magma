@@ -405,10 +405,12 @@ public final class MLIRBuilder: @unchecked Sendable {
         let lhsContractDim = rank - 1  // k dimension in lhs
         let rhsContractDim = rank - 2  // k dimension in rhs
 
-        // stablehlo.dot_general format:
-        // dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = [...], rhs_batching_dimensions = [...],
-        //                                        lhs_contracting_dimensions = [...], rhs_contracting_dimensions = [...]>
-        let dotNumbers = "#stablehlo.dot<lhs_batching_dimensions = [\(batchDimsStr)], rhs_batching_dimensions = [\(batchDimsStr)], lhs_contracting_dimensions = [\(lhsContractDim)], rhs_contracting_dimensions = [\(rhsContractDim)]>"
+        // stablehlo.dot_general custom assembly format:
+        //   batching_dims = [lhs...] x [rhs...], contracting_dims = [lhs...] x [rhs...]
+        // (The `#stablehlo.dot<...>` attribute form is only valid inside a generic
+        // attribute dictionary; XLA's parser rejects it in this position.)
+        let batching = batchDims.isEmpty ? "" : "batching_dims = [\(batchDimsStr)] x [\(batchDimsStr)], "
+        let dotNumbers = "\(batching)contracting_dims = [\(lhsContractDim)] x [\(rhsContractDim)]"
 
         let op = "    \(result.name) = stablehlo.dot_general \(lhs.displayName), \(rhs.displayName), \(dotNumbers) : (\(lhs.type.mlirType), \(rhs.type.mlirType)) -> \(resultType.mlirType)"
         operations.append(op)

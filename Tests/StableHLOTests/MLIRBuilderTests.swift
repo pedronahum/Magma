@@ -38,6 +38,20 @@ struct MLIRBuilderTests {
         print("Generated MLIR:\n\(mlir)")
     }
 
+    @Test("Batched matmul uses dot_general's custom assembly format")
+    func batchedDot() {
+        let builder = MLIRBuilder()
+        let q = builder.argument(TensorType(shape: [2, 4, 8, 16], dtype: .float32))
+        let k = builder.argument(TensorType(shape: [2, 4, 16, 8], dtype: .float32))
+        let s = builder.batchedDot(q, k)
+
+        let mlir = builder.build(name: "bmm", outputs: [s])
+
+        #expect(mlir.contains("batching_dims = [0, 1] x [0, 1], contracting_dims = [3] x [2]"))
+        #expect(!mlir.contains("#stablehlo.dot<"), "the attribute form is rejected by XLA's parser")
+        #expect(mlir.contains("-> tensor<2x4x8x8xf32>"))
+    }
+
     @Test("ReLU activation")
     func relu() {
         let builder = MLIRBuilder()
