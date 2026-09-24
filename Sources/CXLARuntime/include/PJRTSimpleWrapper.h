@@ -78,8 +78,22 @@ SW_PJRT_Error_Code PJRT_LoadPlugin(const char* plugin_path);
 /// Unload the currently loaded plugin
 void PJRT_UnloadPlugin(void);
 
-/// Get the last dlopen/dlsym error message
+/// Get the last dlopen/dlsym error message. Prefer PJRT_GetLastErrorMessage:
+/// PJRT_LoadPlugin already consumes and records the dlerror() text.
 const char* PJRT_GetLastError(void);
+
+/// The message of the most recent failure recorded on the calling thread, or
+/// NULL if none was recorded since the last PJRT_ClearLastErrorMessage.
+///
+/// Wrappers return only an error code and destroy the underlying PJRT_Error;
+/// its message is copied here first. Plugin-loading failures (dlopen reason,
+/// plugin mismatch) are recorded here too. The pointer is thread-local and
+/// valid until the next failure or clear on the same thread.
+const char* PJRT_GetLastErrorMessage(void);
+
+/// Clear the calling thread's last error message. Call before a wrapper so a
+/// failure is never reported with a stale message from an earlier call.
+void PJRT_ClearLastErrorMessage(void);
 
 //===------------------------------------------------------------------===//
 // Error Handling

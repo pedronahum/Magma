@@ -9,6 +9,7 @@
 #include "include/PJRTSimpleWrapper.h"
 #include "include/PJRTProtoHelper.h"
 #include <dlfcn.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,74 +23,150 @@ static const PJRT_Api* g_api = NULL;
 // one so a request for a *different* backend fails loudly instead of silently
 // reusing the already-loaded one.
 static char g_plugin_path[4096] = {0};
+// Serializes PJRT_LoadPlugin / PJRT_UnloadPlugin so concurrent client creation
+// cannot race on the globals above (double dlopen, torn g_plugin_path).
+static pthread_mutex_t g_plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//===------------------------------------------------------------------===//
+// Last-error message (thread-local)
+//===------------------------------------------------------------------===//
+
+// PJRT_Error objects are destroyed inside the wrappers, which only return a
+// code. Their human-readable message is copied here first so the Swift layer
+// can report it (see PJRT_GetLastErrorMessage).
+#define SW_LAST_ERROR_CAPACITY 4096
+static __thread char g_last_error_message[SW_LAST_ERROR_CAPACITY];
+
+static void sw_set_last_error_n(const char* message, size_t length) {
+    if (message == NULL) {
+        g_last_error_message[0] = '\0';
+        return;
+    }
+    if (length >= SW_LAST_ERROR_CAPACITY) {
+        length = SW_LAST_ERROR_CAPACITY - 1;
+    }
+    memcpy(g_last_error_message, message, length);
+    g_last_error_message[length] = '\0';
+}
+
+static void sw_set_last_errorf(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(g_last_error_message, SW_LAST_ERROR_CAPACITY, format, args);
+    va_end(args);
+}
+
+// Records `error`'s message as this thread's last error and returns its code.
+// Every failure path calls this before destroying the error.
+static SW_PJRT_Error_Code sw_record_error(PJRT_Error* error) {
+    if (error == NULL) {
+        return SW_PJRT_Error_OK;
+    }
+    if (g_api != NULL && g_api->PJRT_Error_Message) {
+        PJRT_Error_Message_Args args;
+        memset(&args, 0, sizeof(args));
+        args.struct_size = sizeof(args);
+        args.error = error;
+        g_api->PJRT_Error_Message(&args);
+        sw_set_last_error_n(args.message, args.message ? args.message_size : 0);
+    } else {
+        sw_set_last_errorf("unknown PJRT error");
+    }
+    return PJRT_GetErrorCode(error);
+}
+
+const char* PJRT_GetLastErrorMessage(void) {
+    return g_last_error_message[0] != '\0' ? g_last_error_message : NULL;
+}
+
+void PJRT_ClearLastErrorMessage(void) {
+    g_last_error_message[0] = '\0';
+}
 
 //===------------------------------------------------------------------===//
 // Plugin Loading
 //===------------------------------------------------------------------===//
 
 SW_PJRT_Error_Code PJRT_LoadPlugin(const char* plugin_path) {
+    pthread_mutex_lock(&g_plugin_mutex);
+
     if (g_plugin_handle != NULL) {
         // A plugin is already loaded. Reloading the same one is a no-op, but a
         // request for a different plugin must fail: silently returning OK here
         // would hand back a client for the already-loaded (wrong) backend.
-        if (plugin_path != NULL && strcmp(plugin_path, g_plugin_path) == 0) {
-            return SW_PJRT_Error_OK;
+        SW_PJRT_Error_Code result = SW_PJRT_Error_OK;
+        if (plugin_path == NULL || strcmp(plugin_path, g_plugin_path) != 0) {
+            sw_set_last_errorf(
+                "PJRT plugin mismatch: '%s' is already loaded; cannot load '%s'. "
+                "Only one PJRT backend can be used per process.",
+                g_plugin_path, plugin_path ? plugin_path : "(null)");
+            fprintf(stderr, "%s\n", g_last_error_message);
+            result = SW_PJRT_Error_INVALID_ARGUMENT;
         }
-        fprintf(stderr,
-            "PJRT plugin mismatch: '%s' is already loaded; cannot load '%s'. "
-            "Only one PJRT backend can be used per process.\n",
-            g_plugin_path, plugin_path ? plugin_path : "(null)");
+        pthread_mutex_unlock(&g_plugin_mutex);
+        return result;
+    }
+
+    if (plugin_path == NULL) {
+        sw_set_last_errorf("no PJRT plugin path given");
+        pthread_mutex_unlock(&g_plugin_mutex);
         return SW_PJRT_Error_INVALID_ARGUMENT;
     }
 
     // Use RTLD_DEEPBIND on Linux to isolate plugin's LLVM symbols from ours
     // This prevents duplicate LLVM CommandLine registration errors
     #ifdef __linux__
-    g_plugin_handle = dlopen(plugin_path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+    void* handle = dlopen(plugin_path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
     #else
-    g_plugin_handle = dlopen(plugin_path, RTLD_NOW | RTLD_LOCAL);
+    void* handle = dlopen(plugin_path, RTLD_NOW | RTLD_LOCAL);
     #endif
-    if (g_plugin_handle == NULL) {
-        fprintf(stderr, "Failed to load PJRT plugin: %s\n", dlerror());
+    if (handle == NULL) {
+        // dlerror() clears itself when read, so capture it exactly once.
+        const char* reason = dlerror();
+        sw_set_last_errorf("dlopen failed: %s", reason ? reason : "unknown error");
+        pthread_mutex_unlock(&g_plugin_mutex);
         return SW_PJRT_Error_INTERNAL;
     }
 
     // Get the GetPjrtApi function
     typedef const PJRT_Api* (*GetPjrtApiFunc)(void);
-    GetPjrtApiFunc get_api = (GetPjrtApiFunc)dlsym(g_plugin_handle, "GetPjrtApi");
+    GetPjrtApiFunc get_api = (GetPjrtApiFunc)dlsym(handle, "GetPjrtApi");
     if (get_api == NULL) {
-        fprintf(stderr, "Failed to find GetPjrtApi: %s\n", dlerror());
-        dlclose(g_plugin_handle);
-        g_plugin_handle = NULL;
+        const char* reason = dlerror();
+        sw_set_last_errorf("'%s' is not a PJRT plugin (GetPjrtApi not found: %s)",
+                           plugin_path, reason ? reason : "unknown error");
+        dlclose(handle);
+        pthread_mutex_unlock(&g_plugin_mutex);
         return SW_PJRT_Error_INTERNAL;
     }
 
-    g_api = get_api();
-    if (g_api == NULL) {
-        fprintf(stderr, "GetPjrtApi returned NULL\n");
-        dlclose(g_plugin_handle);
-        g_plugin_handle = NULL;
+    const PJRT_Api* api = get_api();
+    if (api == NULL) {
+        sw_set_last_errorf("GetPjrtApi in '%s' returned NULL", plugin_path);
+        dlclose(handle);
+        pthread_mutex_unlock(&g_plugin_mutex);
         return SW_PJRT_Error_INTERNAL;
     }
 
     // Remember which plugin was loaded so a later different-path request fails.
-    if (plugin_path != NULL) {
-        strncpy(g_plugin_path, plugin_path, sizeof(g_plugin_path) - 1);
-        g_plugin_path[sizeof(g_plugin_path) - 1] = '\0';
-    } else {
-        g_plugin_path[0] = '\0';
-    }
+    strncpy(g_plugin_path, plugin_path, sizeof(g_plugin_path) - 1);
+    g_plugin_path[sizeof(g_plugin_path) - 1] = '\0';
+    g_api = api;
+    g_plugin_handle = handle;
 
+    pthread_mutex_unlock(&g_plugin_mutex);
     return SW_PJRT_Error_OK;
 }
 
 void PJRT_UnloadPlugin(void) {
+    pthread_mutex_lock(&g_plugin_mutex);
     if (g_plugin_handle != NULL) {
         dlclose(g_plugin_handle);
         g_plugin_handle = NULL;
         g_api = NULL;
         g_plugin_path[0] = '\0';
     }
+    pthread_mutex_unlock(&g_plugin_mutex);
 }
 
 const char* PJRT_GetLastError(void) {
@@ -118,6 +195,10 @@ SW_PJRT_Error_Code PJRT_GetErrorCode(void* error) {
     return SW_PJRT_Error_INTERNAL;
 }
 
+// PJRT messages are (pointer, length) pairs that need not be NUL-terminated,
+// so they are copied into a thread-local buffer before being returned.
+static __thread char g_error_message_scratch[SW_LAST_ERROR_CAPACITY];
+
 const char* PJRT_GetErrorMessage(void* error) {
     if (error == NULL) {
         return "No error";
@@ -130,7 +211,16 @@ const char* PJRT_GetErrorMessage(void* error) {
 
     if (g_api && g_api->PJRT_Error_Message) {
         g_api->PJRT_Error_Message(&args);
-        return args.message;
+        if (args.message == NULL) {
+            return "Unknown error";
+        }
+        size_t length = args.message_size;
+        if (length >= SW_LAST_ERROR_CAPACITY) {
+            length = SW_LAST_ERROR_CAPACITY - 1;
+        }
+        memcpy(g_error_message_scratch, args.message, length);
+        g_error_message_scratch[length] = '\0';
+        return g_error_message_scratch;
     }
 
     return "Unknown error";
@@ -166,7 +256,7 @@ SW_PJRT_Error_Code PJRT_CreateClient(void** out_client) {
 
     PJRT_Error* error = g_api->PJRT_Client_Create(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -205,7 +295,7 @@ SW_PJRT_Error_Code PJRT_CreateClientWithCpuDeviceCount(
 
     PJRT_Error* error = g_api->PJRT_Client_Create(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -246,7 +336,7 @@ SW_PJRT_Error_Code PJRT_GetPlatformName(void* client, const char** out_name) {
 
     PJRT_Error* error = g_api->PJRT_Client_PlatformName(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -275,7 +365,7 @@ SW_PJRT_Error_Code PJRT_GetAddressableDevices(
 
     PJRT_Error* error = g_api->PJRT_Client_AddressableDevices(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -298,7 +388,7 @@ SW_PJRT_Error_Code PJRT_GetDeviceId(void* device, int32_t* out_id) {
 
     PJRT_Error* error = g_api->PJRT_Device_GetDescription(&desc_args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -311,7 +401,7 @@ SW_PJRT_Error_Code PJRT_GetDeviceId(void* device, int32_t* out_id) {
 
     error = g_api->PJRT_DeviceDescription_Id(&id_args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -333,7 +423,7 @@ SW_PJRT_Error_Code PJRT_GetDeviceKind(void* device, const char** out_kind) {
 
     PJRT_Error* error = g_api->PJRT_Device_GetDescription(&desc_args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -346,7 +436,7 @@ SW_PJRT_Error_Code PJRT_GetDeviceKind(void* device, const char** out_kind) {
 
     error = g_api->PJRT_DeviceDescription_Kind(&kind_args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -448,8 +538,8 @@ SW_PJRT_Error_Code PJRT_CreateBufferWithSemantics(
 
     PJRT_Error* error = g_api->PJRT_Client_BufferFromHostBuffer(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
-        fprintf(stderr, "PJRT_CreateBufferWithSemantics failed: %s\n", PJRT_GetErrorMessage(error));
+        // The message is recorded for PJRT_GetLastErrorMessage; callers report it.
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -537,7 +627,7 @@ SW_PJRT_Error_Code PJRT_CreateBufferFast(
 
     PJRT_Error* error = g_api->PJRT_Client_BufferFromHostBuffer(args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         fprintf(stderr, "PJRT_CreateBufferFast failed: %s\n", PJRT_GetErrorMessage(error));
         PJRT_DestroyError(error);
         return code;
@@ -580,7 +670,7 @@ SW_PJRT_Error_Code PJRT_CreateBuffersBatched(
 
         PJRT_Error* error = g_api->PJRT_Client_BufferFromHostBuffer(&args);
         if (error != NULL) {
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             fprintf(stderr, "PJRT_CreateBuffersBatched failed at buffer %zu: %s\n",
                     i, PJRT_GetErrorMessage(error));
             PJRT_DestroyError(error);
@@ -642,7 +732,7 @@ SW_PJRT_Error_Code PJRT_BufferToHost(
     PJRT_Error* error = g_api->PJRT_Buffer_ToHostBuffer(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -664,7 +754,7 @@ SW_PJRT_Error_Code PJRT_BufferToHost(
         g_api->PJRT_Event_Destroy(&destroy_args);
 
         if (error != NULL) {
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -695,7 +785,7 @@ SW_PJRT_Error_Code PJRT_BufferToHostAsync(
     PJRT_Error* error = g_api->PJRT_Buffer_ToHostBuffer(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         *out_event = NULL;
         return code;
@@ -729,7 +819,7 @@ SW_PJRT_Error_Code PJRT_BufferToHostAsyncFast(
     PJRT_Error* error = g_api->PJRT_Buffer_ToHostBuffer(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         *out_event = NULL;
         return code;
@@ -752,7 +842,7 @@ SW_PJRT_Error_Code PJRT_EventAwait(void* event) {
     PJRT_Error* error = g_api->PJRT_Event_Await(&await_args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -811,7 +901,7 @@ SW_PJRT_Error_Code PJRT_EventAwaitAndDestroyFast(void* event) {
     SW_PJRT_Error_Code code = SW_PJRT_Error_OK;
 
     if (error != NULL) {
-        code = PJRT_GetErrorCode(error);
+        code = sw_record_error(error);
         PJRT_DestroyError(error);
     }
 
@@ -842,7 +932,7 @@ SW_PJRT_Error_Code PJRT_GetBufferDimensions(
     PJRT_Error* error = g_api->PJRT_Buffer_Dimensions(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -894,7 +984,7 @@ SW_PJRT_Error_Code PJRT_GetBufferOnDeviceSizeInBytes(
     PJRT_Error* error = g_api->PJRT_Buffer_OnDeviceSizeInBytes(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -917,7 +1007,7 @@ SW_PJRT_Error_Code PJRT_Buffer_IncRefCount(void* buffer) {
     PJRT_Error* error = g_api->PJRT_Buffer_IncreaseExternalReferenceCount(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -938,7 +1028,7 @@ SW_PJRT_Error_Code PJRT_Buffer_DecRefCount(void* buffer) {
     PJRT_Error* error = g_api->PJRT_Buffer_DecreaseExternalReferenceCount(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -988,7 +1078,7 @@ static SW_PJRT_Error_Code compile_with_options(
     PJRT_Error* error = g_api->PJRT_Client_Compile(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -1011,6 +1101,7 @@ SW_PJRT_Error_Code PJRT_CompileWrapperWithOptLevel(
     size_t compile_opts_size = 0;
     char* compile_opts = PJRT_CreateCompileOptionsWithOptLevel(1, 1, (int32_t)xla_opt_level, &compile_opts_size);
     if (compile_opts == NULL) {
+        sw_set_last_errorf("failed to serialize XLA CompileOptions");
         return SW_PJRT_Error_INTERNAL;
     }
 
@@ -1041,6 +1132,8 @@ SW_PJRT_Error_Code PJRT_CompileWrapperSPMD(
         num_replicas, num_partitions, SW_XLA_OPT_DEFAULT,
         use_spmd_partitioning, use_shardy_partitioner, &compile_opts_size);
     if (compile_opts == NULL) {
+        sw_set_last_errorf("failed to serialize XLA CompileOptions (replicas=%lld, partitions=%lld)",
+                           (long long)num_replicas, (long long)num_partitions);
         return SW_PJRT_Error_INTERNAL;
     }
 
@@ -1318,7 +1411,7 @@ SW_PJRT_Error_Code PJRT_ExecuteMultiDevice(
 
     PJRT_Error* error = g_api->PJRT_LoadedExecutable_Execute(&args);
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         for (size_t d = 0; d < num_devices; d++) free(output_lists[d]);
         free(output_lists);
@@ -1524,7 +1617,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAndTransfer(
     PJRT_Error* error = g_api->PJRT_LoadedExecutable_Execute(&args);
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -1566,7 +1659,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAndTransfer(
                     g_api->PJRT_Event_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -1589,7 +1682,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAndTransfer(
         SW_PJRT_Error_Code await_code = SW_PJRT_Error_OK;
 
         if (error != NULL) {
-            await_code = PJRT_GetErrorCode(error);
+            await_code = sw_record_error(error);
             PJRT_DestroyError(error);
         }
 
@@ -1687,7 +1780,7 @@ SW_PJRT_Error_Code PJRT_ExecuteHotPath(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -1741,7 +1834,7 @@ SW_PJRT_Error_Code PJRT_ExecuteHotPath(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -1791,7 +1884,7 @@ SW_PJRT_Error_Code PJRT_ExecuteHotPath(
                     g_output_buffer_array[j] = NULL;
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -1810,7 +1903,7 @@ SW_PJRT_Error_Code PJRT_ExecuteHotPath(
 
             error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -2010,7 +2103,7 @@ SW_PJRT_Error_Code PJRT_ExecuteProfiled(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -2072,7 +2165,7 @@ SW_PJRT_Error_Code PJRT_ExecuteProfiled(
     uint64_t input_destroy_end = get_time_ns();
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -2123,7 +2216,7 @@ SW_PJRT_Error_Code PJRT_ExecuteProfiled(
                     g_output_buffer_array[j] = NULL;
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -2146,7 +2239,7 @@ SW_PJRT_Error_Code PJRT_ExecuteProfiled(
 
             error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -2218,7 +2311,7 @@ static void on_d2h_ready_callback(PJRT_Error* error, void* user_arg) {
     // Handle any error from this transfer
     if (error != NULL) {
         if (async_ctx->error == SW_PJRT_Error_OK) {
-            async_ctx->error = PJRT_GetErrorCode(error);
+            async_ctx->error = sw_record_error(error);
         }
         // Callback owns the error - destroy it
         PJRT_DestroyError(error);
@@ -2327,7 +2420,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAsync(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -2380,7 +2473,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAsync(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -2421,7 +2514,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAsync(
         if (error != NULL) {
             // Store error but continue - we'll report in callback
             if (g_async_context.error == SW_PJRT_Error_OK) {
-                g_async_context.error = PJRT_GetErrorCode(error);
+                g_async_context.error = sw_record_error(error);
             }
             PJRT_DestroyError(error);
             g_async_d2h_events[i] = NULL;
@@ -2446,7 +2539,7 @@ SW_PJRT_Error_Code PJRT_ExecuteAsync(
         if (error != NULL) {
             // OnReady registration failed - fall back to await
             if (g_async_context.error == SW_PJRT_Error_OK) {
-                g_async_context.error = PJRT_GetErrorCode(error);
+                g_async_context.error = sw_record_error(error);
             }
             PJRT_DestroyError(error);
 
@@ -3062,7 +3155,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooled(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3134,7 +3227,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooled(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -3186,7 +3279,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooled(
                     g_pooled_output_buffers[j] = NULL;
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3209,7 +3302,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooled(
 
             error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -3379,7 +3472,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooledV2(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3442,7 +3535,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooledV2(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -3488,7 +3581,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooledV2(
                     g_v2_output_buffers[j] = NULL;
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3511,7 +3604,7 @@ SW_PJRT_Error_Code PJRT_ExecutePooledV2(
 
             error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -3619,7 +3712,7 @@ SW_PJRT_Error_Code PJRT_BatchedH2DTransfer(
                     g_api->PJRT_Buffer_Destroy(&destroy_args);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3684,7 +3777,7 @@ SW_PJRT_Error_Code PJRT_BatchedD2HTransfer(
                     g_api->PJRT_Event_Destroy(&ev_destroy);
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3703,7 +3796,7 @@ SW_PJRT_Error_Code PJRT_BatchedD2HTransfer(
 
             PJRT_Error* error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -3779,7 +3872,7 @@ SW_PJRT_Error_Code PJRT_ExecuteUltraFast(
                 };
                 g_api->PJRT_Buffer_Destroy(&destroy_args);
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3836,7 +3929,7 @@ SW_PJRT_Error_Code PJRT_ExecuteUltraFast(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -3877,7 +3970,7 @@ SW_PJRT_Error_Code PJRT_ExecuteUltraFast(
                 };
                 g_api->PJRT_Buffer_Destroy(&buf_destroy);
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -3895,7 +3988,7 @@ SW_PJRT_Error_Code PJRT_ExecuteUltraFast(
 
         error = g_api->PJRT_Event_Await(&await_args);
         if (error != NULL && result == SW_PJRT_Error_OK) {
-            result = PJRT_GetErrorCode(error);
+            result = sw_record_error(error);
             PJRT_DestroyError(error);
         }
 
@@ -3978,7 +4071,7 @@ static SW_PJRT_Error_Code pipeline_complete_slot(
 
             PJRT_Error* error = g_api->PJRT_Event_Await(&await_args);
             if (error != NULL && result == SW_PJRT_Error_OK) {
-                result = PJRT_GetErrorCode(error);
+                result = sw_record_error(error);
                 PJRT_DestroyError(error);
             }
 
@@ -4077,7 +4170,7 @@ SW_PJRT_Error_Code PJRT_PipelineSubmit(
                 };
                 g_api->PJRT_Buffer_Destroy(&destroy_args);
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }
@@ -4135,7 +4228,7 @@ SW_PJRT_Error_Code PJRT_PipelineSubmit(
     }
 
     if (error != NULL) {
-        SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+        SW_PJRT_Error_Code code = sw_record_error(error);
         PJRT_DestroyError(error);
         return code;
     }
@@ -4184,7 +4277,7 @@ SW_PJRT_Error_Code PJRT_PipelineSubmit(
                     slot->output_buffers[j] = NULL;
                 }
             }
-            SW_PJRT_Error_Code code = PJRT_GetErrorCode(error);
+            SW_PJRT_Error_Code code = sw_record_error(error);
             PJRT_DestroyError(error);
             return code;
         }

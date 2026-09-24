@@ -273,6 +273,24 @@ public enum XLAError: Error, CustomStringConvertible {
     }
 }
 
+/// Describe a failed PJRT wrapper call: the status code name plus the plugin's
+/// own message (e.g. the XLA compile diagnostic) when one was recorded.
+///
+/// Callers clear the thread's last message with `PJRT_ClearLastErrorMessage()`
+/// right before the wrapper call, so a message here always belongs to it.
+func pjrtFailureDescription(_ operation: String, _ code: SW_PJRT_Error_Code) -> String {
+    let names = ["OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED",
+                 "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED",
+                 "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED",
+                 "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED"]
+    let raw = Int(code.rawValue)
+    let status = names.indices.contains(raw) ? names[raw] : "code \(raw)"
+    if let message = PJRT_GetLastErrorMessage() {
+        return "\(operation) failed (\(status)): \(String(cString: message))"
+    }
+    return "\(operation) failed (\(status))"
+}
+
 // MARK: - Element Types
 
 /// PJRT element types matching StableHLO types
@@ -448,7 +466,7 @@ public final class PJRTClient: @unchecked Sendable {
         }
 
         if createError != SW_PJRT_Error_OK {
-            throw XLAError.clientCreationFailed("PJRT_CreateClient failed with code \(createError.rawValue)")
+            throw XLAError.clientCreationFailed(pjrtFailureDescription("PJRT_Client_Create", createError))
         }
 
         guard let handle = clientHandle else {
@@ -543,7 +561,7 @@ public final class PJRTClient: @unchecked Sendable {
         }
 
         if errorCode != SW_PJRT_Error_OK {
-            throw XLAError.bufferCreationFailed("PJRT_CreateBuffer failed with code \(errorCode.rawValue)")
+            throw XLAError.bufferCreationFailed(pjrtFailureDescription("PJRT_CreateBuffer", errorCode))
         }
 
         guard let buffer = bufferHandle else {
@@ -565,10 +583,11 @@ public final class PJRTClient: @unchecked Sendable {
         }
 
         var executableHandle: UnsafeMutableRawPointer?
+        PJRT_ClearLastErrorMessage()
         let errorCode = PJRT_CompileWrapper(clientHandle, mlir, &executableHandle)
 
         if errorCode != SW_PJRT_Error_OK {
-            throw XLAError.compilationFailed("Compilation failed with code \(errorCode.rawValue)")
+            throw XLAError.compilationFailed(pjrtFailureDescription("PJRT_Client_Compile", errorCode))
         }
 
         guard let executable = executableHandle else {
@@ -609,6 +628,7 @@ public final class PJRTClient: @unchecked Sendable {
         }
 
         var executableHandle: UnsafeMutableRawPointer?
+        PJRT_ClearLastErrorMessage()
         let errorCode = PJRT_CompileWrapperSPMD(
             clientHandle,
             mlir,
@@ -620,10 +640,9 @@ public final class PJRTClient: @unchecked Sendable {
         )
 
         if errorCode != SW_PJRT_Error_OK {
-            if let errorMsg = PJRT_GetLastError() {
-                throw XLAError.compilationFailed("SPMD compilation failed: \(String(cString: errorMsg))")
-            }
-            throw XLAError.compilationFailed("SPMD compilation failed with code \(errorCode.rawValue)")
+            throw XLAError.compilationFailed(pjrtFailureDescription(
+                "PJRT_Client_Compile (replicas: \(numReplicas), partitions: \(numPartitions))",
+                errorCode))
         }
 
         guard let executable = executableHandle else {
