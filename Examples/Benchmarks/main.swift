@@ -4,12 +4,20 @@
 // computations to measure performance characteristics.
 //
 // Run with:
-//   MAGMA_XLA_PATH=/opt/swiftir-deps MAGMA_ENABLE_XLA=1 swift run Benchmarks
+//   MAGMA_XLA_PATH=/opt/xla/lib swift run Benchmarks
 //
-// For mixed precision benchmarks on TPU:
-//   MAGMA_XLA_PATH=/opt/swiftir-deps MAGMA_ENABLE_XLA=1 swift run Benchmarks --mixed-precision
+// (add `-c release` before the target for representative host-side overhead)
+//
+// Options:
+//   --iterations N       timed iterations per benchmark (default 20)
+//   --warmup N           untimed warmup iterations (default 5)
+//   --mixed-precision    also run the bfloat16 benchmarks (meant for TPU)
+//
+// By default only the matmul suite runs; the other suites are opt-in in main().
+// Each timed iteration includes reading the result back to the host.
 
 import Magma
+import XLARuntime
 import Foundation
 
 // MARK: - String Extension for Left Padding
@@ -628,6 +636,8 @@ func runGradientBenchmarks(_ suite: BenchmarkSuite) {
 // MARK: - Main
 
 func main() {
+    requireBackend(target: "Benchmarks")
+
     let config = BenchmarkConfig.fromCommandLine()
     let suite = BenchmarkSuite(config: config)
 
@@ -655,6 +665,33 @@ func main() {
     // runGradientBenchmarks(suite)
 
     suite.printSummary()
+}
+
+// MARK: - Backend preflight
+
+/// Exits with an actionable message when no execution backend is installed.
+///
+/// Without a PJRT plugin every compile fails and reads return no values, so the
+/// timings would measure nothing.
+func requireBackend(target: String) {
+    guard Backend.availableBackends.isEmpty else { return }
+    #if os(macOS)
+    let ext = "dylib"
+    #else
+    let ext = "so"
+    #endif
+    let path = ProcessInfo.processInfo.environment["MAGMA_XLA_PATH"]
+    let searched = path.map { "MAGMA_XLA_PATH=\($0)" }
+        ?? "MAGMA_XLA_PATH is not set; searched the default locations such as /opt/xla/lib"
+    let message = """
+        error: no execution backend found (\(searched)).
+        Set MAGMA_XLA_PATH to the directory that contains pjrt_c_api_cpu_plugin.\(ext)
+        (or pjrt_c_api_gpu_plugin.\(ext) / pjrt_c_api_tpu_plugin.\(ext)), for example:
+            MAGMA_XLA_PATH=/opt/xla/lib swift run \(target)
+
+        """
+    FileHandle.standardError.write(Data(message.utf8))
+    exit(1)
 }
 
 // Run
