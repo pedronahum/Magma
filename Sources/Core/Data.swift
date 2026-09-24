@@ -1422,14 +1422,21 @@ public struct MNIST {
 
     /// Creates an MNIST dataset.
     ///
+    /// Files are downloaded once and cached. A cached file that is truncated or
+    /// corrupt (including a bad `.gz`) is deleted and downloaded again once;
+    /// if that also fails, the initializer throws instead of trapping.
+    ///
     /// - Parameters:
     ///   - split: Training or test split.
     ///   - normalize: Whether to normalize pixel values to [0, 1]. Default true.
     ///   - flatten: Whether to flatten images to [N, 784]. Default true.
-    ///   - oneHot: Whether to one-hot encode labels. Default true.
-    ///   - dataDir: Directory to cache downloaded data. Default ~/.magma/data/mnist.
+    ///   - oneHot: Whether to one-hot encode labels. Default true. One-hot
+    ///     labels work directly with `nn.functional.crossEntropy`.
+    ///   - dataDir: Directory to cache downloaded data. When nil, uses
+    ///     `$MAGMA_DATA_DIR/mnist` if the `MAGMA_DATA_DIR` environment variable
+    ///     is set, otherwise `~/.magma/data/mnist`.
     ///   - device: Device to place tensors on.
-    /// - Throws: If data download or parsing fails.
+    /// - Throws: `MNISTError` if downloading, decompressing or parsing fails.
     public init(
         split: Split = .train,
         normalize: Bool = true,
@@ -1455,21 +1462,25 @@ public struct MNIST {
             (MNIST.testImagesFile, MNIST.testLabelsFile)
         }
 
-        // Download and decompress if needed
-        let imagesPath = try MNIST.ensureFile(imagesFile, in: cacheDir)
-        let labelsPath = try MNIST.ensureFile(labelsFile, in: cacheDir)
-
-        // Parse IDX files
-        let (imageData, numImages, rows, cols) = try MNIST.parseIDX3(path: imagesPath)
-        let labelData = try MNIST.parseIDX1(path: labelsPath)
-
-        precondition(imageData.count == numImages * rows * cols,
-                    "Image data size mismatch")
-        precondition(labelData.count == numImages,
-                    "Label data size mismatch")
+        // Load from the cache; if a cached file is bad, delete it and fetch it
+        // again once rather than failing on every run.
+        let parsed: (images: IDXImages, labels: [UInt8])
+        do {
+            parsed = try MNIST.load(imagesFile, labelsFile, in: cacheDir)
+        } catch let error as MNISTError where error.isCorruptData {
+            MNIST.removeCachedFiles([imagesFile, labelsFile], in: cacheDir)
+            do {
+                parsed = try MNIST.load(imagesFile, labelsFile, in: cacheDir)
+            } catch let retryError as MNISTError where retryError.isCorruptData {
+                MNIST.removeCachedFiles([imagesFile, labelsFile], in: cacheDir)
+                throw retryError
+            }
+        }
+        let (idx, labelData) = parsed
+        let (numImages, rows, cols) = (idx.count, idx.rows, idx.cols)
 
         // Convert to float and optionally normalize
-        var floatImages = imageData.map { Float($0) }
+        var floatImages = idx.pixels.map { Float($0) }
         if normalize {
             floatImages = floatImages.map { $0 / 255.0 }
         }
@@ -1481,7 +1492,7 @@ public struct MNIST {
             self.images = Tensor<Float>(floatImages, shape: [numImages, rows, cols, 1], on: device)
         }
 
-        // Create label tensor
+        // Create label tensor (labels are validated to be in 0..<10)
         if oneHot {
             // One-hot encode: [N] -> [N, 10]
             var oneHotData = [Float](repeating: 0.0, count: numImages * 10)
@@ -1496,8 +1507,45 @@ public struct MNIST {
         }
     }
 
-    /// Default data directory
-    private static func defaultDataDir() -> String {
+    /// Parsed IDX3 image file.
+    struct IDXImages {
+        var pixels: [UInt8]
+        var count: Int
+        var rows: Int
+        var cols: Int
+    }
+
+    /// Ensures both files are cached, then parses and cross-checks them.
+    private static func load(
+        _ imagesFile: String, _ labelsFile: String, in cacheDir: String
+    ) throws -> (images: IDXImages, labels: [UInt8]) {
+        let imagesPath = try ensureFile(imagesFile, in: cacheDir)
+        let labelsPath = try ensureFile(labelsFile, in: cacheDir)
+        let images = try parseIDX3(Data(contentsOf: URL(fileURLWithPath: imagesPath)))
+        let labels = try parseIDX1(Data(contentsOf: URL(fileURLWithPath: labelsPath)), numClasses: 10)
+        guard labels.count == images.count else {
+            throw MNISTError.invalidFormat(
+                "\(imagesFile) has \(images.count) images but \(labelsFile) has \(labels.count) labels")
+        }
+        return (images, labels)
+    }
+
+    /// Deletes the compressed and decompressed cache entries for `files`.
+    private static func removeCachedFiles(_ files: [String], in directory: String) {
+        for file in files {
+            let decompressed = file.hasSuffix(".gz") ? String(file.dropLast(3)) : file
+            try? FileManager.default.removeItem(atPath: "\(directory)/\(file)")
+            try? FileManager.default.removeItem(atPath: "\(directory)/\(decompressed)")
+        }
+    }
+
+    /// Default data directory: `$MAGMA_DATA_DIR/mnist`, else `~/.magma/data/mnist`.
+    static func defaultDataDir(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        if let root = environment["MAGMA_DATA_DIR"], !root.isEmpty {
+            return "\(root)/mnist"
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/.magma/data/mnist"
     }
@@ -1566,72 +1614,111 @@ public struct MNIST {
             throw MNISTError.noData
         }
 
-        try data.write(to: URL(fileURLWithPath: path))
+        // Atomic write: an interrupted download never leaves a partial file
+        // under the final name.
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
         print("Downloaded \(filename) (\(data.count) bytes)")
     }
 
-    /// Decompress gzip file
-    private static func decompressGzip(from sourcePath: String, to destPath: String) throws {
-        // Use the gzip command-line tool for simplicity
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
-        process.arguments = ["-dk", sourcePath]
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
+    /// Decompress a gzip file with the `gzip` found on `PATH`.
+    ///
+    /// Decompresses into a temporary file and moves it into place only on
+    /// success, so a failed run never leaves a truncated file behind.
+    static func decompressGzip(from sourcePath: String, to destPath: String) throws {
+        let tempPath = destPath + ".partial"
+        guard FileManager.default.createFile(atPath: tempPath, contents: nil),
+              let output = FileHandle(forWritingAtPath: tempPath) else {
             throw MNISTError.decompressFailed
         }
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
-        // gzip -dk creates file without .gz extension in same directory
-        // Move if needed (it should already be in the right place)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["gzip", "-dc", sourcePath]
+        process.standardOutput = output
+        do {
+            try process.run()
+        } catch {
+            try? output.close()
+            throw MNISTError.decompressFailed
+        }
+        process.waitUntilExit()
+        try? output.close()
+
+        guard process.terminationStatus == 0 else {
+            throw MNISTError.decompressFailed
+        }
+        try? FileManager.default.removeItem(atPath: destPath)
+        try FileManager.default.moveItem(atPath: tempPath, toPath: destPath)
+    }
+
+    /// Reads a big-endian UInt32 at `offset` (no alignment requirement).
+    private static func readUInt32BE(_ bytes: [UInt8], at offset: Int) -> Int {
+        Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16
+            | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
     }
 
     /// Parse IDX3 file format (images)
     /// Format: [magic:4][numImages:4][rows:4][cols:4][pixel data...]
-    private static func parseIDX3(path: String) throws -> (data: [UInt8], numImages: Int, rows: Int, cols: Int) {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-
-        guard data.count >= 16 else {
-            throw MNISTError.invalidFormat("File too small for IDX3 header")
+    ///
+    /// - Throws: `MNISTError.invalidFormat` if the header is malformed or the
+    ///   pixel payload is not exactly `numImages * rows * cols` bytes.
+    static func parseIDX3(_ data: Data) throws -> IDXImages {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 16 else {
+            throw MNISTError.invalidFormat("File too small for IDX3 header (\(bytes.count) bytes)")
         }
 
         // Read header (big-endian)
-        let magic = data.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let magic = readUInt32BE(bytes, at: 0)
         guard magic == 0x00000803 else {
-            throw MNISTError.invalidFormat("Invalid magic number: \(magic)")
+            throw MNISTError.invalidFormat("Invalid IDX3 magic number: \(magic)")
         }
 
-        let numImages = Int(data[4...7].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-        let rows = Int(data[8...11].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-        let cols = Int(data[12...15].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
+        let numImages = readUInt32BE(bytes, at: 4)
+        let rows = readUInt32BE(bytes, at: 8)
+        let cols = readUInt32BE(bytes, at: 12)
+        guard rows > 0, cols > 0 else {
+            throw MNISTError.invalidFormat("Invalid IDX3 image size \(rows)x\(cols)")
+        }
 
-        let pixelData = Array(data.dropFirst(16))
+        let (expected, overflow) = numImages.multipliedReportingOverflow(by: rows * cols)
+        let payload = bytes.count - 16
+        guard !overflow, payload == expected else {
+            throw MNISTError.invalidFormat(
+                "IDX3 pixel data is \(payload) bytes, expected \(numImages) x \(rows) x \(cols) " +
+                "(truncated or corrupt file)")
+        }
 
-        return (pixelData, numImages, rows, cols)
+        return IDXImages(pixels: Array(bytes[16...]), count: numImages, rows: rows, cols: cols)
     }
 
     /// Parse IDX1 file format (labels)
     /// Format: [magic:4][numItems:4][label data...]
-    private static func parseIDX1(path: String) throws -> [UInt8] {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-
-        guard data.count >= 8 else {
-            throw MNISTError.invalidFormat("File too small for IDX1 header")
+    ///
+    /// - Throws: `MNISTError.invalidFormat` if the header is malformed, the
+    ///   payload is not exactly `numItems` bytes, or a label is `>= numClasses`.
+    static func parseIDX1(_ data: Data, numClasses: Int) throws -> [UInt8] {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 8 else {
+            throw MNISTError.invalidFormat("File too small for IDX1 header (\(bytes.count) bytes)")
         }
 
         // Read header (big-endian)
-        let magic = data.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let magic = readUInt32BE(bytes, at: 0)
         guard magic == 0x00000801 else {
-            throw MNISTError.invalidFormat("Invalid magic number: \(magic)")
+            throw MNISTError.invalidFormat("Invalid IDX1 magic number: \(magic)")
         }
 
-        let numItems = Int(data[4...7].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-        let labelData = Array(data.dropFirst(8))
+        let numItems = readUInt32BE(bytes, at: 4)
+        let labelData = Array(bytes[8...])
 
         guard labelData.count == numItems else {
-            throw MNISTError.invalidFormat("Label count mismatch: expected \(numItems), got \(labelData.count)")
+            throw MNISTError.invalidFormat(
+                "Label count mismatch: expected \(numItems), got \(labelData.count) (truncated or corrupt file)")
+        }
+        if let bad = labelData.first(where: { Int($0) >= numClasses }) {
+            throw MNISTError.invalidFormat("Label \(bad) out of range 0..<\(numClasses)")
         }
 
         return labelData
@@ -1658,6 +1745,14 @@ public enum MNISTError: Error, CustomStringConvertible {
             return "Failed to decompress gzip file"
         case .invalidFormat(let msg):
             return "Invalid file format: \(msg)"
+        }
+    }
+
+    /// Whether the error means cached data is bad (so re-downloading may help).
+    var isCorruptData: Bool {
+        switch self {
+        case .decompressFailed, .invalidFormat: return true
+        case .invalidURL, .httpError, .noData: return false
         }
     }
 }
