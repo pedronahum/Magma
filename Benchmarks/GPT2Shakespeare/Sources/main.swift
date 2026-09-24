@@ -3,9 +3,12 @@
 //
 // Reproduces Karpathy's nanoGPT character-level Shakespeare results.
 //
-// Usage:
-//   1. python3 prepare_data.py    (downloads & tokenizes Shakespeare)
-//   2. swift run -c release GPT2Shakespeare
+// Requirements: macOS 15+ on Apple Silicon, with Magma's Metal backend enabled
+// (this is a separate, experimental package; see ../README.md).
+//
+// Usage (from this directory):
+//   1. python3 prepare_data.py    (downloads & tokenizes Shakespeare into data/)
+//   2. MAGMA_ENABLE_METAL=1 swift run -c release GPT2Shakespeare
 //
 // Expected: loss starts ~4.17 (ln(65)), decreases to ~1.5 over 5000 steps
 
@@ -688,7 +691,7 @@ func trainShakespeare() {
 
     guard Backend.metal.isAvailable else {
         print("ERROR: Metal backend not available")
-        return
+        exit(1)
     }
 
     let device = Device(backend: .metal, index: 0)
@@ -703,7 +706,7 @@ func trainShakespeare() {
     guard FileManager.default.fileExists(atPath: trainPath) else {
         print("ERROR: Training data not found at \(trainPath)")
         print("Run: python3 prepare_data.py")
-        return
+        exit(1)
     }
 
     let meta: VocabMeta
@@ -712,7 +715,7 @@ func trainShakespeare() {
         print("Vocabulary: \(meta.vocabSize) characters")
     } catch {
         print("ERROR: Failed to load meta.json: \(error)")
-        return
+        exit(1)
     }
 
     let modelConfig = GPT2Config.shakespeareTiny
@@ -743,7 +746,7 @@ func trainShakespeare() {
         print()
     } catch {
         print("ERROR: Failed to load datasets: \(error)")
-        return
+        exit(1)
     }
 
     // Create model
@@ -828,8 +831,20 @@ func trainShakespeare() {
         for g in clippedGrads { g.markForMaterialization() }
         LazyTensorBarrier(on: device)
 
-        // Optimizer step
-        optimizer.step(clippedGrads)
+        // Optimizer step, matching gradients to parameters by identity.
+        // flattenGradients mirrors the order of model.parameters(); check the
+        // pairing so a drift in either fails loudly instead of training the
+        // wrong tensor.
+        let params = model.parameters()
+        precondition(params.count == clippedGrads.count,
+                     "flattenGradients produced \(clippedGrads.count) gradients for \(params.count) parameters")
+        var gradsByParam: [Parameter: Tensor<Float>] = [:]
+        for (param, g) in zip(params, clippedGrads) {
+            precondition(param.value.shape == g.shape,
+                         "gradient shape \(g.shape) does not match parameter shape \(param.value.shape)")
+            gradsByParam[param] = g
+        }
+        optimizer.step(gradsByParam)
 
         // Materialize updated parameters
         for param in model.parameters() { param.value.markForMaterialization() }
