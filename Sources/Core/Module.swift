@@ -2399,8 +2399,12 @@ extension nn {
     ///   - key: Key tensor of same shape as query
     ///   - value: Value tensor of same shape as query
     ///   - mask: Optional attention mask. Values where mask is `true` (or non-zero) will be masked out.
-    ///   - dropout: Dropout probability (not applied during inference). Defaults to 0.
-    /// - Returns: Tuple of (attention output, attention weights)
+    ///   - dropout: Dropout probability applied to the attention weights before
+    ///     they are combined with `value`. This function has no train/eval state:
+    ///     dropout is applied whenever `dropout > 0`, so pass 0 at inference
+    ///     (`MultiheadAttention` does this automatically in eval mode). Defaults to 0.
+    /// - Returns: Tuple of (attention output, attention weights). The returned
+    ///   weights are the softmax probabilities *before* dropout.
     public static func scaledDotProductAttention(
         query: Tensor<Float>,
         key: Tensor<Float>,
@@ -2427,11 +2431,11 @@ extension nn {
         // Softmax over the last dimension (key sequence length)
         let attentionWeights = scores.softmax(dim: -1)
 
-        // Apply dropout if specified (simplified: not implemented in lazy evaluation)
-        // In production, dropout would be applied here
+        // Dropout on the attention probabilities (inverted, so no rescale later)
+        let droppedWeights = nn.Dropout.apply(attentionWeights, p: dropout, training: true)
 
         // Compute output: attention_weights @ V
-        let output = attentionWeights.batchedMatmul(value)
+        let output = droppedWeights.batchedMatmul(value)
 
         return (output, attentionWeights)
     }
@@ -2468,8 +2472,11 @@ extension nn {
         /// Value dimension (for cross-attention)
         public let valueDim: Int
 
-        /// Dropout probability
+        /// Dropout probability on the attention weights (training mode only)
         public let dropout: Float
+
+        /// Whether in training mode (enables attention dropout). Defaults to `true`.
+        public var training: Bool = true
 
         /// Whether to add bias to projections
         public let bias: Bool
@@ -2498,7 +2505,8 @@ extension nn {
         /// - Parameters:
         ///   - embedDim: Total dimension of the model (must be divisible by numHeads).
         ///   - numHeads: Number of parallel attention heads.
-        ///   - dropout: Dropout probability on attention weights. Defaults to 0.
+        ///   - dropout: Dropout probability on attention weights, applied in training
+        ///     mode only. Defaults to 0.
         ///   - bias: Whether to add bias to projections. Defaults to true.
         ///   - kdim: Key dimension (defaults to embedDim).
         ///   - vdim: Value dimension (defaults to embedDim).
@@ -2513,6 +2521,8 @@ extension nn {
             precondition(embedDim % numHeads == 0,
                 "MultiheadAttention: embedDim (\(embedDim)) must be divisible by numHeads (\(numHeads)). " +
                 "This gives headDim = embedDim / numHeads. Try adjusting embedDim or numHeads.")
+            precondition(dropout >= 0 && dropout < 1,
+                "MultiheadAttention: dropout must be in [0, 1), got \(dropout).")
 
             self.embedDim = embedDim
             self.numHeads = numHeads
@@ -2617,7 +2627,7 @@ extension nn {
                 key: k,
                 value: v,
                 mask: mask,
-                dropout: dropout
+                dropout: training ? dropout : 0
             )
 
             // Transpose back: [batch, numHeads, seq, headDim] -> [batch, seq, numHeads, headDim]
@@ -2642,6 +2652,10 @@ extension nn {
             if let bV = bV { params.append(bV) }
             if let bO = bO { params.append(bO) }
             return params
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
         }
     }
 }
@@ -2816,8 +2830,12 @@ extension nn {
         /// Feed-forward hidden dimension
         public let dimFeedforward: Int
 
-        /// Dropout probability
+        /// Dropout probability (attention weights, sublayer outputs and FFN hidden
+        /// activations; training mode only)
         public let dropout: Float
+
+        /// Whether in training mode (enables dropout). Defaults to `true`.
+        public var training: Bool = true
 
         /// Whether to use Pre-LN (true) or Post-LN (false) architecture
         public let normFirst: Bool
@@ -2852,7 +2870,10 @@ extension nn {
         ///   - dModel: The model dimension (embedding size).
         ///   - nHead: Number of attention heads.
         ///   - dimFeedforward: Hidden dimension of the feed-forward network. Defaults to 4*dModel.
-        ///   - dropout: Dropout probability. Defaults to 0.1.
+        ///   - dropout: Dropout probability, applied (as in PyTorch) to the attention
+        ///     weights, to each sublayer output before its residual add, and after
+        ///     the FFN activation. Active in training mode only; call `eval()` for
+        ///     deterministic inference. Defaults to 0.1.
         ///   - activation: Activation function for FFN. Defaults to .relu.
         ///   - normFirst: If true, applies layer norm before attention/FFN (Pre-LN). Defaults to false.
         ///   - device: Device to allocate parameters on.
@@ -2865,6 +2886,7 @@ extension nn {
             normFirst: Bool = false,
             device: Device = .default
         ) {
+            precondition(dropout >= 0 && dropout < 1, "Transformer layer: dropout must be in [0, 1), got \(dropout).")
             self.dModel = dModel
             self.nHead = nHead
             self.dimFeedforward = dimFeedforward ?? (4 * dModel)
@@ -2920,12 +2942,12 @@ extension nn {
             // Self-attention with pre-norm
             let normed1 = norm1(x)
             let attnOut = selfAttn.forward(query: normed1, key: normed1, value: normed1, mask: mask).output
-            var out = x + attnOut
+            var out = x + applyDropout(attnOut)
 
             // FFN with pre-norm
             let normed2 = norm2(out)
             let ffnOut = feedForward(normed2)
-            out = out + ffnOut
+            out = out + applyDropout(ffnOut)
 
             return out
         }
@@ -2934,11 +2956,11 @@ extension nn {
         private func forwardPostLN(_ x: Tensor<Float>, mask: Tensor<Float>? = nil) -> Tensor<Float> {
             // Self-attention with post-norm
             let attnOut = selfAttn.forward(query: x, key: x, value: x, mask: mask).output
-            var out = norm1(x + attnOut)
+            var out = norm1(x + applyDropout(attnOut))
 
             // FFN with post-norm
             let ffnOut = feedForward(out)
-            out = norm2(out + ffnOut)
+            out = norm2(out + applyDropout(ffnOut))
 
             return out
         }
@@ -2959,6 +2981,7 @@ extension nn {
             case .gelu:
                 hidden = hidden.gelu()
             }
+            hidden = applyDropout(hidden)
 
             // Second linear
             hidden = linear2(hidden)
@@ -2975,6 +2998,16 @@ extension nn {
             params.append(contentsOf: linear1.parameters())
             params.append(contentsOf: linear2.parameters())
             return params
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
+            selfAttn.setTraining(training)
+        }
+
+        /// Dropout on a sublayer output / FFN activation (training mode only).
+        private func applyDropout(_ x: Tensor<Float>) -> Tensor<Float> {
+            Dropout.apply(x, p: dropout, training: training)
         }
     }
 
@@ -3013,8 +3046,12 @@ extension nn {
         /// Feed-forward hidden dimension
         public let dimFeedforward: Int
 
-        /// Dropout probability
+        /// Dropout probability (attention weights, sublayer outputs and FFN hidden
+        /// activations; training mode only)
         public let dropout: Float
+
+        /// Whether in training mode (enables dropout). Defaults to `true`.
+        public var training: Bool = true
 
         /// Whether to use Pre-LN (true) or Post-LN (false) architecture
         public let normFirst: Bool
@@ -3055,7 +3092,10 @@ extension nn {
         ///   - dModel: The model dimension (embedding size).
         ///   - nHead: Number of attention heads.
         ///   - dimFeedforward: Hidden dimension of the feed-forward network. Defaults to 4*dModel.
-        ///   - dropout: Dropout probability. Defaults to 0.1.
+        ///   - dropout: Dropout probability, applied (as in PyTorch) to the attention
+        ///     weights, to each sublayer output before its residual add, and after
+        ///     the FFN activation. Active in training mode only; call `eval()` for
+        ///     deterministic inference. Defaults to 0.1.
         ///   - activation: Activation function for FFN. Defaults to .relu.
         ///   - normFirst: If true, applies layer norm before attention/FFN (Pre-LN). Defaults to false.
         ///   - device: Device to allocate parameters on.
@@ -3068,6 +3108,7 @@ extension nn {
             normFirst: Bool = false,
             device: Device = .default
         ) {
+            precondition(dropout >= 0 && dropout < 1, "Transformer layer: dropout must be in [0, 1), got \(dropout).")
             self.dModel = dModel
             self.nHead = nHead
             self.dimFeedforward = dimFeedforward ?? (4 * dModel)
@@ -3142,17 +3183,17 @@ extension nn {
             // Self-attention with pre-norm
             let normed1 = norm1(x)
             let selfAttnOut = selfAttn.forward(query: normed1, key: normed1, value: normed1, mask: tgtMask).output
-            x = x + selfAttnOut
+            x = x + applyDropout(selfAttnOut)
 
             // Cross-attention with pre-norm
             let normed2 = norm2(x)
             let crossAttnOut = crossAttn.forward(query: normed2, key: memory, value: memory, mask: memoryMask).output
-            x = x + crossAttnOut
+            x = x + applyDropout(crossAttnOut)
 
             // FFN with pre-norm
             let normed3 = norm3(x)
             let ffnOut = feedForward(normed3)
-            x = x + ffnOut
+            x = x + applyDropout(ffnOut)
 
             return x
         }
@@ -3168,15 +3209,15 @@ extension nn {
 
             // Self-attention with post-norm
             let selfAttnOut = selfAttn.forward(query: x, key: x, value: x, mask: tgtMask).output
-            x = norm1(x + selfAttnOut)
+            x = norm1(x + applyDropout(selfAttnOut))
 
             // Cross-attention with post-norm
             let crossAttnOut = crossAttn.forward(query: x, key: memory, value: memory, mask: memoryMask).output
-            x = norm2(x + crossAttnOut)
+            x = norm2(x + applyDropout(crossAttnOut))
 
             // FFN with post-norm
             let ffnOut = feedForward(x)
-            x = norm3(x + ffnOut)
+            x = norm3(x + applyDropout(ffnOut))
 
             return x
         }
@@ -3197,6 +3238,7 @@ extension nn {
             case .gelu:
                 hidden = hidden.gelu()
             }
+            hidden = applyDropout(hidden)
 
             // Second linear
             hidden = linear2(hidden)
@@ -3215,6 +3257,17 @@ extension nn {
             params.append(contentsOf: linear1.parameters())
             params.append(contentsOf: linear2.parameters())
             return params
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
+            selfAttn.setTraining(training)
+            crossAttn.setTraining(training)
+        }
+
+        /// Dropout on a sublayer output / FFN activation (training mode only).
+        private func applyDropout(_ x: Tensor<Float>) -> Tensor<Float> {
+            Dropout.apply(x, p: dropout, training: training)
         }
 
         /// Convenience method for calling without masks
@@ -3295,7 +3348,8 @@ extension nn {
         /// - Parameters:
         ///   - dModel: The model dimension (embedding size).
         ///   - maxLen: Maximum sequence length. Defaults to 5000.
-        ///   - dropout: Dropout probability. Defaults to 0.1.
+        ///   - dropout: Dropout probability applied to `input + encoding` in training
+        ///     mode (call `eval()` to disable). Defaults to 0.1.
         ///   - device: Device to allocate the encoding on.
         public init(
             dModel: Int,
@@ -3303,6 +3357,8 @@ extension nn {
             dropout: Float = 0.1,
             device: Device = .default
         ) {
+            precondition(dropout >= 0 && dropout < 1,
+                "SinusoidalPositionalEncoding: dropout must be in [0, 1), got \(dropout).")
             self.dModel = dModel
             self.maxLen = maxLen
             self.dropout = dropout
@@ -3340,15 +3396,24 @@ extension nn {
                 let peFlat = pe.reshape([maxLen, dModel])
                 let peSliced = peFlat.slice(start: 0, size: seqLen)
                 let posEnc = peSliced.reshape([1, seqLen, dModel])
-                return input + posEnc.broadcast(to: input.shape)
+                return Dropout.apply(input + posEnc.broadcast(to: input.shape), p: dropout, training: training)
             } else {
                 // seqLen == maxLen, use full PE
-                return input + pe.broadcast(to: input.shape)
+                return Dropout.apply(input + pe.broadcast(to: input.shape), p: dropout, training: training)
             }
         }
 
         public func parameters() -> [Parameter] {
             []  // Positional encodings are not learned
+        }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
+        }
+
+        /// Moves the precomputed encoding table (it is not a `Parameter`).
+        public mutating func to(device: Device) {
+            pe = pe.to(device: device)
         }
     }
 
@@ -3416,15 +3481,6 @@ extension nn {
 
         public func parameters() -> [Parameter] {
             [embedding]
-        }
-
-        public mutating func setTraining(_ training: Bool) {
-            self.training = training
-        }
-
-        /// Moves the precomputed encoding table (it is not a `Parameter`).
-        public mutating func to(device: Device) {
-            pe = pe.to(device: device)
         }
     }
 
@@ -4047,6 +4103,11 @@ extension nn {
             }
             return params
         }
+
+        /// Propagates train/eval mode to the inter-layer dropout.
+        public mutating func setTraining(_ training: Bool) {
+            dropoutLayer?.setTraining(training)
+        }
     }
 
     // MARK: - LSTM Layer
@@ -4406,6 +4467,10 @@ extension nn {
         public func parameters() -> [Parameter] {
             cells.flatMap { $0.parameters() }
         }
+
+        public mutating func setTraining(_ training: Bool) {
+            self.training = training
+        }
     }
 }
 
@@ -4455,10 +4520,6 @@ public struct Checkpoint: Codable {
             self.index = index
             self.shape = shape
             self.values = values
-        }
-
-        public mutating func setTraining(_ training: Bool) {
-            self.training = training
         }
     }
 
