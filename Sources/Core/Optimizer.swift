@@ -26,7 +26,7 @@ import XLARuntime
 ///     ParameterGroup(parameters: otherParams, weightDecay: 0.0),
 /// ]
 ///
-/// var optimizer = optim.AdamW(parameterGroups: groups, lr: 6e-4)
+/// var optimizer = optim.AdamWGroups(parameterGroups: groups, lr: 6e-4)
 /// ```
 public struct ParameterGroup {
     /// Parameters in this group
@@ -261,6 +261,12 @@ extension optim {
     /// p_t = p_{t-1} - lr * m_hat / (sqrt(v_hat) + eps)
     /// ```
     ///
+    /// - Important: A non-zero `weightDecay` is applied as **decoupled** weight
+    ///   decay (AdamW, Loshchilov & Hutter): `p_t -= lr * weightDecay * p_{t-1}`,
+    ///   separately from the adaptive update. This differs from PyTorch's
+    ///   `torch.optim.Adam(weight_decay:)`, which adds an L2 term to the
+    ///   gradient. `optim.AdamW` is the same type.
+    ///
     /// Example:
     /// ```swift
     /// var optimizer = optim.Adam(parameters: model.parameters(), lr: 0.001)
@@ -301,7 +307,8 @@ extension optim {
         ///   - beta1: First moment decay. Defaults to 0.9.
         ///   - beta2: Second moment decay. Defaults to 0.999.
         ///   - eps: Numerical stability constant. Defaults to 1e-8.
-        ///   - weightDecay: Weight decay. Defaults to 0.
+        ///   - weightDecay: Decoupled (AdamW-style) weight decay, applied directly
+        ///     to the parameters rather than added to the gradient. Defaults to 0.
         public init(
             parameters: [Parameter],
             lr: Float = 0.001,
@@ -638,6 +645,7 @@ extension optim {
         }
 
         public init(baseLR: Float, stepSize: Int, gamma: Float = 0.1) {
+            precondition(stepSize > 0, "StepLR: stepSize must be positive, got \(stepSize)")
             self.baseLR = baseLR
             self.stepSize = stepSize
             self.gamma = gamma
@@ -693,6 +701,7 @@ extension optim {
         }
 
         public init(baseLR: Float, totalEpochs: Int, minLR: Float = 0) {
+            precondition(totalEpochs > 0, "CosineAnnealingLR: totalEpochs must be positive, got \(totalEpochs)")
             self.baseLR = baseLR
             self.totalEpochs = totalEpochs
             self.minLR = minLR
@@ -721,6 +730,7 @@ extension optim {
         }
 
         public init(baseLR: Float, warmupSteps: Int) {
+            precondition(warmupSteps >= 0, "WarmupLR: warmupSteps must be non-negative, got \(warmupSteps)")
             self.baseLR = baseLR
             self.warmupSteps = warmupSteps
         }
@@ -754,6 +764,11 @@ extension optim {
         }
 
         public init(baseLR: Float, warmupSteps: Int, totalSteps: Int, minLR: Float = 0) {
+            precondition(warmupSteps >= 0,
+                "WarmupCosineScheduler: warmupSteps must be non-negative, got \(warmupSteps)")
+            precondition(totalSteps > warmupSteps,
+                "WarmupCosineScheduler: totalSteps (\(totalSteps)) must be greater than warmupSteps " +
+                "(\(warmupSteps)) so the cosine decay phase has at least one step")
             self.baseLR = baseLR
             self.warmupSteps = warmupSteps
             self.totalSteps = totalSteps
