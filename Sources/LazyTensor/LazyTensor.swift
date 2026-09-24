@@ -643,32 +643,107 @@ public struct ConstantPromotionResult: Sendable {
 
 // MARK: - Compilation Cache
 
+/// A least-recently-used map bounded by entry count and by a total cost (e.g.
+/// bytes). Not synchronized: the owner guards it with its own lock.
+struct LRUMap<Key: Hashable, Value> {
+    private var storage: [Key: (value: Value, cost: Int, lastUse: UInt64)] = [:]
+    private var clock: UInt64 = 0
+
+    /// Maximum number of entries kept.
+    var maxEntries: Int { didSet { evict() } }
+    /// Maximum total cost kept.
+    var maxCost: Int { didSet { evict() } }
+    /// Sum of the costs of the entries currently kept.
+    private(set) var totalCost = 0
+
+    init(maxEntries: Int, maxCost: Int = .max) {
+        self.maxEntries = maxEntries
+        self.maxCost = maxCost
+    }
+
+    var count: Int { storage.count }
+
+    /// Look up a value, marking it most recently used.
+    mutating func get(_ key: Key) -> Value? {
+        guard var entry = storage[key] else { return nil }
+        clock &+= 1
+        entry.lastUse = clock
+        storage[key] = entry
+        return entry.value
+    }
+
+    /// Insert or replace a value, then evict least recently used entries until
+    /// both bounds hold. An entry costing more than `maxCost` is not kept.
+    mutating func set(_ key: Key, _ value: Value, cost: Int = 0) {
+        if let old = storage.removeValue(forKey: key) { totalCost -= old.cost }
+        guard cost <= maxCost else { return }
+        clock &+= 1
+        storage[key] = (value, cost, clock)
+        totalCost += cost
+        evict()
+    }
+
+    mutating func removeAll() {
+        storage.removeAll()
+        totalCost = 0
+    }
+
+    private mutating func evict() {
+        while storage.count > maxEntries || totalCost > maxCost,
+              let oldest = storage.min(by: { $0.value.lastUse < $1.value.lastUse }) {
+            storage.removeValue(forKey: oldest.key)
+            totalCost -= oldest.value.cost
+        }
+    }
+}
+
 /// Cache for compiled executables with constant promotion support
 ///
 /// The cache uses structural hashing (graph structure without constant values)
 /// to enable cache reuse across computations that differ only in scalar constants.
 /// This is particularly beneficial for training loops where hyperparameters
 /// like learning rate or epsilon vary between iterations.
+///
+/// All three tiers are bounded LRU caches, so a long-running process that keeps
+/// producing new graphs (or new constant data) does not grow without limit.
 public final class CompilationCache: @unchecked Sendable {
 
     /// Shared cache instance
     public static let shared = CompilationCache()
 
+    /// Default bound on cached executables (and on cached MLIR texts).
+    static let defaultMaxExecutables = 512
+
+    /// Default bound on fast-path (trace) entries.
+    static let defaultMaxTraceEntries = 1024
+
+    /// Default bound on the device memory held by fast-path entries' promoted
+    /// constant buffers. An entry needing more than this is not cached.
+    static let defaultMaxTracePinnedBytes = 64 << 20
+
     /// Cache entries keyed by structural hash
-    private var cache: [String: PJRTExecutable] = [:]
+    private var cache = LRUMap<String, PJRTExecutable>(maxEntries: CompilationCache.defaultMaxExecutables)
 
     /// MLIR text cache keyed by structural hash.
     /// Stores the emitted MLIR text alongside compiled executables so that if the
     /// executable cache is cleared, re-compilation can skip re-emission entirely.
-    private var mlirCache: [String: String] = [:]
+    private var mlirCache = LRUMap<String, String>(maxEntries: CompilationCache.defaultMaxExecutables)
 
     /// Fast-path (trace) cache keyed by a hash of the *raw* graph structure plus
     /// constant values. A hit lets a repeated barrier skip graph building,
     /// optimization, analysis, emission, and compilation entirely — the single
     /// biggest per-barrier cost (optimization alone is ~40-50%). Mirrors the
     /// Metal backend's fast path.
-    private var fastCache: [UInt64: PJRTTraceCacheEntry] = [:]
-    private let fastCacheMaxEntries = 4096
+    ///
+    /// Because the key includes constant values, a loop that feeds fresh
+    /// constant data every step (e.g. `Tensor(batch, shape:)`) creates a new
+    /// entry per step that is never hit again, each pinning its promoted
+    /// constants on the device. The LRU bound on entries and pinned bytes keeps
+    /// that from growing without limit. (Materialize large inputs, or pass them
+    /// as device data, to avoid promoting them at all.)
+    private var fastCache = LRUMap<UInt64, PJRTTraceCacheEntry>(
+        maxEntries: CompilationCache.defaultMaxTraceEntries,
+        maxCost: CompilationCache.defaultMaxTracePinnedBytes)
 
     /// Lock for thread safety
     private let lock = NSLock()
@@ -684,43 +759,75 @@ public final class CompilationCache: @unchecked Sendable {
     public func get(hash: String) -> PJRTExecutable? {
         lock.lock()
         defer { lock.unlock() }
-        return cache[hash]
+        return cache.get(hash)
     }
 
-    /// Store an executable in the cache
+    /// Store an executable in the cache (evicting the least recently used one
+    /// when full)
     public func put(hash: String, executable: PJRTExecutable) {
         lock.lock()
         defer { lock.unlock() }
-        cache[hash] = executable
+        cache.set(hash, executable)
     }
 
     /// Look up cached MLIR text
     public func getMlir(hash: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        return mlirCache[hash]
+        return mlirCache.get(hash)
     }
 
     /// Store MLIR text in the cache
     public func putMlir(hash: String, mlir: String) {
         lock.lock()
         defer { lock.unlock() }
-        mlirCache[hash] = mlir
+        mlirCache.set(hash, mlir)
     }
 
     /// Look up a fast-path (trace) entry.
     public func getFast(hash: UInt64) -> PJRTTraceCacheEntry? {
         lock.lock()
         defer { lock.unlock() }
-        return fastCache[hash]
+        return fastCache.get(hash)
     }
 
-    /// Store a fast-path (trace) entry (size-capped to bound memory).
+    /// Store a fast-path (trace) entry. The cache is bounded by entry count and
+    /// by the bytes its entries pin on the device; least recently used entries
+    /// are evicted, and an entry pinning more than the byte bound is not stored.
     public func putFast(hash: UInt64, entry: PJRTTraceCacheEntry) {
         lock.lock()
         defer { lock.unlock() }
-        if fastCache[hash] == nil && fastCache.count >= fastCacheMaxEntries { return }
-        fastCache[hash] = entry
+        fastCache.set(hash, entry, cost: entry.pinnedBytes)
+    }
+
+    /// Number of cached executables.
+    var executableCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache.count
+    }
+
+    /// Number of fast-path (trace) entries, and the device bytes they pin.
+    var traceCacheUsage: (entries: Int, pinnedBytes: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (fastCache.count, fastCache.totalCost)
+    }
+
+    /// Change the cache bounds (evicting as needed); returns the previous ones.
+    /// Internal: for tests that exercise eviction with small limits.
+    @discardableResult
+    func setLimits(
+        maxExecutables: Int, maxTraceEntries: Int, maxTracePinnedBytes: Int
+    ) -> (maxExecutables: Int, maxTraceEntries: Int, maxTracePinnedBytes: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = (cache.maxEntries, fastCache.maxEntries, fastCache.maxCost)
+        cache.maxEntries = maxExecutables
+        mlirCache.maxEntries = maxExecutables
+        fastCache.maxEntries = maxTraceEntries
+        fastCache.maxCost = maxTracePinnedBytes
+        return previous
     }
 
     /// Clear all cached entries
@@ -812,6 +919,11 @@ public struct PJRTTraceCacheEntry: @unchecked Sendable {
     public let promotedConstantBuffers: [PJRTBuffer]
     /// The optimized-graph structural hash, kept for the self-verify mode.
     public let structuralHash: String
+
+    /// Device bytes held by `promotedConstantBuffers`.
+    public var pinnedBytes: Int {
+        promotedConstantBuffers.reduce(0) { $0 + $1.sizeInBytes }
+    }
 }
 
 // MARK: - Metal Compilation Cache

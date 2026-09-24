@@ -212,3 +212,105 @@ struct ExecuteGraphCacheTests {
         #expect(second == [4, 50, 60])
     }
 }
+
+// The trace (fast-path) cache keys on constant values and pins promoted
+// constants on the device, so a loop over fresh data must not grow it forever.
+@Suite("Compilation Cache Bound Tests", .serialized, .enabled(if: PluginAvailability.cpu))
+struct CompilationCacheBoundTests {
+
+    /// Run `body` with small cache limits, restoring the previous ones after.
+    private func withLimits(
+        executables: Int, traceEntries: Int, tracePinnedBytes: Int, _ body: () throws -> Void
+    ) rethrows {
+        let cache = CompilationCache.shared
+        let previous = cache.setLimits(
+            maxExecutables: executables, maxTraceEntries: traceEntries,
+            maxTracePinnedBytes: tracePinnedBytes)
+        defer {
+            cache.setLimits(
+                maxExecutables: previous.maxExecutables, maxTraceEntries: previous.maxTraceEntries,
+                maxTracePinnedBytes: previous.maxTracePinnedBytes)
+        }
+        try body()
+    }
+
+    @Test("fresh data every step keeps the trace cache bounded")
+    func freshDataStaysBounded() {
+        withLimits(executables: 64, traceEntries: 8, tracePinnedBytes: 4096) {
+            for step in 0..<40 {
+                let batch = (0..<16).map { Float(step * 16 + $0) }
+                let y = Tensor<Float>(batch, shape: [16]).materialize() * Tensor<Float>(
+                    Array(repeating: Float(step), count: 16), shape: [16])
+                let values = y.scalars()
+                #expect(values.count == 16)
+                #expect(values == batch.map { $0 * Float(step) }, "step \(step)")
+
+                let usage = CompilationCache.shared.traceCacheUsage
+                #expect(usage.entries <= 8)
+                #expect(usage.pinnedBytes <= 4096)
+            }
+        }
+    }
+
+    @Test("an entry pinning more than the byte bound is not cached")
+    func largePromotedConstantsAreNotPinned() {
+        withLimits(executables: 64, traceEntries: 8, tracePinnedBytes: 1024) {
+            let before = CompilationCache.shared.traceCacheUsage
+            let big = Tensor<Float>((0..<1024).map(Float.init), shape: [1024])   // 4 KiB
+            let values = (big + big).scalars()
+            #expect(values.count == 1024)
+            #expect(values[1023] == 2046)
+            let after = CompilationCache.shared.traceCacheUsage
+            #expect(after.pinnedBytes <= 1024)
+            #expect(after.entries <= before.entries + 1)
+        }
+    }
+
+    @Test("evicted executables are recompiled and stay correct")
+    func executableEviction() {
+        withLimits(executables: 2, traceEntries: 0, tracePinnedBytes: 0) {
+            // Five structurally different graphs through a two-entry cache, twice.
+            for round in 0..<2 {
+                for length in 1...5 {
+                    let x = Tensor<Float>((0..<length).map(Float.init), shape: [length])
+                    let values = (x + x).scalars()
+                    #expect(values.count == length, "round \(round)")
+                    #expect(values == (0..<length).map { Float(2 * $0) }, "round \(round)")
+                    #expect(CompilationCache.shared.executableCount <= 2)
+                }
+            }
+        }
+    }
+}
+
+@Suite("LRU Map Tests")
+struct LRUMapTests {
+
+    @Test("evicts the least recently used entry by count")
+    func evictsByCount() {
+        var map = LRUMap<String, Int>(maxEntries: 2)
+        map.set("a", 1)
+        map.set("b", 2)
+        #expect(map.get("a") == 1)       // "b" is now the least recently used
+        map.set("c", 3)
+        #expect(map.get("b") == nil)
+        #expect(map.get("a") == 1)
+        #expect(map.get("c") == 3)
+        #expect(map.count == 2)
+    }
+
+    @Test("evicts by total cost and rejects an oversized entry")
+    func evictsByCost() {
+        var map = LRUMap<Int, String>(maxEntries: 10, maxCost: 100)
+        map.set(1, "one", cost: 60)
+        map.set(2, "two", cost: 30)
+        map.set(3, "three", cost: 30)    // 120 > 100: evicts 1
+        #expect(map.get(1) == nil)
+        #expect(map.totalCost == 60)
+        map.set(4, "four", cost: 101)    // larger than the bound: not kept
+        #expect(map.get(4) == nil)
+        #expect(map.totalCost == 60)
+        map.set(2, "two'", cost: 10)     // replacing updates the cost
+        #expect(map.totalCost == 40)
+    }
+}
