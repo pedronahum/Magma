@@ -25,7 +25,7 @@ jobs:
         swift: ['6.0', '6.3']
     container: swift:${{ matrix.swift }}-jammy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build (all targets, including tests)
         run: swift build --build-tests
@@ -41,7 +41,7 @@ jobs:
     runs-on: macos-15
     continue-on-error: true  # experimental until the macOS path is routinely verified
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install swift.org toolchain
         run: |
